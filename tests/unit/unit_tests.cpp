@@ -4,6 +4,9 @@
 #include <cstring>
 
 #include "core/scatter.h"
+#include "hook/flatten_site.h"
+#include "hook/registry.h"
+#include "hook/bee_abi.h"
 
 static int g_failed = 0;
 static int g_checks = 0;
@@ -219,6 +222,105 @@ TEST(drawcopy_matches_compute)
     rnd::CopyParams c0 = rnd::DrawCopy(p, 0);
     CHECK(c0.t[0] == 0 && c0.t[1] == 0 && c0.t[2] == 0 && c0.r[0] == 0 && c0.r[1] == 0 && c0.r[2] == 0);
     CHECK(c0.s == 100 && c0.o == 100);
+}
+
+// ---- hook tests
+// The AE 2025 code shape after `call [rax+IsLayerType]` in the flatten check (see flatten_site.cpp).
+static void MakeFlattenSite(unsigned char* b, uintptr_t* betaFn)
+{
+    std::memset(b, 0x90, 0x200);
+    const int rel = 0x100;
+    const unsigned char head[] = {0x84, 0xC0, 0x75, 0x10, 0xE8};
+    std::memcpy(b, head, sizeof(head));
+    std::memcpy(b + 5, &rel, 4);
+    *betaFn = (uintptr_t)(b + 9 + rel);
+    const unsigned char mid[] = {0x84, 0xC0, 0x74, 0x20, 0x48, 0x8B, 0x03, 0x48, 0x8B, 0xCB, 0xFF, 0x90};
+    std::memcpy(b + 9, mid, sizeof(mid));
+    const unsigned char tail1[] = {0x48, 0x8B, 0x10, 0x48, 0x8B, 0xC8, 0xFF, 0x92};
+    std::memcpy(b + 25, tail1, sizeof(tail1));
+    const unsigned char tail2[] = {0x85, 0xC0, 0x75, 0x30, 0x48, 0x8B};
+    std::memcpy(b + 37, tail2, sizeof(tail2));
+    b[47] = 0xFF; b[48] = 0x90;
+    const unsigned char tail3[] = {0x84, 0xC0, 0x75, 0x40, 0x48, 0x8B, 0xCB, 0xE8};
+    std::memcpy(b + 53, tail3, sizeof(tail3));
+}
+
+TEST(flatten_site_match)
+{
+    static unsigned char b[0x200];
+    uintptr_t beta = 0;
+    MakeFlattenSite(b, &beta);
+    CHECK(rnd::MatchFlattenCheckSite(b, beta));
+    CHECK(!rnd::MatchFlattenCheckSite(b, beta + 1));  // call goes elsewhere
+}
+
+TEST(flatten_site_audio_rejected)
+{
+    static unsigned char b[0x200];
+    uintptr_t beta = 0;
+    MakeFlattenSite(b, &beta);
+    b[25] = 0x33;  // same prefix, different code after the effects-count call (audio-synth check)
+    CHECK(!rnd::MatchFlattenCheckSite(b, beta));
+    MakeFlattenSite(b, &beta);
+    b[60] = 0x90;  // no call to BEE_GetSelectedTrackMatte
+    CHECK(!rnd::MatchFlattenCheckSite(b, beta));
+}
+
+static rnd::ParamSnapshot Snap(int count)
+{
+    rnd::ParamSnapshot s;
+    s.p.count = count;
+    s.valid = true;
+    return s;
+}
+
+TEST(registry_two_comps_same_layer_id)
+{
+    rnd::RegRegister({10, 48}, Snap(5));
+    rnd::ParamSnapshot s;
+    CHECK(!rnd::RegLookup({11, 48}, &s));
+    CHECK(rnd::RegLookup({10, 48}, &s));
+    CHECK(s.p.count == 5);
+    rnd::RegUnregister({10, 48});
+}
+
+TEST(registry_unregister)
+{
+    rnd::RegRegister({20, 7}, Snap(3));
+    CHECK(rnd::RegContains({20, 7}));
+    rnd::RegUnregister({20, 7});
+    rnd::ParamSnapshot s;
+    CHECK(!rnd::RegLookup({20, 7}, &s));
+    CHECK(!rnd::RegContains({20, 7}));
+    rnd::RegRegister({20, 7}, Snap(4));  // re-register after unregister
+    CHECK(rnd::RegLookup({20, 7}, &s) && s.p.count == 4);
+    rnd::RegUnregister({20, 7});
+}
+
+TEST(registry_update_snapshot)
+{
+    rnd::RegRegister({30, 1}, Snap(5));
+    rnd::RegRegister({30, 1}, Snap(9));
+    rnd::ParamSnapshot s;
+    CHECK(rnd::RegLookup({30, 1}, &s) && s.p.count == 9);
+    rnd::RegUnregister({30, 1});
+}
+
+TEST(vec_reserve_small_and_aligned)
+{
+    rnd::bee::RawVec v = {nullptr, nullptr, nullptr};
+    CHECK(rnd::bee::VecReserve(&v, 128, 5));  // 640 bytes: plain malloc
+    CHECK(v.first && v.last == v.first && v.end - v.first == 640);
+    v.last = v.first + 256;
+    CHECK(rnd::bee::VecReserve(&v, 128, 3));  // fits: reuse, emptied
+    CHECK(v.last == v.first && v.end - v.first == 640);
+    CHECK(rnd::bee::VecReserve(&v, 128, 100));  // 12800 bytes: 32-byte aligned, raw pointer before it
+    CHECK(((uintptr_t)v.first & 31) == 0);
+    CHECK(((void**)v.first)[-1] != nullptr);
+    CHECK((char*)v.first - (char*)((void**)v.first)[-1] >= 8);
+    CHECK(v.last == v.first && v.end - v.first == 12800);
+    CHECK(rnd::bee::VecReserve(&v, 128, 200));  // grow again, frees the aligned block correctly
+    CHECK(v.end - v.first == 25600);
 }
 
 int main()
