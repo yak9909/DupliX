@@ -22,5 +22,6 @@ spike/logs/
 spike/ida/*
 !spike/ida/*.py
 
-# Claude Code のローカル設定
+# Claude Code のローカル設定と作業フォルダ
 .claude/
+.superpowers/

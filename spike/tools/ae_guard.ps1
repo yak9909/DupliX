@@ -37,7 +37,7 @@ function Get-AeStaleSessions {
 # reads it, deletes it and shows the dialog (found by diffing AE's files right after a crash).
 # Remove-AeEffectCrashRecord deletes the file only if it names one of OUR effects, so a crash
 # record about some other plug-in (the user's) is left for AE to show.
-$script:AeOwnEffectMatchNames = @("RandamuSpike")
+$script:AeOwnEffectMatchNames = @("RandamuSpike", "randamu.aex", "RANDAMU Scatter")
 
 function Remove-AeEffectCrashRecord {
     $n = 0
