@@ -81,6 +81,19 @@ void MakeM4(double tx, double ty, double tz, double rxDeg, double ryDeg, double 
 
 }  // namespace detail
 
+CopyParams DrawCopy(const ScatterParams& p, int i)
+{
+    CopyParams c = {{0, 0, 0}, {0, 0, 0}, 100, 100};
+    if (p.keepFirst && i == 0) return c;
+    for (int k = 0; k < 3; k++) {
+        c.t[k] = Signed(p.seed, i, k, p.pos[k]);
+        c.r[k] = Signed(p.seed, i, 3 + k, p.rotDeg[k]);
+    }
+    c.s = p.scaleMin + Rand01(p.seed, i, 6) * (p.scaleMax - p.scaleMin);
+    c.o = p.opacityMin + Rand01(p.seed, i, 7) * (p.opacityMax - p.opacityMin);
+    return c;
+}
+
 void ComputeCopy(const ScatterParams& p, int i, double anchorX, double anchorY, CopyXform* out)
 {
     if (p.keepFirst && i == 0) {
@@ -88,16 +101,9 @@ void ComputeCopy(const ScatterParams& p, int i, double anchorX, double anchorY, 
         out->opacity = 1.0;
         return;
     }
-    double tx = Signed(p.seed, i, 0, p.pos[0]);
-    double ty = Signed(p.seed, i, 1, p.pos[1]);
-    double tz = Signed(p.seed, i, 2, p.pos[2]);
-    double rx = Signed(p.seed, i, 3, p.rotDeg[0]);
-    double ry = Signed(p.seed, i, 4, p.rotDeg[1]);
-    double rz = Signed(p.seed, i, 5, p.rotDeg[2]);
-    double sc = p.scaleMin + Rand01(p.seed, i, 6) * (p.scaleMax - p.scaleMin);
-    double op = p.opacityMin + Rand01(p.seed, i, 7) * (p.opacityMax - p.opacityMin);
-    detail::MakeM4(tx, ty, tz, rx, ry, rz, sc / 100.0, anchorX, anchorY, out->m4);
-    out->opacity = op / 100.0;
+    CopyParams c = DrawCopy(p, i);
+    detail::MakeM4(c.t[0], c.t[1], c.t[2], c.r[0], c.r[1], c.r[2], c.s / 100.0, anchorX, anchorY, out->m4);
+    out->opacity = c.o / 100.0;
 }
 
 }  // namespace rnd

@@ -23,6 +23,16 @@ struct CopyXform {
 // Channels: 0..2 position XYZ, 3..5 rotation XYZ, 6 scale, 7 opacity.
 double Rand01(int seed, int copy, int channel);
 
+// The random draws of copy i before they become a matrix: translation (px), rotation (degrees),
+// scale (percent), opacity (percent). The reference scenes put these on real duplicate layers.
+struct CopyParams {
+    double t[3];
+    double r[3];
+    double s;
+    double o;
+};
+CopyParams DrawCopy(const ScatterParams& p, int i);
+
 void ComputeCopy(const ScatterParams& p, int i, double anchorX, double anchorY, CopyXform* out);
 
 namespace detail {

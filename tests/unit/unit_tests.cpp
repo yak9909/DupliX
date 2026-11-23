@@ -201,6 +201,26 @@ TEST(count_zero)
     CHECK_NEAR(x.opacity, 1.0, 1e-12);
 }
 
+TEST(drawcopy_matches_compute)
+{
+    rnd::ScatterParams p = Zero();
+    p.seed = 77; p.pos[0] = 120; p.pos[1] = 80; p.pos[2] = 400; p.rotDeg[0] = 30; p.rotDeg[1] = 60; p.rotDeg[2] = 90;
+    p.scaleMin = 40; p.scaleMax = 180; p.opacityMin = 25; p.opacityMax = 95;
+    for (int i = 0; i < 10; i++) {
+        rnd::CopyParams c = rnd::DrawCopy(p, i);
+        double m[16];
+        rnd::detail::MakeM4(c.t[0], c.t[1], c.t[2], c.r[0], c.r[1], c.r[2], c.s / 100.0, 12, 34, m);
+        rnd::CopyXform x;
+        rnd::ComputeCopy(p, i, 12, 34, &x);
+        for (int k = 0; k < 16; k++) CHECK(m[k] == x.m4[k]);
+        CHECK(c.o / 100.0 == x.opacity);
+    }
+    p.keepFirst = true;
+    rnd::CopyParams c0 = rnd::DrawCopy(p, 0);
+    CHECK(c0.t[0] == 0 && c0.t[1] == 0 && c0.t[2] == 0 && c0.r[0] == 0 && c0.r[1] == 0 && c0.r[2] == 0);
+    CHECK(c0.s == 100 && c0.o == 100);
+}
+
 int main()
 {
     for (int t = 0; t < g_numTests; t++) {
