@@ -3,7 +3,8 @@
 # The script gets the output folder in $.getenv("RANDAMU_TEST_DIR") and must write jsx.log there,
 # ending with a line "done" (or "EXCEPTION ..."). Plugin log: <out>\plugin.log (RANDAMU_LOG).
 param([Parameter(Mandatory)][string]$Jsx, [Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 300,
-      [string]$Expect = "")   # regex that must appear in jsx.log; sets the exit code
+      [string]$Expect = "",   # regex that must appear in jsx.log; sets the exit code
+      [string]$Check = "")    # python script run as: <py> <Check> <out dir>; its exit code is ours
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\$Name"
@@ -30,13 +31,26 @@ while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
     if ((Test-Path $jsxLog) -and (Select-String -Path $jsxLog -Pattern "^done|EXCEPTION" -Quiet)) { $finished = $true; break }
     Start-Sleep -Seconds 2
 }
-if (-not $finished -and -not $p.HasExited) { Write-Host "TIMEOUT after $TimeoutSec s (AE hung or script did not finish)" }
+if (-not $finished -and -not $p.HasExited) {
+    Write-Host "TIMEOUT after $TimeoutSec s (AE hung or script did not finish)"
+    # Diagnostics: AE's own visible windows (a modal dialog blocks the script); dialogs are saved as PNG.
+    $k = 0
+    foreach ($w in Get-AeHiddenWindows -ProcessId $p.Id | Where-Object Visible) {
+        Write-Host ("  window class={0} title='{1}'" -f $w.Class, $w.Title)
+        if ($w.Class -eq "#32770") { $null = Save-AeWindowImage -Hwnd $w.Hwnd -Path (Join-Path $outDir "dialog_$k.png"); $k++ }
+    }
+}
 if (-not $p.HasExited) {
     if (-not (Stop-AeHidden -Process $p)) { $null = Repair-AeCrashState }
 }
 Remove-Item env:RANDAMU_LOG -ErrorAction SilentlyContinue
 if (Test-Path $jsxLog) { Get-Content $jsxLog } else { "no jsx.log (AE exited=$($p.HasExited))" }
 if ($Expect) {
-    if ((Test-Path $jsxLog) -and (Select-String -Path $jsxLog -Pattern $Expect -Quiet)) { Write-Host "EXPECT OK: $Expect"; exit 0 }
-    Write-Host "EXPECT FAILED: $Expect"; exit 1
+    if (-not ((Test-Path $jsxLog) -and (Select-String -Path $jsxLog -Pattern $Expect -Quiet))) { Write-Host "EXPECT FAILED: $Expect"; exit 1 }
+    Write-Host "EXPECT OK: $Expect"
 }
+if ($Check) {
+    & (Join-Path $root "spike\.venv\Scripts\python.exe") -I (Join-Path $root $Check) $outDir
+    exit $LASTEXITCODE
+}
+exit 0

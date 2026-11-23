@@ -1,10 +1,17 @@
-// Smoke test: randamu loads, can be applied to a 3D solid, and the comp renders.
-// Writes jsx.log (parameter names, "SMOKE OK") and smoke.png to $RANDAMU_TEST_DIR.
+// Smoke test: randamu loads, can be applied to a 3D solid, and turns it into copies.
+// one.png: count 1, all ranges 0 (= the plain layer). many.png: count 10, position range 120.
+// Writes jsx.log (parameter names, TARGET_ID/COMP_ID, "SMOKE OK") to $RANDAMU_TEST_DIR.
 (function () {
     var outDir = $.getenv("RANDAMU_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
+    function png(comp, name) {
+        var f = new File(outDir + "/" + name + ".png");
+        comp.saveFrameToPng(0, f);
+        for (var k = 0; k < 100 && !f.exists; k++) $.sleep(100);
+        log("png " + name + " exists=" + f.exists);
+    }
     try {
         app.beginSuppressDialogs();
         app.newProject();
@@ -13,6 +20,7 @@
         comp.layers.addCamera("Cam", [200, 150]);
         var L = comp.layers.addSolid([1, 1, 1], "Target", 40, 40, 1);
         L.threeDLayer = true;
+        log("before addProperty");
         var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
         log("effect " + (fx ? fx.matchName : "null") + " params=" + fx.numProperties);
         for (var i = 1; i <= fx.numProperties; i++) {
@@ -22,13 +30,18 @@
             log(" #" + i + " " + p.matchName + " [" + p.name + "] = " + v);
         }
         log("TARGET_ID=" + L.id + " COMP_ID=" + comp.id);
-        var f = new File(outDir + "/smoke.png");
-        comp.saveFrameToPng(0, f);
-        for (var k = 0; k < 100 && !f.exists; k++) $.sleep(100);
-        log("png exists=" + f.exists);
+        fx.property(2).setValue(1);                          // count
+        for (var r = 4; r <= 9; r++) fx.property(r).setValue(0);  // position / rotation ranges
+        png(comp, "one");
+        fx.property(2).setValue(10);
+        for (var q = 4; q <= 6; q++) fx.property(q).setValue(120);
+        png(comp, "many");
         log("SMOKE OK");
         log("done");
     } catch (e) {
-        log("EXCEPTION " + e + " line " + e.line);
+        var msg = "?";
+        try { msg = String(e.message) + " (line " + String(e.line) + ")"; } catch (e2) { msg = "unprintable"; }
+        var f2 = new File(outDir + "/jsx.log");
+        f2.encoding = "UTF-8"; f2.open("a"); f2.writeln("EXCEPTION " + msg); f2.close();
     }
 })();

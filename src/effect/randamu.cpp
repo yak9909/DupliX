@@ -2,11 +2,15 @@
 // layer for the sub-layer hooks.
 #include "randamu.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <deque>
 #include <mutex>
 #include <string>
+
+#include "hook/bee_hooks.h"
+#include "hook/registry.h"
 
 namespace {
 
@@ -65,6 +69,147 @@ void RLog(const char* fmt, ...)
 
 namespace {
 
+AEGP_PluginID g_pluginId = 0;
+
+template <class T>
+struct Suite {
+    SPBasicSuite* sp;
+    T* s = nullptr;
+    const char* name;
+    int32 ver;
+    Suite(SPBasicSuite* p, const char* n, int32 v) : sp(p), name(n), ver(v)
+    {
+        if (sp->AcquireSuite(n, v, (const void**)&s) != kSPNoError) s = nullptr;
+    }
+    ~Suite()
+    {
+        if (s) sp->ReleaseSuite(name, ver);
+    }
+    T* operator->() const { return s; }
+    explicit operator bool() const { return s != nullptr; }
+};
+
+// Sequence data: the key this instance registered last (plain data, no flattening needed).
+struct SeqData {
+    int compItemId;
+    int layerId;
+};
+
+enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown };
+
+// Registers this effect's layer (key + parameter snapshot at the current time) for the hooks.
+// writeSeq: store the key in sequence data (only in commands that may write it).
+SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, bool writeSeq)
+{
+    SPBasicSuite* sp = in_data->pica_basicP;
+    Suite<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    Suite<AEGP_LayerSuite9> ls(sp, kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    Suite<AEGP_CompSuite12> cs(sp, kAEGPCompSuite, kAEGPCompSuiteVersion12);
+    Suite<AEGP_ItemSuite9> is(sp, kAEGPItemSuite, kAEGPItemSuiteVersion9);
+    Suite<AEGP_EffectSuite4> es(sp, kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
+    if (!pfi || !ls || !cs || !is || !es) return SelfState::Unknown;
+    AEGP_LayerH L = nullptr;
+    AEGP_CompH comp = nullptr;
+    AEGP_ItemH item = nullptr;
+    A_long itemId = 0;
+    AEGP_LayerIDVal layerId = 0;
+    if (pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || !L || ls->AEGP_GetLayerParentComp(L, &comp) || !comp ||
+        cs->AEGP_GetItemFromComp(comp, &item) || !item || is->AEGP_GetItemID(item, &itemId) ||
+        ls->AEGP_GetLayerID(L, &layerId))
+        return SelfState::Unknown;
+    rnd::LayerKey key = {(int)itemId, (int)layerId};
+
+    rnd::ParamSnapshot snap;
+    AEGP_EffectRefH eff = nullptr;
+    bool read = false;
+    if (!pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) && eff) {
+        A_Time t = {in_data->current_time, (A_u_long)in_data->time_scale};
+        if (t.scale == 0) t.scale = 1;
+        read = rnd::ReadParamsFromEffect(eff, L, t, &snap);
+        es->AEGP_DisposeEffect(eff);
+    }
+    AEGP_LayerFlags lflags = 0;
+    ls->AEGP_GetLayerFlags(L, &lflags);
+    SelfState st = rnd::GetHookStatus() != rnd::HookStatus::Installed ? SelfState::NoHooks
+                   : !(lflags & AEGP_LayerFlag_LAYER_IS_3D)            ? SelfState::Not3D
+                   : (!read || !snap.valid)                            ? SelfState::Off
+                                                                       : SelfState::Ready;
+    if (st != SelfState::Ready) snap.valid = false;
+    rnd::RegRegister(key, snap);
+
+    if (writeSeq) {
+        if (!out_data->sequence_data && in_data->sequence_data) out_data->sequence_data = in_data->sequence_data;
+        if (!out_data->sequence_data) {
+            out_data->sequence_data = PF_NEW_HANDLE(sizeof(SeqData));
+            if (out_data->sequence_data) {
+                auto* z = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
+                z->compItemId = z->layerId = 0;
+                PF_UNLOCK_HANDLE(out_data->sequence_data);
+            }
+        }
+        if (out_data->sequence_data) {
+            auto* sd = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
+            if (sd->compItemId != key.compItemId || sd->layerId != key.layerId) {
+                if (sd->compItemId || sd->layerId) rnd::RegUnregister({sd->compItemId, sd->layerId});
+                sd->compItemId = key.compItemId;
+                sd->layerId = key.layerId;
+            }
+            PF_UNLOCK_HANDLE(out_data->sequence_data);
+        }
+    }
+    static std::atomic<int> logged{0};
+    if (++logged <= 40)
+        RLog("register: comp %d layer %d state=%d count=%d", key.compItemId, key.layerId, (int)st, snap.p.count);
+    return st;
+}
+
+const char* StatusText(SelfState st)
+{
+    static const char* ready = UiName("準備できています", "Ready");
+    static const char* noHooks = UiName("この AE の版ではコピーを作れません", "Not supported in this AE version");
+    static const char* not3d = UiName("3D レイヤーにしてください", "Make the layer 3D");
+    static const char* off = UiName("エフェクトがオフです", "Effect is off");
+    static const char* unknown = UiName("状態を確認できません", "Unknown");
+    switch (st) {
+    case SelfState::Ready: return ready;
+    case SelfState::NoHooks: return noHooks;
+    case SelfState::Not3D: return not3d;
+    case SelfState::Off: return off;
+    default: return unknown;
+    }
+}
+
+PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
+{
+    SelfState st = RegisterSelf(in_data, out_data, false);
+    PF_ParamDef copy = *params[RP_STATUS];
+    copy.ui_flags |= PF_PUI_DISABLED;
+    copy.u.bd.u.nameptr = StatusText(st);
+    PF_ParamUtilsSuite3* pu = nullptr;
+    if (in_data->pica_basicP->AcquireSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3, (const void**)&pu) ==
+            kSPNoError &&
+        pu) {
+        pu->PF_UpdateParamUI(in_data->effect_ref, RP_STATUS, &copy);
+        in_data->pica_basicP->ReleaseSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err SequenceSetdown(PF_InData* in_data, PF_OutData* out_data)
+{
+    if (in_data->sequence_data) {
+        auto* sd = (SeqData*)PF_LOCK_HANDLE(in_data->sequence_data);
+        if (sd->compItemId || sd->layerId) {
+            rnd::RegUnregister({sd->compItemId, sd->layerId});
+            RLog("unregister: comp %d layer %d", sd->compItemId, sd->layerId);
+        }
+        PF_UNLOCK_HANDLE(in_data->sequence_data);
+        PF_DISPOSE_HANDLE(in_data->sequence_data);
+        out_data->sequence_data = nullptr;
+    }
+    return PF_Err_NONE;
+}
+
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
 {
     out_data->my_version = PF_VERSION(0, 1, 0, PF_Stage_DEVELOP, 1);
@@ -72,6 +217,11 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
     out_data->out_flags2 = PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
                            PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
     RLog("GlobalSetup: %s, host %d.%d", kBuildId, in_data->version.major, in_data->version.minor);
+    Suite<AEGP_UtilitySuite6> util(in_data->pica_basicP, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
+    if (util && !util->AEGP_RegisterWithAEGP(nullptr, "randamu", &g_pluginId))
+        rnd::InstallHooks(in_data->pica_basicP, g_pluginId);
+    else
+        RLog("GlobalSetup: AEGP_RegisterWithAEGP failed; hooks not installed");
     return PF_Err_NONE;
 }
 
@@ -111,6 +261,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     PF_Err err = PF_Err_NONE;
+    RegisterSelf(in_data, out_data, false);
     if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
 
     PF_RenderRequest req = extra->input->output_request;
@@ -150,6 +301,9 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
                                        PF_LayerDef* output, void* extra)
 {
     PF_Err err = PF_Err_NONE;
+    static std::atomic<int> dbg{0};
+    int d = ++dbg;
+    if (d <= 200) RLog("dbg: cmd %d enter", (int)cmd);
     try {
         switch (cmd) {
         case PF_Cmd_GLOBAL_SETUP:
@@ -157,6 +311,20 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             break;
         case PF_Cmd_PARAMS_SETUP:
             err = ParamsSetup(in_data, out_data);
+            break;
+        case PF_Cmd_SEQUENCE_SETUP:
+            // Reading the effect through AEGP while AE is still adding it fails AE's internal check
+            // ("child not found in parent") and the effect is not added. SEQUENCE_RESETUP follows at once.
+            break;
+        case PF_Cmd_SEQUENCE_RESETUP:
+        case PF_Cmd_USER_CHANGED_PARAM:
+            if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, true);
+            break;
+        case PF_Cmd_SEQUENCE_SETDOWN:
+            err = SequenceSetdown(in_data, out_data);
+            break;
+        case PF_Cmd_UPDATE_PARAMS_UI:
+            err = UpdateParamsUi(in_data, out_data, params);
             break;
         case PF_Cmd_SMART_PRE_RENDER:
             err = PreRender(in_data, out_data, (PF_PreRenderExtra*)extra);
@@ -170,5 +338,6 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
     } catch (...) {
         err = PF_Err_INTERNAL_STRUCT_DAMAGED;
     }
+    if (d <= 200) RLog("dbg: cmd %d leave err=%d", (int)cmd, (int)err);
     return err;
 }

@@ -73,34 +73,20 @@ struct Suite {
     explicit operator bool() const { return s != nullptr; }
 };
 
-// Reads this layer's randamu parameters and anchor at layer time t through AEGP. Render threads only.
-// Returns false (leaving *out untouched) if anything is missing; "inactive" sets out->valid = false.
-bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
+}  // namespace
+
+bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, ParamSnapshot* out)
 {
     Suite<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
     Suite<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
-    if (!es || !ss) return false;
-    AEGP_LayerH L = (AEGP_LayerH)layer;
-    A_long n = 0;
-    if (es->AEGP_GetLayerNumEffects(L, &n)) return false;
-    AEGP_EffectRefH eff = nullptr;
-    for (A_long i = 0; i < n && !eff; i++) {
-        AEGP_EffectRefH e = nullptr;
-        if (es->AEGP_GetLayerEffectByIndex(g_pluginId, L, i, &e) || !e) continue;
-        AEGP_InstalledEffectKey key = 0;
-        A_char mn[AEGP_MAX_EFFECT_MATCH_NAME_SIZE + 1] = {0};
-        if (!es->AEGP_GetInstalledKeyFromLayerEffect(e, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
-            !std::strcmp(mn, RANDAMU_MATCH_NAME))
-            eff = e;
-        else
-            es->AEGP_DisposeEffect(e);
-    }
-    if (!eff) return false;
+    Suite<AEGP_LayerSuite9> ls(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    if (!es || !ss || !ls) return false;
     bool ok = true;
     AEGP_EffectFlags flags = 0;
-    if (!es->AEGP_GetEffectFlags(eff, &flags) && !(flags & AEGP_EffectFlags_ACTIVE)) {
+    AEGP_LayerFlags lflags = 0;
+    if ((!es->AEGP_GetEffectFlags(eff, &flags) && !(flags & AEGP_EffectFlags_ACTIVE)) ||
+        (!ls->AEGP_GetLayerFlags(L, &lflags) && !(lflags & AEGP_LayerFlag_LAYER_IS_3D))) {
         out->valid = false;
-        es->AEGP_DisposeEffect(eff);
         return true;
     }
     auto one = [&](int index, double* v) {
@@ -131,7 +117,6 @@ bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
     one(RP_OPACITY_MIN, &r.p.opacityMin);
     one(RP_OPACITY_MAX, &r.p.opacityMax);
     one(RP_KEEP_FIRST, &keep);
-    es->AEGP_DisposeEffect(eff);
     AEGP_StreamRefH as = nullptr;
     if (!ss->AEGP_GetNewLayerStream(g_pluginId, L, AEGP_LayerStream_ANCHORPOINT, &as) && as) {
         AEGP_StreamValue2 val;
@@ -151,8 +136,41 @@ bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
     r.p.count = count < 0 ? 0 : (int)(count + 0.5);
     r.p.seed = (int)(seed + 0.5);
     r.p.keepFirst = keep != 0;
+    r.valid = true;
     *out = r;
     return true;
+}
+
+namespace {
+
+// Finds this layer's randamu effect and reads it at layer time t. Render threads only.
+// Returns false if the read failed; an absent or inactive effect gives true with out->valid = false.
+bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
+{
+    Suite<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
+    if (!es) return false;
+    AEGP_LayerH L = (AEGP_LayerH)layer;
+    A_long n = 0;
+    if (es->AEGP_GetLayerNumEffects(L, &n)) return false;
+    AEGP_EffectRefH eff = nullptr;
+    for (A_long i = 0; i < n && !eff; i++) {
+        AEGP_EffectRefH e = nullptr;
+        if (es->AEGP_GetLayerEffectByIndex(g_pluginId, L, i, &e) || !e) continue;
+        AEGP_InstalledEffectKey key = 0;
+        A_char mn[AEGP_MAX_EFFECT_MATCH_NAME_SIZE + 1] = {0};
+        if (!es->AEGP_GetInstalledKeyFromLayerEffect(e, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
+            !std::strcmp(mn, RANDAMU_MATCH_NAME))
+            eff = e;
+        else
+            es->AEGP_DisposeEffect(e);
+    }
+    if (!eff) {  // the effect was removed: the layer is no longer ours
+        out->valid = false;
+        return true;
+    }
+    bool ok = ReadParamsFromEffect(eff, L, t, out);
+    es->AEGP_DisposeEffect(eff);
+    return ok;
 }
 
 // The parameters for `layer` at time t (t may be null). Snapshot from the effect's own commands; on
@@ -165,7 +183,12 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
         const int* ti = (const int*)tm;
         A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
         if (t.scale == 0) t.scale = 1;
-        if (!ReadParamsAegp(layer, t, out)) {
+        static std::atomic<int> dbg{0};
+        int d = ++dbg;
+        if (d <= 40) RLog("dbg: ParamsFor AEGP enter comp %d layer %d", k.compItemId, k.layerId);
+        bool r = ReadParamsAegp(layer, t, out);
+        if (d <= 40) RLog("dbg: ParamsFor AEGP leave ok=%d valid=%d", (int)r, (int)out->valid);
+        if (!r) {
             static std::atomic<int> warned{0};
             if (++warned <= 5) RLog("hook: AEGP param read failed (comp %d layer %d), using snapshot", k.compItemId, k.layerId);
             RegLookup(k, out);
@@ -175,9 +198,24 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
 }
 
 // ---- replacements
+struct DbgScope {
+    const char* n;
+    bool on;
+    DbgScope(const char* name, std::atomic<int>& c) : n(name), on(++c <= 30)
+    {
+        if (on) RLog("dbg: %s enter main=%d", n, (int)(GetCurrentThreadId() == g_mainThread));
+    }
+    ~DbgScope()
+    {
+        if (on) RLog("dbg: %s leave", n);
+    }
+};
+std::atomic<int> g_dbgSep{0}, g_dbgCnt{0}, g_dbgRc{0}, g_dbgIs{0}, g_dbgOp{0};
+
 uintptr_t HookSeparately(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
                          uintptr_t h)
 {
+    DbgScope ds("Separately", g_dbgSep);
     if (IsMine((const void*)a)) return 1;
     return g_origSeparately(a, b, c, d, e, f, g, h);
 }
@@ -188,6 +226,7 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
 {
     // Rasterize2DGraph asks with an empty cache and switches to the layer-set raster node (empty for
     // raster layers) when the answer is >= 2: give it the original answer so the whole layer is rasterised.
+    DbgScope ds("Count", g_dbgCnt);
     bool emptyCache = c && *(void**)c == nullptr;
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
@@ -201,6 +240,7 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
 uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
                     uintptr_t h)
 {
+    DbgScope ds("Rects", g_dbgRc);
     ParamSnapshot s;
     if (!IsMine((const void*)a) || !ParamsFor((const void*)a, (const void*)c, &s))
         return g_origRects(a, b, c, d, e, f, g, h);
@@ -261,6 +301,7 @@ uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, ui
 
 double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
 {
+    DbgScope ds("ArtOpacity", g_dbgOp);
     double op = g_origArtOpacity(ctx, trace, t, bag);
     if (!trace) return op;
     char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
@@ -363,5 +404,6 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
 }
 
 HookStatus GetHookStatus() { return g_status; }
+bool IsMainThread() { return GetCurrentThreadId() == g_mainThread; }
 
 }  // namespace rnd
