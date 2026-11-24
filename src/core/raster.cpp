@@ -107,6 +107,13 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
     std::fill(acc, acc + (size_t)(rowEnd - rowBegin) * w * 4, 0.f);
     const float inv = 1.f / Traits<P>::kMax;
     const int sw = src.width, sh = src.height;
+    // AE's worlds are straight alpha: filter and composite premultiplied (colour x alpha / max).
+    const __m128 invv = _mm_set1_ps(inv), ones = _mm_set1_ps(1.f);
+    auto Premul = [invv, ones](__m128 v) {
+        // (1, a, a, a) / max: alpha broadcast, lane 0 replaced by 1
+        __m128 m = _mm_move_ss(_mm_mul_ps(_mm_shuffle_ps(v, v, 0), invv), ones);
+        return _mm_mul_ps(v, m);
+    };
     for (int i = 0; i < n; i++) {
         const Box& b = boxes[i];
         if (!b.hit || b.y1 < rowBegin || b.y0 >= rowEnd) continue;
@@ -135,10 +142,10 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
                 if (ix >= 0 && iy >= 0 && ix + 1 < sw && iy + 1 < sh) {
                     const P* r0 = (const P*)(base + (size_t)iy * src.rowBytes) + ix;
                     const P* r1 = (const P*)(base + (size_t)(iy + 1) * src.rowBytes) + ix;
-                    s = _mm_add_ps(_mm_add_ps(_mm_mul_ps(Traits<P>::Load(r0), _mm_set1_ps(ws[0])),
-                                              _mm_mul_ps(Traits<P>::Load(r0 + 1), _mm_set1_ps(ws[1]))),
-                                   _mm_add_ps(_mm_mul_ps(Traits<P>::Load(r1), _mm_set1_ps(ws[2])),
-                                              _mm_mul_ps(Traits<P>::Load(r1 + 1), _mm_set1_ps(ws[3]))));
+                    s = _mm_add_ps(_mm_add_ps(_mm_mul_ps(Premul(Traits<P>::Load(r0)), _mm_set1_ps(ws[0])),
+                                              _mm_mul_ps(Premul(Traits<P>::Load(r0 + 1)), _mm_set1_ps(ws[1]))),
+                                   _mm_add_ps(_mm_mul_ps(Premul(Traits<P>::Load(r1)), _mm_set1_ps(ws[2])),
+                                              _mm_mul_ps(Premul(Traits<P>::Load(r1 + 1)), _mm_set1_ps(ws[3]))));
                 } else {
                     s = _mm_setzero_ps();
                     for (int j = 0; j < 2; j++)
@@ -146,7 +153,7 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
                             int qx = ix + i2, qy = iy + j;
                             if (qx < 0 || qy < 0 || qx >= sw || qy >= sh) continue;
                             const P* p = (const P*)(base + (size_t)qy * src.rowBytes) + qx;
-                            s = _mm_add_ps(s, _mm_mul_ps(Traits<P>::Load(p), _mm_set1_ps(ws[j * 2 + i2])));
+                            s = _mm_add_ps(s, _mm_mul_ps(Premul(Traits<P>::Load(p)), _mm_set1_ps(ws[j * 2 + i2])));
                         }
                 }
                 s = _mm_mul_ps(s, _mm_set1_ps(op));  // premultiplied source x opacity, 0..1
@@ -160,7 +167,13 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
     for (int y = rowBegin; y < rowEnd; y++) {
         P* out = (P*)((char*)dst.data + (size_t)y * dst.rowBytes);
         const float* a = acc + ((size_t)(y - rowBegin) * w) * 4;
-        for (int x = 0; x < w; x++) Traits<P>::Store(out[x], _mm_loadu_ps(a + (size_t)x * 4));
+        for (int x = 0; x < w; x++) {
+            // back to straight alpha (transparent: colour 0)
+            __m128 v = _mm_loadu_ps(a + (size_t)x * 4);
+            const float al = _mm_cvtss_f32(v);
+            const float k = al > 0.f ? 1.f / al : 0.f;
+            Traits<P>::Store(out[x], _mm_mul_ps(v, _mm_set_ps(k, k, k, 1.f)));
+        }
     }
 }
 

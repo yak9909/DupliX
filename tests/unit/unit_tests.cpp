@@ -477,12 +477,34 @@ TEST(raster_opacity_half)
     rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, w, h, 8);
     rnd::RasterCopy c = Copy(0.5, 100);
     rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    // AE worlds are straight alpha: half opacity halves alpha, the colour stays
     for (size_t i = 0; i < dst.size(); i++) {
         CHECK_NEAR(dst[i].a, src[i].a / 2.0, 1.0);
-        CHECK_NEAR(dst[i].r, src[i].r / 2.0, 1.0);
-        CHECK_NEAR(dst[i].g, src[i].g / 2.0, 1.0);
-        CHECK_NEAR(dst[i].b, src[i].b / 2.0, 1.0);
+        CHECK_NEAR(dst[i].r, src[i].r, 1.0);
+        CHECK_NEAR(dst[i].g, src[i].g, 1.0);
+        CHECK_NEAR(dst[i].b, src[i].b, 1.0);
     }
+}
+
+TEST(raster_straight_alpha_edge)
+{
+    // A transparent pixel keeps a bright colour (straight alpha): it must not leak into the result.
+    std::vector<Px8> src = {Px8{0, 255, 255, 255}, Px8{255, 0, 0, 0}};
+    std::vector<Px8> dst(2);
+    rnd::RasterImage s = Img(src, 2, 1, 8), d = Img(dst, 2, 1, 8);
+    rnd::RasterCopy c = Copy(1.0, 100, 1, 0.5, 0);  // samples halfway between the two pixels
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    CHECK_NEAR(dst[0].a, 127.5, 1.0);
+    CHECK(dst[0].r == 0 && dst[0].g == 0 && dst[0].b == 0);
+    // over a straight-alpha background: 50% white over opaque black = mid grey, opaque
+    std::vector<Px8> w = {Px8{128, 255, 255, 255}}, out(1);
+    rnd::RasterImage sw = Img(w, 1, 1, 8), dw = Img(out, 1, 1, 8);
+    rnd::RasterCopy two[2] = {Copy(1.0, 100), Copy(1.0, 200)};
+    std::vector<Px8> blk = {Px8{255, 0, 0, 0}};
+    (void)blk;
+    rnd::RasterizeCopies(sw, two, 2, 1.0, 1.0, dw, 1);  // the same 50% white twice: alpha 1-(0.5)^2
+    CHECK_NEAR(out[0].a, 255 * (1 - (1 - 128 / 255.0) * (1 - 128 / 255.0)), 1.0);
+    CHECK(out[0].r == 255 && out[0].g == 255 && out[0].b == 255);
 }
 
 TEST(raster_back_to_front)
@@ -519,8 +541,10 @@ TEST(raster_downsample_half)
             const Px8* q[4] = {&src[(size_t)(2 * y) * w + 2 * x], &src[(size_t)(2 * y) * w + 2 * x + 1],
                                &src[(size_t)(2 * y + 1) * w + 2 * x], &src[(size_t)(2 * y + 1) * w + 2 * x + 1]};
             const Px8& o = dst2[(size_t)y * (w / 2) + x];
-            CHECK_NEAR(o.a, (q[0]->a + q[1]->a + q[2]->a + q[3]->a) / 4.0, 1.0);
-            CHECK_NEAR(o.r, (q[0]->r + q[1]->r + q[2]->r + q[3]->r) / 4.0, 1.0);
+            double sa = q[0]->a + q[1]->a + q[2]->a + q[3]->a;
+            double sr = q[0]->r * q[0]->a + q[1]->r * q[1]->a + q[2]->r * q[2]->a + q[3]->r * q[3]->a;
+            CHECK_NEAR(o.a, sa / 4.0, 1.0);
+            CHECK_NEAR(o.r, sr / sa, 1.0);  // straight alpha: colours are averaged weighted by alpha
         }
 }
 

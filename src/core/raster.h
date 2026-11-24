@@ -1,10 +1,11 @@
 // randamu core: CPU rasterizer of the fast mode. Draws perspective copies of one source image into one
-// output image (bilinear, premultiplied "over", per-copy opacity, far copies first). No AE dependency.
+// output image (bilinear, "over", per-copy opacity, far copies first). No AE dependency.
 #pragma once
 
 namespace rnd {
 
-// ARGB, premultiplied, the channel order of PF_Pixel8 / PF_Pixel16 / PF_PixelFloat.
+// ARGB, straight (unpremultiplied) alpha like AE's effect worlds, the channel order of PF_Pixel8 /
+// PF_Pixel16 / PF_PixelFloat. Filtering and "over" are done premultiplied internally.
 // bpc 8: 0..255, 16: 0..32768, 32: float. Buffer pixel (i, j) is (downsampled) px (i + originX, j + originY).
 struct RasterImage {
     void* data;

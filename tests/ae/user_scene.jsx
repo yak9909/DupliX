@@ -99,6 +99,10 @@
             }
             T.enabled = false;
         });
+        // fast mode (property 15 = RP_FAST) with 10 / 100 / 1000 copies (other parameters as the user set them)
+        variant("v_fast10", function (c, T, f) { f.property(2).setValue(10); f.property(15).setValue(1); });
+        variant("v_fast100", function (c, T, f) { f.property(2).setValue(100); f.property(15).setValue(1); });
+        variant("v_fast1000", function (c, T, f) { f.property(2).setValue(1000); f.property(15).setValue(1); });
         app.project.save(new File(outDir + "/variants.aep"));
         log("done");
     } catch (ex) {
