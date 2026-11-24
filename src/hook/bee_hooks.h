@@ -14,6 +14,15 @@ enum class HookStatus { NotInstalled, Installed, MissingSymbols };
 HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId);
 HookStatus GetHookStatus();
 bool IsMainThread();  // the thread that ran InstallHooks (GLOBAL_SETUP)
+// Finds BEE's internal type key of this effect (not the AEGP installed key) once per process:
+// `layer` has this effect at AEGP index `effectIndex`. Call from the effect's own render commands.
+// The hooks then also require BEE_Layer::HasEffectApplied(key): AE sends no command when the effect
+// is deleted (it keeps the instance for undo), so a stale registration must not keep turning the
+// layer into copies.
+void ResolveEffectTypeKey(const void* layer, int effectIndex);
+bool LayerHasThisEffect(const void* layer);  // AEGP_LayerH is a BEE_Layer*; true while the key is unknown
+// 3D switch on and this effect present and switched on (BEE/FLT reads only; any thread).
+bool LayerIsLive(const void* layer);
 
 struct ParamSnapshot;
 // Reads the randamu parameters of `eff` and the anchor point of its layer L at layer time t.

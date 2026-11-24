@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 
 #include "core/scatter.h"
 #include "effect/randamu.h"
@@ -23,6 +24,12 @@ typedef int (*LayerGetIdFn)(const void*);
 typedef const void* (*LayerGetCompFn)(const void*);
 typedef const int& (*ItemGetIdFn)(const void*);
 typedef void (*M3IdentityFn)(void*);
+typedef bool (*HasEffectAppliedFn)(const void*, short, void*);
+typedef void* (*VirtGetPtrFn)(const void*);
+typedef unsigned long long (*VirtGetU64Fn)(const void*);
+typedef int (*ParadeNumSeqsFn)(void*, int*);
+typedef void* (*ParadeGetEffectFn)(void*, unsigned);
+typedef bool (*EffectIsActiveFn)(const void*);
 
 std::atomic<HookStatus> g_status{HookStatus::NotInstalled};
 DWORD g_mainThread = 0;
@@ -35,6 +42,13 @@ LayerGetIdFn g_layerGetId = nullptr;
 LayerGetCompFn g_layerGetComp = nullptr;
 ItemGetIdFn g_itemGetId = nullptr;
 M3IdentityFn g_m3Identity = nullptr;
+HasEffectAppliedFn g_hasEffectApplied = nullptr;
+int g_slotParade = -1;           // vtable slot of GetFilterParade (const)
+int g_slotSwitches = -1;         // vtable slot of the switch getter (from SubLayersRenderSeparately's code)
+ParadeNumSeqsFn g_paradeNum = nullptr;
+ParadeGetEffectFn g_paradeGet = nullptr;
+EffectIsActiveFn g_effectActive = nullptr;
+std::atomic<int> g_effectKey{-1};  // this effect's installed key (-1 = not known yet)
 uintptr_t g_betaFn = 0;
 
 bool KeyOf(const void* layer, LayerKey* k)
@@ -47,12 +61,14 @@ bool KeyOf(const void* layer, LayerKey* k)
     return true;
 }
 
-// Registered with a valid snapshot (the effect is on, the layer is 3D, the hooks may answer).
+// Registered with a valid snapshot (the effect is on, the layer is 3D, the hooks may answer) and the
+// layer still has this effect. AE sends no command when the effect is deleted (it keeps the instance
+// for undo), so the registry alone would keep answering for a layer whose effect is gone.
 bool IsMine(const void* layer)
 {
     LayerKey k;
     ParamSnapshot s;
-    return KeyOf(layer, &k) && RegLookup(k, &s) && s.valid;
+    return KeyOf(layer, &k) && RegLookup(k, &s) && s.valid && LayerIsLive(layer);
 }
 
 // ---- parameters
@@ -230,7 +246,16 @@ uintptr_t HookSeparately(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uin
                          uintptr_t h)
 {
     DbgScope ds("Separately", g_dbgSep);
-    if (IsMine((const void*)a)) return 1;
+    if (IsMine((const void*)a)) {
+        static std::atomic<int> dbgN{0};
+        if (++dbgN <= 200) {
+            LayerKey k{};
+            KeyOf((const void*)a, &k);
+            RLog("dbg: Separately mine comp %d layer %d main=%d", k.compItemId, k.layerId,
+                 (int)(GetCurrentThreadId() == g_mainThread));
+        }
+        return 1;
+    }
     return g_origSeparately(a, b, c, d, e, f, g, h);
 }
 
@@ -245,6 +270,10 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) return (uintptr_t)(unsigned)s.p.count;
+        uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
+        static std::atomic<int> dbgN{0};
+        if (++dbgN <= 50) RLog("dbg: Count mine but params invalid -> orig %d", (int)o);
+        return o;
     }
     return g_origCount(a, b, c, d, e, f, g, h);
 }
@@ -359,6 +388,18 @@ void** FindImportSlot(HMODULE mod, const char* dll, const char* name)
     return nullptr;
 }
 
+// The vtable slot of the first `call [rax+disp]` in fn (MSVC: FF 50 disp8 / FF 90 disp32), or -1.
+int FirstVirtualCallSlot(const void* fn)
+{
+    auto p = (const unsigned char*)fn;
+    for (int i = 0; i + 6 <= 48; i++) {
+        if (p[i] == 0xFF && p[i + 1] == 0x90) return (int)(*(const int*)(p + i + 2) / 8);
+        if (p[i] == 0xFF && p[i + 1] == 0x50) return (int)((signed char)p[i + 2] / 8);
+        if (p[i] == 0xC3) break;  // ret
+    }
+    return -1;
+}
+
 bool WritePtr(void** where, void* value)
 {
     DWORD old = 0;
@@ -394,12 +435,25 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     g_itemGetId = bee ? (ItemGetIdFn)GetProcAddress(bee, bee::kItemGetID) : nullptr;
     g_betaFn = bee ? (uintptr_t)GetProcAddress(bee, bee::kBetaExpressionEffects) : 0;
     g_m3Identity = u ? (M3IdentityFn)GetProcAddress(u, bee::kM3SetIdentity) : nullptr;
+    g_hasEffectApplied = bee ? (HasEffectAppliedFn)GetProcAddress(bee, bee::kLayerHasEffectApplied) : nullptr;
+    HMODULE flt = GetModuleHandleA(bee::kFltModule);
+    g_paradeNum = flt ? (ParadeNumSeqsFn)GetProcAddress(flt, bee::kParadeNumSeqs) : nullptr;
+    g_paradeGet = flt ? (ParadeGetEffectFn)GetProcAddress(flt, bee::kParadeGetEffect) : nullptr;
+    g_effectActive = flt ? (EffectIsActiveFn)GetProcAddress(flt, bee::kEffectIsActiveVideo) : nullptr;
+    if (vt) {
+        g_slotParade = FindSlot(vt, bee, bee::kLayerGetFilterParade);
+        if (sSep >= 0) g_slotSwitches = FirstVirtualCallSlot(vt[sSep]);
+    }
+    RLog("hooks: parade slot %d switches slot %d FLT numSeqs=%p getEffect=%p isActive=%p", g_slotParade,
+         g_slotSwitches, (void*)g_paradeNum, (void*)g_paradeGet, (void*)g_effectActive);
     RLog("hooks: BEE=%p vt=%p slots IsLayerType=%d Separately=%d Count=%d Rects=%d; AEGPDriver=%p iat=%p; "
-         "GetID=%p GetParentComp=%p Item::GetID=%p beta=%p M3Id=%p",
+         "GetID=%p GetParentComp=%p Item::GetID=%p beta=%p M3Id=%p HasEffectApplied=%p",
          (void*)bee, (void*)vt, sIs, sSep, sCnt, sRc, (void*)drv, (void*)iat, (void*)g_layerGetId,
-         (void*)g_layerGetComp, (void*)g_itemGetId, (void*)g_betaFn, (void*)g_m3Identity);
+         (void*)g_layerGetComp, (void*)g_itemGetId, (void*)g_betaFn, (void*)g_m3Identity, (void*)g_hasEffectApplied);
     if (!vt || sIs < 0 || sSep < 0 || sCnt < 0 || sRc < 0 || !iat || !g_layerGetId || !g_layerGetComp ||
-        !g_itemGetId || !g_betaFn || !g_m3Identity) {
+        !g_itemGetId || !g_betaFn || !g_m3Identity || !g_hasEffectApplied || g_slotParade < 0 ||
+        g_slotSwitches < 0 || g_slotSwitches >= bee::kVtableScanSlots || !g_paradeNum || !g_paradeGet ||
+        !g_effectActive) {
         g_status = HookStatus::MissingSymbols;
         RLog("hooks: something is missing -> not installing");
         return g_status;
@@ -409,12 +463,80 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     g_origCount = (Fwd8)vt[sCnt];
     g_origRects = (Fwd8)vt[sRc];
     g_origArtOpacity = (ArtOpacityFn)*iat;
-    bool ok = WritePtr(&vt[sSep], (void*)&HookSeparately) && WritePtr(&vt[sCnt], (void*)&HookCount) &&
-              WritePtr(&vt[sRc], (void*)&HookRects) && WritePtr(&vt[sIs], (void*)&HookIsLayerType) &&
-              WritePtr(iat, (void*)&HookArtOpacity);
+    // dbg: RANDAMU_HOOKMASK (diagnosis only): 1 Separately, 2 Count, 4 Rects, 8 IsLayerType, 16 opacity
+    unsigned mask = 31;
+    char mb[32] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_HOOKMASK", mb, sizeof(mb)) > 0) mask = (unsigned)strtoul(mb, nullptr, 0);
+    RLog("dbg: hook mask %u", mask);
+    bool ok = (!(mask & 1) || WritePtr(&vt[sSep], (void*)&HookSeparately)) &&
+              (!(mask & 2) || WritePtr(&vt[sCnt], (void*)&HookCount)) &&
+              (!(mask & 4) || WritePtr(&vt[sRc], (void*)&HookRects)) &&
+              (!(mask & 8) || WritePtr(&vt[sIs], (void*)&HookIsLayerType)) &&
+              (!(mask & 16) || WritePtr(iat, (void*)&HookArtOpacity));
     g_status = ok ? HookStatus::Installed : HookStatus::MissingSymbols;
     RLog("hooks: %s (main thread %lu)", ok ? "installed" : "VirtualProtect failed", g_mainThread);
     return g_status;
+}
+
+void ResolveEffectTypeKey(const void* layer, int effectIndex)
+{
+    if (g_effectKey.load() >= 0 || !g_hasEffectApplied || effectIndex < 0) return;
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    if (g_effectKey.load() >= 0) return;
+    // HasEffectApplied appends the matching parade indices to the vector with AE's allocator (ucrtbase
+    // malloc, small blocks unaligned); free them the same way.
+    static HMODULE ucrt = GetModuleHandleA("ucrtbase.dll");
+    typedef void (*FreeF)(void*);
+    static FreeF ufree = ucrt ? (FreeF)GetProcAddress(ucrt, "free") : nullptr;
+    if (!ufree) return;
+    for (int k = 0; k < 32768; k++) {
+        bee::RawVec v = {nullptr, nullptr, nullptr};
+        bool has = g_hasEffectApplied(layer, (short)k, &v);
+        bool hit = false;
+        for (const int* p = (const int*)v.first; has && p && p < (const int*)v.last; p++)
+            if (*p == effectIndex) hit = true;
+        if (v.first) {
+            if ((size_t)(v.end - v.first) >= 4096) ufree(*((void**)v.first - 1));
+            else ufree(v.first);
+        }
+        if (hit) {
+            g_effectKey.store(k, std::memory_order_release);
+            RLog("hooks: effect type key %d (parade index %d)", k, effectIndex);
+            return;
+        }
+    }
+    RLog("hooks: effect type key not found (parade index %d)", effectIndex);
+}
+
+bool LayerHasThisEffect(const void* layer)
+{
+    int key = g_effectKey.load(std::memory_order_acquire);
+    return key < 0 || !g_hasEffectApplied || g_hasEffectApplied(layer, (short)key, nullptr);
+}
+
+// The layer is 3D and has this effect switched on, read from BEE/FLT directly (safe on any thread).
+// The registry snapshot alone goes stale: AE sends the effect no command when the effect is deleted,
+// switched off, or the layer's 3D switch changes, and the hooks must then answer like the original.
+bool LayerIsLive(const void* layer)
+{
+    void** vt = *(void***)layer;
+    unsigned long long sw = ((VirtGetU64Fn)vt[g_slotSwitches])(layer);
+    if (!(sw & bee::kSwitch3D)) return false;
+    int key = g_effectKey.load(std::memory_order_acquire);
+    if (key < 0) return true;  // not resolved yet: registry only
+    void* parade = ((VirtGetPtrFn)vt[g_slotParade])(layer);
+    int n = 0;
+    int rc = parade ? g_paradeNum(parade, &n) : -1;
+    bool live = false;
+    for (int i = 0; rc == 0 && i < n && !live; i++) {
+        const char* eff = (const char*)g_paradeGet(parade, (unsigned)i);
+        if (eff && *(const unsigned short*)(eff + bee::kEffectTypeKey) == (unsigned short)key && g_effectActive(eff))
+            live = true;
+    }
+    static std::atomic<int> dbgN{0};
+    if (++dbgN <= 20) RLog("dbg: LayerIsLive sw=%llx numSeqs rc=%d n=%d -> %d", sw, rc, n, (int)live);
+    return live;
 }
 
 HookStatus GetHookStatus() { return g_status; }

@@ -1,7 +1,9 @@
 # Reference comparison: probe_<case> (randamu) vs ref_<case> (real duplicate layers), rendered by
 # aerender with MFR off and on, plus a reopen check (saveFrameToPng after app.open). Exit 1 on any failure.
 #   pwsh tests/ae/run_ref.ps1 [-Cases baseline,scale] [-SkipScene] [-Mfrs OFF,ON]
-param([string]$Cases = "", [switch]$SkipScene, [string[]]$Mfrs = @("OFF", "ON"), [int]$RenderTimeoutSec = 600)
+#   -Gpu CUDA|OPENCL|...  sets the project's GPU acceleration (GpuAccelType name); default: AE's default
+param([string]$Cases = "", [switch]$SkipScene, [string[]]$Mfrs = @("OFF", "ON"), [int]$RenderTimeoutSec = 600,
+      [string]$Gpu = "")
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\ref"
@@ -28,6 +30,7 @@ if (-not $SkipScene) {
     $env:RANDAMU_REF_CASES = $casesFile
     $env:RANDAMU_REF_IMAGE = Join-Path $root "spike\assets\probe_img.png"
     $env:RANDAMU_REF_ONLY = $Cases
+    $env:RANDAMU_REF_GPU = $Gpu
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/make_ref.jsx -Name ref -TimeoutSec 900 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT|window class"
     if ($LASTEXITCODE -ne 0) { Write-Host "scene build failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }

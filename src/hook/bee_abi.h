@@ -33,6 +33,21 @@ constexpr ptrdiff_t kArtLayerToSubIndex = -40;
 constexpr const char* kLayerGetID = "?GetID@BEE_Layer@@QEBA?BHXZ";                                  // int (const BEE_Layer*)
 constexpr const char* kLayerGetParentComp = "?GetParentComp@BEE_Layer@@QEBAQEBVBEE_CompItem@@XZ";   // const BEE_CompItem*
 constexpr const char* kItemGetID = "?GetID@BEE_Item@@QEBAAEBHXZ";                                   // const int& (const BEE_Item*)
+// bool (BEE_Layer*, short effectKey, std::vector<int>* indicesOrNull): walks the layer's effect parade and
+// compares each effect's type key (the 16-bit value at effect + 618) with effectKey. No AEGP inside.
+constexpr const char* kLayerHasEffectApplied =
+    "?HasEffectApplied@BEE_Layer@@UEAA_NFPEAV?$vector@HV?$allocator@H@std@@@std@@@Z";
+// The layer's effect list and the effect's on/off switch, read without AEGP (AEGP must not be called
+// from BEE virtuals on the UI thread).
+constexpr const char* kLayerGetFilterParade = "?GetFilterParade@BEE_AVLayer@@UEBAPEBVFLT_Parade@@XZ";  // vtable slot
+constexpr const char* kFltModule = "FLT.dll";
+constexpr const char* kParadeNumSeqs = "?FLT_InqParadeNumSeqs@@YAHPEAVFLT_Parade@@PEAH@Z";           // int (parade, int*)
+constexpr const char* kParadeGetEffect = "?GetEffect@FLT_Parade@@QEAAPEAVFLT_FCSeqSpec@@I@Z";          // (parade, unsigned)
+constexpr const char* kEffectIsActiveVideo = "?IsActiveVideoEffect@FLT_FCSeqSpec@@QEBA_NXZ";
+constexpr ptrdiff_t kEffectTypeKey = 618;  // unsigned short: the effect's type key (see HasEffectApplied)
+// BEE_AVLayer::SubLayersRenderSeparately starts with `call [rax+disp]` to the layer's switch getter;
+// for AV layers the 3D switch is bit 0x400 of its result.
+constexpr unsigned kSwitch3D = 0x400;
 constexpr const char* kBetaExpressionEffects = "?BEE_BetaFeature_AreExpressionEffectsAlwaysAllowedEnabled@@YA_NXZ";
 constexpr const char* kM3SetIdentity = "?SetIdentity@M_Matrix3@@QEAAXXZ";  // U.dll
 

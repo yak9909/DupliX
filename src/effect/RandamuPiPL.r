@@ -27,8 +27,9 @@ resource 'PiPL' (16000) {
 		AE_Effect_Info_Flags { 0 },
 		/* PIX_INDEPENDENT | DEEP_COLOR_AWARE | SEND_UPDATE_PARAMS_UI */
 		AE_Effect_Global_OutFlags { 0x06000400 },
-		/* SUPPORTS_SMART_RENDER | FLOAT_COLOR_AWARE | I_MIX_GUID_DEPENDENCIES | SUPPORTS_THREADED_RENDERING */
-		AE_Effect_Global_OutFlags_2 { 0x08201400 },
+		/* SUPPORTS_SMART_RENDER | FLOAT_COLOR_AWARE | I_MIX_GUID_DEPENDENCIES | SUPPORTS_THREADED_RENDERING
+		   | SUPPORTS_GPU_RENDER_F32 | SUPPORTS_DIRECTX_RENDERING */
+		AE_Effect_Global_OutFlags_2 { 0x2A201400 },
 		AE_Effect_Match_Name { "RANDAMU Scatter" },
 		AE_Reserved_Info { 0 },
 		AE_Effect_Support_URL { "https://github.com/yak9909/randamu" }

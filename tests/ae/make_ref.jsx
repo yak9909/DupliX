@@ -228,6 +228,15 @@
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
+        // RANDAMU_REF_GPU = CUDA | OPENCL | ... (a GpuAccelType name): render the project on the GPU.
+        var gpu = $.getenv("RANDAMU_REF_GPU");
+        if (gpu) {
+            var avail = [];
+            try { for (var g = 0; g < app.availableGPUAccelTypes.length; g++) avail.push(String(app.availableGPUAccelTypes[g])); } catch (eg) {}
+            log("gpu available: " + avail.join(",") + " requested: " + gpu);
+            app.project.gpuAccelType = GpuAccelType[gpu];
+            log("gpu set: " + app.project.gpuAccelType);
+        }
         var cases = readJson($.getenv("RANDAMU_REF_CASES")).cases;
         var only = $.getenv("RANDAMU_REF_ONLY") || "";
         for (var i = 0; i < cases.length; i++) {

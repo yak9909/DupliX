@@ -2,6 +2,7 @@
 // layer for the sub-layer hooks.
 #include "randamu.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <string>
 
+#include "effect/gpu_copy.h"
 #include "hook/bee_hooks.h"
 #include "hook/registry.h"
 
@@ -128,6 +130,24 @@ rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
     return p;
 }
 
+// AEGP index of `eff` on layer L (matched by installed effect key; the first match), or -1.
+// Only for render commands: reading effects through AEGP while AE adds or duplicates one fails.
+int EffectIndexOnLayer(AEGP_EffectSuite4* es, AEGP_LayerH L, AEGP_EffectRefH eff)
+{
+    AEGP_InstalledEffectKey mine = AEGP_InstalledEffectKey_NONE;
+    A_long n = 0;
+    if (es->AEGP_GetInstalledKeyFromLayerEffect(eff, &mine) || es->AEGP_GetLayerNumEffects(L, &n)) return -1;
+    for (A_long i = 0; i < n; i++) {
+        AEGP_EffectRefH e = nullptr;
+        AEGP_InstalledEffectKey k = AEGP_InstalledEffectKey_NONE;
+        if (es->AEGP_GetLayerEffectByIndex(g_pluginId, L, i, &e) || !e) continue;
+        bool same = !es->AEGP_GetInstalledKeyFromLayerEffect(e, &k) && k == mine;
+        es->AEGP_DisposeEffect(e);
+        if (same) return (int)i;
+    }
+    return -1;
+}
+
 // Where RegisterSelf takes the parameter values from.
 enum class ParamSource {
     Array,      // the params[] AE passed with the command
@@ -165,6 +185,7 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     if (src == ParamSource::Aegp) {
         AEGP_EffectRefH eff = nullptr;
         if (!pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) && eff) {
+            rnd::ResolveEffectTypeKey(L, EffectIndexOnLayer(es.s, L, eff));
             read = rnd::ReadParamsFromEffect(eff, L, t, &snap);
             es->AEGP_DisposeEffect(eff);
         }
@@ -214,7 +235,8 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     }
     static std::atomic<int> logged{0};
     if (++logged <= 40)
-        RLog("register: comp %d layer %d state=%d count=%d", key.compItemId, key.layerId, (int)st, snap.p.count);
+        RLog("register: comp %d layer %d state=%d count=%d hasfx=%d", key.compItemId, key.layerId, (int)st,
+             snap.p.count, (int)rnd::LayerHasThisEffect(L));
     return st;
 }
 
@@ -270,7 +292,8 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
     out_data->my_version = PF_VERSION(0, 1, 0, PF_Stage_DEVELOP, 1);
     out_data->out_flags = PF_OutFlag_PIX_INDEPENDENT | PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_SEND_UPDATE_PARAMS_UI;
     out_data->out_flags2 = PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
-                           PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
+                           PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING |
+                           PF_OutFlag2_SUPPORTS_GPU_RENDER_F32 | PF_OutFlag2_SUPPORTS_DIRECTX_RENDERING;
     RLog("GlobalSetup: %s, host %d.%d", kBuildId, in_data->version.major, in_data->version.minor);
     Suite<AEGP_UtilitySuite6> util(in_data->pica_basicP, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     if (util && !util->AEGP_RegisterWithAEGP(nullptr, "randamu", &g_pluginId))
@@ -326,7 +349,56 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     if (!err) {
         extra->output->result_rect = in_result.result_rect;
         extra->output->max_result_rect = in_result.max_result_rect;
+        extra->output->flags |= PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
     }
+    return err;
+}
+
+PF_Err GpuDeviceSetup(PF_InData* in_data, PF_OutData* out_data, PF_GPUDeviceSetupExtra* extra)
+{
+    PF_GPUDeviceInfo info;
+    AEFX_CLR_STRUCT(info);
+    Suite<PF_GPUDeviceSuite1> gs(in_data->pica_basicP, kPFGPUDeviceSuite, kPFGPUDeviceSuiteVersion1);
+    if (!gs || gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info)) return PF_Err_NONE;
+    void* data = nullptr;
+    bool ok = rnd::GpuDeviceSetup(extra->input->what_gpu, info, &data);
+    extra->output->gpu_data = data;
+    if (ok) out_data->out_flags2 = PF_OutFlag2_SUPPORTS_GPU_RENDER_F32;
+    RLog("gpu: device %u framework %d -> %s", (unsigned)extra->input->device_index, (int)extra->input->what_gpu,
+         ok ? "supported" : "not supported (CPU)");
+    return PF_Err_NONE;
+}
+
+PF_Err GpuDeviceSetdown(PF_GPUDeviceSetdownExtra* extra)
+{
+    rnd::GpuDeviceSetdown(extra->input->what_gpu, extra->input->gpu_data);
+    return PF_Err_NONE;
+}
+
+PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extra)
+{
+    PF_Err err = PF_Err_NONE;
+    PF_EffectWorld* inW = nullptr;
+    PF_EffectWorld* outW = nullptr;
+    ERR(extra->cb->checkout_layer_pixels(in_data->effect_ref, RP_INPUT, &inW));
+    ERR(extra->cb->checkout_output(in_data->effect_ref, &outW));
+    if (!err && inW && outW) {
+        Suite<PF_GPUDeviceSuite1> gs(in_data->pica_basicP, kPFGPUDeviceSuite, kPFGPUDeviceSuiteVersion1);
+        PF_GPUDeviceInfo info;
+        AEFX_CLR_STRUCT(info);
+        void* src = nullptr;
+        void* dst = nullptr;
+        if (!gs || gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info) ||
+            gs->GetGPUWorldData(in_data->effect_ref, inW, &src) || gs->GetGPUWorldData(in_data->effect_ref, outW, &dst) ||
+            !rnd::GpuCopy(extra->input->what_gpu, info, extra->input->gpu_data, src, dst, inW->rowbytes, outW->rowbytes,
+                          std::min(inW->height, outW->height)))
+            err = PF_Err_INTERNAL_STRUCT_DAMAGED;
+        static std::atomic<int> logged{0};
+        if (++logged <= 3)
+            RLog("gpu: render framework %d %dx%d rowbytes %d/%d err=%d", (int)extra->input->what_gpu, (int)inW->width,
+                 (int)inW->height, (int)inW->rowbytes, (int)outW->rowbytes, (int)err);
+    }
+    if (inW) extra->cb->checkin_layer_pixels(in_data->effect_ref, RP_INPUT);
     return err;
 }
 
@@ -388,6 +460,15 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             break;
         case PF_Cmd_SMART_RENDER:
             err = SmartRender(in_data, out_data, (PF_SmartRenderExtra*)extra);
+            break;
+        case PF_Cmd_SMART_RENDER_GPU:
+            err = SmartRenderGpu(in_data, out_data, (PF_SmartRenderExtra*)extra);
+            break;
+        case PF_Cmd_GPU_DEVICE_SETUP:
+            err = GpuDeviceSetup(in_data, out_data, (PF_GPUDeviceSetupExtra*)extra);
+            break;
+        case PF_Cmd_GPU_DEVICE_SETDOWN:
+            err = GpuDeviceSetdown((PF_GPUDeviceSetdownExtra*)extra);
             break;
         default:
             break;
