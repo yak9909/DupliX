@@ -1,0 +1,55 @@
+// Sent to a running AE (run_preview.ps1) whose open project is a copy of a user scene: builds variant
+// comps from the comp holding the randamu layer and writes "<variant> <comp id>" lines to variants.txt.
+//   pv_asis   : as is
+//   pv_one    : randamu with 1 copy and all ranges 0 (looks like no effect; measurable by the plugin)
+//   pv_real10 : 10 real duplicates, each with randamu (1 copy, ranges 0), original hidden
+(function () {
+    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    function write(name, text) { var f = new File(outDir + "/" + name); f.encoding = "UTF-8"; f.open("w"); f.write(text); f.close(); }
+    function tg(L) { return L.property("ADBE Transform Group"); }
+    function fxOf(L) {
+        var p = L.property("ADBE Effect Parade");
+        if (!p) return null;
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        return null;
+    }
+    function plain1(f) { f.property(2).setValue(1); for (var q = 4; q <= 9; q++) f.property(q).setValue(0); }
+    var lines = [];
+    try {
+        app.beginSuppressDialogs();
+        var src = null, P = app.project;
+        for (var i = 1; i <= P.numItems && !src; i++) {
+            var it = P.item(i);
+            if (!(it instanceof CompItem)) continue;
+            for (var j = 1; j <= it.numLayers; j++) if (fxOf(it.layer(j))) { src = it; break; }
+        }
+        if (!src) throw new Error("no comp with randamu");
+        function variant(name, fn) {
+            var c = src.duplicate();
+            c.name = name;
+            var T = null;
+            for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a))) T = c.layer(a);
+            fn(c, T, fxOf(T));
+            // every frame different (AE reuses identical frames), footage caches kept: move the camera a bit
+            for (var b = 1; b <= c.numLayers; b++) {
+                var Lb = c.layer(b);
+                if (Lb instanceof CameraLayer) tg(Lb).property("ADBE Position").expression = "value + [time * 40, 0, 0]";
+            }
+            lines.push(name + " " + c.id + " " + c.frameDuration);
+        }
+        variant("pv_asis", function () {});
+        variant("pv_one", function (c, T, f) { plain1(f); });
+        variant("pv_real10", function (c, T, f) {
+            plain1(f);
+            for (var d = 0; d < 10; d++) {
+                var D = T.duplicate();
+                var p = tg(D).property("ADBE Position").value;
+                tg(D).property("ADBE Position").setValue([p[0] + (d - 5) * 150, p[1] + ((d * 53) % 400) - 200, p[2] + ((d * 71) % 400) - 200]);
+            }
+            T.enabled = false;
+        });
+        write("variants.txt", lines.join("\n") + "\n");
+    } catch (e) {
+        write("variants.txt", "EXCEPTION " + e.message + " (line " + e.line + ")\n");
+    }
+})();

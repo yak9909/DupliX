@@ -20,6 +20,7 @@ bool IsMainThread();  // the thread that ran InstallHooks (GLOBAL_SETUP)
 // is deleted (it keeps the instance for undo), so a stale registration must not keep turning the
 // layer into copies.
 void ResolveEffectTypeKey(const void* layer, int effectIndex);
+bool EffectTypeKeyKnown();
 bool LayerHasThisEffect(const void* layer);  // AEGP_LayerH is a BEE_Layer*; true while the key is unknown
 // 3D switch on and this effect present and switched on (BEE/FLT reads only; any thread).
 bool LayerIsLive(const void* layer);

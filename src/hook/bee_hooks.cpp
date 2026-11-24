@@ -13,6 +13,7 @@
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
+#include "hook/timing.h"
 
 namespace rnd {
 
@@ -287,6 +288,17 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
     return out->valid;
 }
 
+// ---- per-frame timing (RANDAMU_TIMING): an event for `layer` at hook time `tm` that started at t0
+void MarkTiming(const void* layer, const void* tm, TimingKind kind, long long t0)
+{
+    if (!TimingEnabled() || !tm) return;
+    LayerKey k;
+    if (!KeyOf(layer, &k)) return;
+    const int* ti = (const int*)tm;
+    unsigned scale = (unsigned)ti[1];
+    TimingMark(k.compItemId, scale ? (double)ti[0] / scale : 0.0, kind, t0, TimingNow());
+}
+
 // ---- replacements
 struct DbgScope {
     const char* n;
@@ -329,9 +341,13 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     DbgScope ds("Count", g_dbgCnt);
     Prof pf(PF_CNT);
     bool emptyCache = c && *(void**)c == nullptr;
+    long long t0 = TimingNow();
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
-        if (ParamsFor((const void*)a, (const void*)b, &s)) return (uintptr_t)(unsigned)s.p.count;
+        if (ParamsFor((const void*)a, (const void*)b, &s)) {
+            MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
+            return (uintptr_t)(unsigned)s.p.count;
+        }
         uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
         static std::atomic<int> dbgN{0};
         if (++dbgN <= 50) RLog("dbg: Count mine but params invalid -> orig %d", (int)o);
@@ -347,9 +363,21 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
 {
     DbgScope ds("Rects", g_dbgRc);
     Prof pf(PF_RECTS);
+    long long t0 = TimingNow();
+    struct MarkAtExit {
+        const void* l;
+        const void* tm;
+        long long t0;
+        bool on = false;
+        ~MarkAtExit()
+        {
+            if (on) MarkTiming(l, tm, TK_HOOK, t0);
+        }
+    } mark{(const void*)a, (const void*)c, t0};
     ParamSnapshot s;
     if (!IsMine((const void*)a) || !ParamsFor((const void*)a, (const void*)c, &s))
         return g_origRects(a, b, c, d, e, f, g, h);
+    mark.on = true;
     double* ret = (double*)b;
     const double* rect = (const double*)d;
     auto* vR = (bee::RawVec*)e;
@@ -428,6 +456,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
 {
     DbgScope ds("ArtOpacity", g_dbgOp);
     Prof pf(PF_OPAC);
+    long long t0 = TimingNow();
     double op = g_origArtOpacity(ctx, trace, t, bag);
     if (!trace) return op;
     char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
@@ -438,6 +467,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
     CopyXform x;
     ComputeCopy(s.p, index, s.anchorX, s.anchorY, &x);
+    MarkTiming(layer, t, TK_COPY, t0);
     return op * x.opacity;
 }
 
@@ -599,6 +629,8 @@ void ResolveEffectTypeKey(const void* layer, int effectIndex)
     }
     RLog("hooks: effect type key not found (parade index %d)", effectIndex);
 }
+
+bool EffectTypeKeyKnown() { return g_effectKey.load(std::memory_order_acquire) >= 0; }
 
 bool LayerHasThisEffect(const void* layer)
 {

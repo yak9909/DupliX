@@ -59,6 +59,7 @@ void RegUnregister(LayerKey k)
 }
 
 unsigned RegGeneration() { return g_generation.load(std::memory_order_acquire); }
+void RegTouch() { ++g_generation; }
 
 bool RegLookup(LayerKey k, ParamSnapshot* out)
 {

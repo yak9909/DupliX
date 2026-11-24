@@ -24,5 +24,6 @@ bool RegContains(LayerKey k);
 // Incremented by every RegRegister / RegUnregister (the effect re-registers before each render), so
 // a value read under one generation may be reused until it changes.
 unsigned RegGeneration();
+void RegTouch();  // advance the generation without changing anything (start of a render)
 
 }  // namespace rnd

@@ -1,0 +1,40 @@
+// Sent to a running AE (run_preview.ps1): opens the comp named in step_cmd.txt ("<comp name> <frames>
+// <interval ms>") in the viewer and, while AE is idle, moves the time one frame every <interval> ms
+// (the viewer renders each frame like when scrubbing). Writes step_done.txt at the end.
+(function () {
+    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var f = new File(outDir + "/step_cmd.txt");
+    f.encoding = "UTF-8"; f.open("r");
+    var parts = f.readln().split(" ");
+    f.close();
+    var name = parts[0], frames = parseInt(parts[1], 10), interval = parseInt(parts[2], 10);
+    var comp = null;
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var it = app.project.item(i);
+        if (it instanceof CompItem && it.name === name) comp = it;
+    }
+    $.global.__pv = {comp: comp, n: 0, frames: frames, interval: interval, out: outDir};
+    $.global.__pvStep = function () {
+        var s = $.global.__pv;
+        try {
+            if (s.n < s.frames) {
+                var t = s.n * s.comp.frameDuration;
+                s.comp.time = t;
+                // AE reuses identical frames; preview_setup.jsx animates the camera so each frame is new.
+                // Render the frame (one at a time, so the plugin's span is the frame's latency).
+                if ($.getenv("RANDAMU_PREVIEW_PURGE") === "1") app.purge(PurgeTarget.ALL_CACHES);
+                s.comp.saveFrameToPng(t, new File(s.out + "/frame.png"));
+                s.n++;
+                app.scheduleTask("__pvStep()", s.interval, false);
+            } else {
+                var d = new File(s.out + "/step_done.txt");
+                d.open("w"); d.writeln("done " + s.n); d.close();
+            }
+        } catch (e) {
+            var x = new File(s.out + "/step_done.txt");
+            x.open("w"); x.writeln("EXCEPTION " + e.message); x.close();
+        }
+    };
+    comp.openInViewer();
+    app.scheduleTask("__pvStep()", 1000, false);
+})();

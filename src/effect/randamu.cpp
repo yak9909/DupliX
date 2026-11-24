@@ -14,6 +14,7 @@
 #include "effect/gpu_copy.h"
 #include "hook/bee_hooks.h"
 #include "hook/registry.h"
+#include "hook/timing.h"
 
 namespace {
 
@@ -154,6 +155,8 @@ enum class ParamSource {
 
 // Registers this effect's layer (key + parameter snapshot) for the hooks.
 // writeSeq: store key and parameters in sequence data (only in commands that may write it).
+thread_local int g_lastCompId = 0;  // comp of this thread's last registration (per-frame timing only)
+
 SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src, PF_ParamDef* params[], bool writeSeq)
 {
     SPBasicSuite* sp = in_data->pica_basicP;
@@ -173,6 +176,17 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
         ls->AEGP_GetLayerID(L, &layerId))
         return SelfState::Unknown;
     rnd::LayerKey key = {(int)itemId, (int)layerId};
+    g_lastCompId = key.compItemId;
+    // Fast path for render commands (PreRender comes ~2x per copy per frame): an existing valid
+    // registration is enough. The hooks read the parameters at each query's time on render threads,
+    // and check the 3D switch and the effect's presence/switch themselves (LayerIsLive).
+    if (src == ParamSource::Aegp && rnd::EffectTypeKeyKnown()) {
+        rnd::ParamSnapshot cur;
+        if (rnd::RegLookup(key, &cur) && cur.valid) {
+            rnd::RegTouch();  // new render: values cached by the hooks may be stale (keyframes edited)
+            return SelfState::Ready;
+        }
+    }
 
     A_Time t = {in_data->current_time, (A_u_long)in_data->time_scale};
     if (t.scale == 0) t.scale = 1;
@@ -181,7 +195,7 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     if (src == ParamSource::Aegp) {
         AEGP_EffectRefH eff = nullptr;
         if (!pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) && eff) {
-            rnd::ResolveEffectTypeKey(L, EffectIndexOnLayer(es.s, L, eff));
+            if (!rnd::EffectTypeKeyKnown()) rnd::ResolveEffectTypeKey(L, EffectIndexOnLayer(es.s, L, eff));
             read = rnd::ReadParamsFromEffect(eff, L, t, &snap);
             es->AEGP_DisposeEffect(eff);
         }
@@ -335,6 +349,17 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     PF_Err err = PF_Err_NONE;
+    long long tStart = rnd::TimingNow();
+    struct MarkAtExit {
+        PF_InData* in;
+        long long t0;
+        ~MarkAtExit()
+        {
+            if (rnd::TimingEnabled() && in->time_scale)
+                rnd::TimingMark(g_lastCompId, (double)in->current_time / in->time_scale, rnd::TK_PRERENDER, t0,
+                                rnd::TimingNow());
+        }
+    } mark{in_data, tStart};
     {
         static std::atomic<long long> ticks{0}, calls{0};
         LARGE_INTEGER t0, t1, f;
@@ -383,8 +408,21 @@ PF_Err GpuDeviceSetdown(PF_GPUDeviceSetdownExtra* extra)
     return PF_Err_NONE;
 }
 
+// Per-frame timing of the effect's own render (comp = this thread's last registration, close enough).
+struct RenderMark {
+    PF_InData* in;
+    long long t0 = rnd::TimingNow();
+    ~RenderMark()
+    {
+        if (rnd::TimingEnabled() && in->time_scale)
+            rnd::TimingMark(g_lastCompId, (double)in->current_time / in->time_scale, rnd::TK_RENDER, t0,
+                            rnd::TimingNow());
+    }
+};
+
 PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extra)
 {
+    RenderMark mark{in_data};
     PF_Err err = PF_Err_NONE;
     PF_EffectWorld* inW = nullptr;
     PF_EffectWorld* outW = nullptr;
@@ -412,6 +450,7 @@ PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extr
 
 PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra* extra)
 {
+    RenderMark mark{in_data};
     PF_Err err = PF_Err_NONE;
     PF_EffectWorld* inW = nullptr;
     PF_EffectWorld* outW = nullptr;
