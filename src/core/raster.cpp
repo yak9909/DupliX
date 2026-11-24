@@ -98,13 +98,29 @@ struct Box {
     bool hit;
 };
 
-// Draws rows [rowBegin, rowEnd) into acc (premultiplied floats, 0..1, rows of dst.width * 4).
+// One copy's contribution to one pixel.
+struct alignas(16) Frag {
+    __m128 c;   // premultiplied colour x opacity, 0..1
+    float iz;   // 1 / camera z at this pixel (larger = nearer)
+    int next;   // the pixel's previous fragment (-1: none)
+};
+// Per-thread working memory, reused row after row.
+struct RowScratch {
+    std::vector<int> head;  // per pixel of the row: its last fragment
+    std::vector<Frag> frags;
+    std::vector<const Frag*> order;
+};
+
+// Draws rows [rowBegin, rowEnd). Per row, every copy's fragments are collected per pixel, then each pixel
+// composites its fragments far to near by the depth AT THAT PIXEL (copies seen at an angle overlap in an
+// order no single per-copy depth gives; spike of the user's orbiting camera, 11/24). Equal depths keep the
+// copies' order (sorted by `depth`, far first).
 template <class P>
 void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes, int n, double dsX, double dsY,
-              const RasterImage& dst, int rowBegin, int rowEnd, float* acc)
+              const RasterImage& dst, int rowBegin, int rowEnd, RowScratch& sc)
 {
     const int w = dst.width;
-    std::fill(acc, acc + (size_t)(rowEnd - rowBegin) * w * 4, 0.f);
+    sc.head.resize((size_t)w);
     const float inv = 1.f / Traits<P>::kMax;
     const int sw = src.width, sh = src.height;
     // AE's worlds are straight alpha: filter and composite premultiplied (colour x alpha / max).
@@ -114,21 +130,25 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
         __m128 m = _mm_move_ss(_mm_mul_ps(_mm_shuffle_ps(v, v, 0), invv), ones);
         return _mm_mul_ps(v, m);
     };
-    for (int i = 0; i < n; i++) {
-        const Box& b = boxes[i];
-        if (!b.hit || b.y1 < rowBegin || b.y0 >= rowEnd) continue;
-        const RasterCopy& c = copies[i];
-        const int y0 = std::max(b.y0, rowBegin), y1 = std::min(b.y1, rowEnd - 1);
-        const double* H = c.screenToSrc;
-        const float op = (float)c.opacity * inv;
-        const double stepX = 1.0 / dsX;
-        for (int y = y0; y <= y1; y++) {
-            const double sy = (y + dst.originY + 0.5) / dsY;
+    const double stepX = 1.0 / dsX;
+    // Raw pointers in the loops: AE loads the Debug build, whose checked std::vector is slow and locks.
+    int* head = sc.head.data();
+    if (sc.frags.size() < (size_t)w * 4) sc.frags.resize((size_t)w * 4);
+    if (sc.order.size() < 64) sc.order.resize(64);
+    for (int y = rowBegin; y < rowEnd; y++) {
+        for (int x = 0; x < w; x++) head[x] = -1;
+        Frag* frags = sc.frags.data();
+        size_t nFrag = 0, capFrag = sc.frags.size();
+        const double sy = (y + dst.originY + 0.5) / dsY;
+        for (int i = 0; i < n; i++) {
+            const Box& b = boxes[i];
+            if (!b.hit || y < b.y0 || y > b.y1) continue;
+            const double* H = copies[i].screenToSrc;
+            const float op = (float)copies[i].opacity * inv;
             const double sx0 = (b.x0 + dst.originX + 0.5) / dsX;
-            // homogeneous source position along the row: linear in x
+            // homogeneous source position along the row: linear in x (hw = 1 / camera z)
             double ha = sx0 * H[0] + sy * H[3] + H[6], hb = sx0 * H[1] + sy * H[4] + H[7], hw = sx0 * H[2] + sy * H[5] + H[8];
             const double da = H[0] * stepX, db = H[1] * stepX, dw = H[2] * stepX;
-            float* row = acc + ((size_t)(y - rowBegin) * w) * 4;
             for (int x = b.x0; x <= b.x1; x++, ha += da, hb += db, hw += dw) {
                 if (!(hw > 0)) continue;
                 const double iw = 1.0 / hw;
@@ -158,21 +178,50 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
                 }
                 s = _mm_mul_ps(s, _mm_set1_ps(op));  // premultiplied source x opacity, 0..1
                 if (_mm_movemask_ps(_mm_cmpneq_ps(s, _mm_setzero_ps())) == 0) continue;
-                float* d = row + (size_t)x * 4;
-                const __m128 keep = _mm_sub_ps(_mm_set1_ps(1.f), _mm_shuffle_ps(s, s, 0));  // 1 - alpha
-                _mm_storeu_ps(d, _mm_add_ps(s, _mm_mul_ps(_mm_loadu_ps(d), keep)));
+                if (nFrag == capFrag) {  // grow (rare): keep the contents
+                    sc.frags.resize(capFrag * 2);
+                    frags = sc.frags.data();
+                    capFrag = sc.frags.size();
+                }
+                Frag& fr = frags[nFrag];
+                fr.c = s;
+                fr.iz = (float)hw;
+                fr.next = head[x];
+                head[x] = (int)nFrag++;
             }
         }
-    }
-    for (int y = rowBegin; y < rowEnd; y++) {
+        // resolve the row: per pixel, far to near by the pixel's own depth
         P* out = (P*)((char*)dst.data + (size_t)y * dst.rowBytes);
-        const float* a = acc + ((size_t)(y - rowBegin) * w) * 4;
         for (int x = 0; x < w; x++) {
+            __m128 acc = _mm_setzero_ps();
+            int f = head[x];
+            if (f >= 0 && frags[f].next < 0) {
+                acc = frags[f].c;  // one fragment: nothing to order
+            } else if (f >= 0) {
+                // the list runs near to far in registration order (copies were taken far to near):
+                // fill `order` from the back so it reads far to near
+                size_t cnt = 0;
+                for (int g = f; g >= 0; g = frags[g].next) cnt++;
+                if (sc.order.size() < cnt) sc.order.resize(cnt * 2);
+                const Frag** order = sc.order.data();
+                size_t pos = cnt;
+                for (int g = f; g >= 0; g = frags[g].next) order[--pos] = &frags[g];
+                for (size_t k = 1; k < cnt; k++) {  // stable insertion sort, usually in order already
+                    const Frag* t = order[k];
+                    size_t j = k;
+                    for (; j > 0 && order[j - 1]->iz > t->iz; j--) order[j] = order[j - 1];
+                    order[j] = t;
+                }
+                for (size_t k = 0; k < cnt; k++) {
+                    const __m128 c = order[k]->c;
+                    const __m128 keep = _mm_sub_ps(_mm_set1_ps(1.f), _mm_shuffle_ps(c, c, 0));  // 1 - alpha
+                    acc = _mm_add_ps(c, _mm_mul_ps(acc, keep));
+                }
+            }
             // back to straight alpha (transparent: colour 0)
-            __m128 v = _mm_loadu_ps(a + (size_t)x * 4);
-            const float al = _mm_cvtss_f32(v);
+            const float al = _mm_cvtss_f32(acc);
             const float k = al > 0.f ? 1.f / al : 0.f;
-            Traits<P>::Store(out[x], _mm_mul_ps(v, _mm_set_ps(k, k, k, 1.f)));
+            Traits<P>::Store(out[x], _mm_mul_ps(acc, _mm_set_ps(k, k, k, 1.f)));
         }
     }
 }
@@ -192,7 +241,7 @@ bool Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, do
     std::atomic<int> next{0};
     std::atomic<bool> stop{false};
     auto worker = [&](bool caller) {
-        std::vector<float> acc((size_t)kRows * dst.width * 4);
+        RowScratch sc;
         for (int k; !stop.load(std::memory_order_relaxed) && (k = next.fetch_add(1)) < chunks;) {
             // AE's abort callback is only asked on the calling (render) thread
             if (caller && abort && abort()) {
@@ -200,7 +249,7 @@ bool Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, do
                 break;
             }
             DrawRows<P>(src, copies, boxes.data(), n, dsX, dsY, dst, k * kRows, std::min(dst.height, (k + 1) * kRows),
-                        acc.data());
+                        sc);
         }
     };
     int t = std::max(1, std::min(threads, chunks));

@@ -586,6 +586,56 @@ TEST(raster_behind_camera)
     for (auto& p : dst) CHECK(p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0);
 }
 
+TEST(raster_per_pixel_depth)
+{
+    // The user's report: parallel copies seen at an angle (camera orbiting). Where two copies overlap, the one
+    // nearer at THAT pixel must be in front, whatever their centres' depths say. Real geometry: a 100x100
+    // layer turned 70 deg about Y; copy B is shifted along the layer's x and towards the camera along its normal.
+    rnd::CameraView cam = CamDefault();
+    double W[16], A[16], B[16];
+    rnd::detail::MakeM4(960 - 50, 540 - 50, 0, 0, 70, 0, 1, 50, 50, W);
+    rnd::detail::MakeM4(0, 0, 0, 0, 0, 0, 1, 50, 50, A);
+    rnd::detail::MakeM4(60, 0, -30, 0, 0, 0, 1, 50, 50, B);
+    const double rect[4] = {0, 0, 100, 100};
+    rnd::RasterCopy c[2];
+    CHECK(rnd::CopyHomography(cam, W, A, rect, c[0].screenToSrc));
+    CHECK(rnd::CopyHomography(cam, W, B, rect, c[1].screenToSrc));
+    c[0].opacity = c[1].opacity = 1.0;
+    // a linear ramp: red = 2 * (u - 0.5) at source x u, opaque (bilinear reproduces it exactly)
+    std::vector<Px8> src(100 * 100);
+    for (int y = 0; y < 100; y++)
+        for (int x = 0; x < 100; x++) src[(size_t)y * 100 + x] = Px8{255, (unsigned char)(2 * x), 0, 0};
+    const int ox = 860, oy = 440, w = 200, h = 200;
+    // Give each copy the "centre depth" that puts the WRONG one in front, in both orders.
+    for (int flip = 0; flip < 2; flip++) {
+        std::vector<Px8> dst((size_t)w * h);
+        rnd::RasterImage s = Img(src, 100, 100, 8), d = Img(dst, w, h, 8, ox, oy);
+        rnd::RasterCopy k[2] = {c[0], c[1]};
+        k[0].depth = flip ? 1.0 : 2.0;
+        k[1].depth = flip ? 2.0 : 1.0;
+        rnd::RasterizeCopies(s, k, 2, 1.0, 1.0, d, 2);
+        int checked = 0, wrong = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                double sx = x + ox + 0.5, sy = y + oy + 0.5, u[2], v[2], iz[2];
+                for (int i = 0; i < 2; i++) {
+                    const double* H = c[i].screenToSrc;
+                    iz[i] = sx * H[2] + sy * H[5] + H[8];  // = 1 / camera z
+                    ApplyH(H, sx, sy, &u[i], &v[i]);
+                }
+                bool inside = true;
+                for (int i = 0; i < 2; i++) inside = inside && u[i] > 2 && u[i] < 98 && v[i] > 2 && v[i] < 98;
+                if (!inside || std::fabs(u[0] - u[1]) < 5) continue;
+                int nearer = iz[0] > iz[1] ? 0 : 1;
+                ++checked;
+                if (std::fabs(dst[(size_t)y * w + x].r - 2 * (u[nearer] - 0.5)) > 1.5) ++wrong;
+            }
+        CHECK(checked > 100);
+        CHECK(wrong == 0);
+        if (wrong) std::printf("  per-pixel depth: flip=%d %d of %d overlap px show the farther copy\n", flip, wrong, checked);
+    }
+}
+
 TEST(raster_abort_stops)
 {
     // AE's abort (the user scrubs or cancels): the drawing stops and reports it; without abort it completes.
