@@ -3,6 +3,7 @@
 #pragma once
 
 #include "core/scatter.h"
+#include "core/world.h"
 
 namespace rnd {
 
@@ -13,6 +14,7 @@ struct LayerKey {
 
 struct ParamSnapshot {
     ScatterParams p;
+    WorldXform world;                 // the World Transform parameters
     double anchorX = 0, anchorY = 0;  // layer anchor point (layer space px)
     bool valid = false;
 };

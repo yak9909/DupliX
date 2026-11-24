@@ -8,7 +8,9 @@
 #include <cstring>
 #include <mutex>
 
+#include "core/fast_plane.h"
 #include "core/scatter.h"
+#include "core/world.h"
 #include "effect/randamu.h"
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
@@ -156,6 +158,11 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     one(RP_OPACITY_MAX, &r.p.opacityMax);
     one(RP_KEEP_FIRST, &keep);
     one(RP_FAST, &fast);
+    for (int k = 0; k < 3; k++) {  // AEGP gives angles in degrees, percent sliders in percent
+        one(RP_WORLD_POS_X + k, &r.world.pos[k]);
+        one(RP_WORLD_ROT_X + k, &r.world.rotDeg[k]);
+        one(RP_WORLD_SCALE_X + k, &r.world.scale[k]);
+    }
     if (!ReadLayerAnchor(L, t, &r.anchorX, &r.anchorY)) ok = false;
     if (!ok) return false;
     r.p.count = count < 0 ? 0 : (int)(count + 0.5);
@@ -419,6 +426,8 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     if (!bee::VecReserve(vR, bee::kRectBytes, n) || !bee::VecReserve(v3, bee::kM3Bytes, n) ||
         !bee::VecReserve(v4, bee::kM4Bytes, n))
         return b;
+    double G[16];  // World Transform: copies * G * layer-to-world
+    WorldM4(s.world, s.anchorX, s.anchorY, G);
     for (size_t i = 0; i < n; i++) {
         std::memcpy(vR->last, rect, bee::kRectBytes);
         vR->last += bee::kRectBytes;
@@ -426,7 +435,9 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         v3->last += bee::kM3Bytes;
         CopyXform x;
         ComputeCopy(s.p, (int)i, s.anchorX, s.anchorY, &x);
-        std::memcpy(v4->last, x.m4, bee::kM4Bytes);
+        double m[16];
+        Mul4(x.m4, G, m);
+        std::memcpy(v4->last, m, bee::kM4Bytes);
         v4->last += bee::kM4Bytes;
     }
     static std::atomic<int> logged{0};

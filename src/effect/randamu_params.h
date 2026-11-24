@@ -18,7 +18,18 @@ enum RandamuParam {
     RP_OPACITY_MIN,
     RP_OPACITY_MAX,
     RP_KEEP_FIRST,
-    RP_FAST,          // fast mode (spec 12.11)
+    RP_FAST,          // fast mode (spec 12.13: an ordinary plugin on a 2D layer)
+    RP_WORLD_TOPIC,   // group "World Transform" (both modes): copies * G(world) * layer-to-world
+    RP_WORLD_POS_X,
+    RP_WORLD_POS_Y,
+    RP_WORLD_POS_Z,
+    RP_WORLD_ROT_X,   // angle
+    RP_WORLD_ROT_Y,
+    RP_WORLD_ROT_Z,
+    RP_WORLD_SCALE_X, // percent
+    RP_WORLD_SCALE_Y,
+    RP_WORLD_SCALE_Z,
+    RP_WORLD_TOPIC_END,
     RP_NUM_PARAMS
 };
 
@@ -39,6 +50,17 @@ enum RandamuDiskId {
     RD_OPACITY_MAX,
     RD_KEEP_FIRST,
     RD_FAST,
+    RD_WORLD_TOPIC,
+    RD_WORLD_POS_X,
+    RD_WORLD_POS_Y,
+    RD_WORLD_POS_Z,
+    RD_WORLD_ROT_X,
+    RD_WORLD_ROT_Y,
+    RD_WORLD_ROT_Z,
+    RD_WORLD_SCALE_X,
+    RD_WORLD_SCALE_Y,
+    RD_WORLD_SCALE_Z,
+    RD_WORLD_TOPIC_END,
 };
 
 #define RANDAMU_MATCH_NAME "RANDAMU Scatter"

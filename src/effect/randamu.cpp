@@ -131,6 +131,16 @@ struct SeqData {
 // the padding after keepFirst; old projects may hold any byte there, so the SeqData path ignores it.
 static_assert(sizeof(rnd::ScatterParams) == 96, "ScatterParams layout is saved in projects");
 static_assert(sizeof(SeqData) == 112, "SeqData layout is saved in projects");
+// Since the World Transform (11/25): SeqData followed by the world values. Projects saved before hold the
+// 112-byte handle only: read the world part only when the handle is this large, grow it when writing.
+struct SeqDataV2 {
+    SeqData base;
+    rnd::WorldXform world;
+    int hasWorld;
+    int reserved;
+};
+static_assert(sizeof(rnd::WorldXform) == 72, "WorldXform layout is saved in projects");
+static_assert(sizeof(SeqDataV2) == 192, "SeqDataV2 layout is saved in projects");
 
 enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, FastLights };
 
@@ -160,6 +170,17 @@ rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
     p.keepFirst = params[RP_KEEP_FIRST]->u.bd.value != 0;
     p.fast = params[RP_FAST]->u.bd.value != 0;
     return p;
+}
+
+rnd::WorldXform WorldFromArray(PF_ParamDef* params[])
+{
+    rnd::WorldXform w;
+    for (int k = 0; k < 3; k++) {
+        w.pos[k] = params[RP_WORLD_POS_X + k]->u.fs_d.value;
+        w.rotDeg[k] = FIX_2_FLOAT(params[RP_WORLD_ROT_X + k]->u.ad.value);
+        w.scale[k] = params[RP_WORLD_SCALE_X + k]->u.fs_d.value;
+    }
+    return w;
 }
 
 // AEGP index of `eff` on layer L (matched by installed effect key; the first match), or -1.
@@ -256,10 +277,13 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
         snap.p = DefaultParams();
         if (src == ParamSource::Array && params) {
             snap.p = ParamsFromArray(params);
+            snap.world = WorldFromArray(params);
         } else if (in_data->sequence_data) {
-            auto* sd = (SeqData*)PF_LOCK_HANDLE(in_data->sequence_data);
-            if (sd->hasParams) snap.p = sd->p;
+            const bool v2 = PF_GET_HANDLE_SIZE(in_data->sequence_data) >= sizeof(SeqDataV2);
+            auto* sd = (SeqDataV2*)PF_LOCK_HANDLE(in_data->sequence_data);
+            if (sd->base.hasParams) snap.p = sd->base.p;
             snap.p.fast = false;  // may be an old project's padding byte; render threads read the real value
+            if (v2 && sd->hasWorld) snap.world = sd->world;
             PF_UNLOCK_HANDLE(in_data->sequence_data);
         }
         read = rnd::ReadLayerAnchor(L, t, &snap.anchorX, &snap.anchorY);
@@ -280,22 +304,31 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     if (writeSeq) {
         if (!out_data->sequence_data && in_data->sequence_data) out_data->sequence_data = in_data->sequence_data;
         if (!out_data->sequence_data) {
-            out_data->sequence_data = PF_NEW_HANDLE(sizeof(SeqData));
+            out_data->sequence_data = PF_NEW_HANDLE(sizeof(SeqDataV2));
             if (out_data->sequence_data) {
-                auto* z = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
-                std::memset(z, 0, sizeof(SeqData));
+                auto* z = (SeqDataV2*)PF_LOCK_HANDLE(out_data->sequence_data);
+                std::memset(z, 0, sizeof(SeqDataV2));
+                PF_UNLOCK_HANDLE(out_data->sequence_data);
+            }
+        } else {
+            const size_t old = PF_GET_HANDLE_SIZE(out_data->sequence_data);
+            if (old < sizeof(SeqDataV2) && !PF_RESIZE_HANDLE(sizeof(SeqDataV2), &out_data->sequence_data)) {
+                auto* z = (char*)PF_LOCK_HANDLE(out_data->sequence_data);
+                std::memset(z + old, 0, sizeof(SeqDataV2) - old);  // hasWorld = 0 until written below
                 PF_UNLOCK_HANDLE(out_data->sequence_data);
             }
         }
-        if (out_data->sequence_data) {
+        if (out_data->sequence_data && PF_GET_HANDLE_SIZE(out_data->sequence_data) >= sizeof(SeqDataV2)) {
             // A duplicated effect starts with the original's sequence data: just take the new key.
             // (Do not unregister the old key here: it belongs to the original instance.)
-            auto* sd = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
-            sd->compItemId = key.compItemId;
-            sd->layerId = key.layerId;
+            auto* sd = (SeqDataV2*)PF_LOCK_HANDLE(out_data->sequence_data);
+            sd->base.compItemId = key.compItemId;
+            sd->base.layerId = key.layerId;
             if (src != ParamSource::SeqData) {
-                sd->p = snap.p;
-                sd->hasParams = true;
+                sd->base.p = snap.p;
+                sd->base.hasParams = true;
+                sd->world = snap.world;
+                sd->hasWorld = 1;
             }
             PF_UNLOCK_HANDLE(out_data->sequence_data);
         }
@@ -401,7 +434,26 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     PF_ADD_FLOAT_SLIDERX(UiName("不透明度の最大", "Opacity Max"), 0, 100, 0, 100, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_OPACITY_MAX);
 
     PF_ADD_CHECKBOXX(UiName("1 枚目は元の位置", "Keep First at Original"), FALSE, 0, RD_KEEP_FIRST);
-    PF_ADD_CHECKBOXX(UiName("高速モード", "Fast Mode"), FALSE, 0, RD_FAST);
+    // USER_CHANGED_PARAM on toggling (the transfer); a keyframed toggle would make no sense with it
+    PF_ADD_CHECKBOXX(UiName("高速モード", "Fast Mode"), FALSE, PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY,
+                     RD_FAST);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC(UiName("ワールド変形", "World Transform"), RD_WORLD_TOPIC);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置 X", "Position X"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_X);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置 Y", "Position Y"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Y);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置 Z", "Position Z"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Z);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE(UiName("回転 X", "Rotation X"), 0, RD_WORLD_ROT_X);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE(UiName("回転 Y", "Rotation Y"), 0, RD_WORLD_ROT_Y);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE(UiName("回転 Z", "Rotation Z"), 0, RD_WORLD_ROT_Z);
+    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 X", "Scale X"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_X);
+    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 Y", "Scale Y"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_Y);
+    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 Z", "Scale Z"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_Z);
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(RD_WORLD_TOPIC_END);
 
     out_data->num_params = RP_NUM_PARAMS;
     return PF_Err_NONE;
