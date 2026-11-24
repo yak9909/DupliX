@@ -25,6 +25,20 @@
             for (var j = 1; j <= it.numLayers; j++) if (fxOf(it.layer(j))) main = it;
         }
         if (!main) throw new Error("no comp with the effect");
+        for (var li = 1; li <= main.numLayers; li++) {
+            var Ly = main.layer(li), srcInfo = "-";
+            try {
+                if (Ly.source) srcInfo = (Ly.source instanceof CompItem ? "comp(" + Ly.source.numLayers + " layers)" : "footage") +
+                    " " + Ly.source.width + "x" + Ly.source.height;
+            } catch (es) {}
+            var fxl = fxOf(Ly), fxv = "";
+            if (fxl) for (var pk = 2; pk <= fxl.numProperties; pk++) { try { fxv += " " + fxl.property(pk).value; } catch (e9) {} }
+            log("layer " + li + " 3d=" + Ly.threeDLayer + " collapse=" + Ly.collapseTransformation + " src=" + srcInfo +
+                (fxl ? " fx:" + fxv : ""));
+            if (Ly.source instanceof CompItem)
+                for (var sj = 1; sj <= Ly.source.numLayers; sj++)
+                    log("   inner " + sj + " 3d=" + Ly.source.layer(sj).threeDLayer + " enabled=" + Ly.source.layer(sj).enabled);
+        }
         function make(name, fast) {
             var c = main.duplicate();
             c.name = name;
@@ -35,8 +49,14 @@
             }
             if (!cam || !cam.parent) throw new Error("camera without an orbit null");
             var ry = tg(cam.parent).property("ADBE Rotate Y");
-            ry.setValueAtTime(0, 0);
-            ry.setValueAtTime(FRAMES * c.frameDuration, 360);
+            var fixedDeg = $.getenv("RANDAMU_ORBIT_DEG");  // a fixed angle (one frame) instead of the sweep
+            if (fixedDeg) {
+                while (ry.numKeys > 0) ry.removeKey(1);
+                ry.setValue(parseFloat(fixedDeg));
+            } else {
+                ry.setValueAtTime(0, 0);
+                ry.setValueAtTime(FRAMES * c.frameDuration, 360);
+            }
             fxOf(T).property(15).setValue(fast ? 1 : 0);
             log(name + ": camera '" + cam.name + "' parent '" + cam.parent.name + "' count=" + fxOf(T).property(2).value);
             var rq = P.renderQueue.items.add(c);
@@ -49,12 +69,35 @@
             // renders go to RANDAMU_RENDER_DIR (2 x 120 full-HD TIFFs ~ 2 GB: kept off the nearly full A: drive)
             om.file = new File(($.getenv("RANDAMU_RENDER_DIR") || outDir) + "/r_" + name + "_[#####].tif");
             rq.timeSpanStart = 0;
-            rq.timeSpanDuration = FRAMES * c.frameDuration;
+            rq.timeSpanDuration = ($.getenv("RANDAMU_ORBIT_DEG") ? 1 : FRAMES) * c.frameDuration;
         }
         // keep only our two items in the queue
         while (P.renderQueue.numItems > 0) P.renderQueue.item(1).remove();
         make("orb_fm", true);
         make("orb_nm", false);
+        if ($.getenv("RANDAMU_ORBIT_PNG") === "1") {
+            // the viewer's path (saveFrameToPng), toggling fast mode on ONE comp like the user does
+            var fm = null;
+            for (var q = 1; q <= P.numItems; q++) if (P.item(q).name === "orb_fm") fm = P.item(q);
+            var T2 = null;
+            for (var r = 1; r <= fm.numLayers; r++) if (fxOf(fm.layer(r))) T2 = fm.layer(r);
+            var fast = fxOf(T2).property(15);
+            function png(name) {
+                var f = new File(outDir + "/" + name + ".png");
+                fm.saveFrameToPng(0, f);
+                for (var k2 = 0; k2 < 100 && !f.exists; k2++) $.sleep(100);
+                log("png " + name + " exists=" + f.exists);
+            }
+            var res = [[1, 1], [2, 2]];
+            for (var s = 0; s < res.length; s++) {
+                fm.resolutionFactor = res[s];
+                var tag = "r" + res[s][0];
+                fast.setValue(1); png("ui_" + tag + "_fast1");
+                fast.setValue(0); png("ui_" + tag + "_normal");
+                fast.setValue(1); png("ui_" + tag + "_fast2");
+            }
+            fm.resolutionFactor = [1, 1];
+        }
         P.save(new File(outDir + "/orbit.aep"));
         log("done");
     } catch (ex) {

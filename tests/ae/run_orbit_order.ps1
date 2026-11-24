@@ -1,7 +1,9 @@
 # Reproduces the orbit-null drawing-order report on a COPY of the user's project: renders orb_fm (fast) and
 # orb_nm (normal) over 120 frames and prints fast-vs-normal per frame (check_orbit_order.py).
 #   pwsh tests/ae/run_orbit_order.ps1 [-Aep "tests/ae/user/DupliX Test.aep"] [-SkipScene] [-Mfr OFF]
-param([string]$Aep = "tests/ae/user/DupliX Test.aep", [switch]$SkipScene, [string]$Mfr = "OFF")
+param([string]$Aep = "tests/ae/user/DupliX Test.aep", [switch]$SkipScene, [string]$Mfr = "OFF",
+      [string]$Deg = "")  # a fixed orbit angle (one frame), e.g. -Deg 26
+$env:RANDAMU_ORBIT_DEG = $Deg
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\orbit"
