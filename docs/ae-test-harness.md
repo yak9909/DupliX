@@ -129,6 +129,41 @@ if (-not (Stop-AeHidden -Process $p)) { $null = Repair-AeCrashState }   # false 
 - 回転・拡大したレイヤーでは、AE の再サンプリングで縁が 1px ほどにじむ。判定に ±1px の幅を持たせる。
 - aerender の終了コードだけに頼らない。ログの完了行と出力ファイルを見る。
 
+### 4.7 速さの測り方（2026-11-24 に分かったこと）
+
+| 誤り・症状 | 原因 | 正しい測り方 |
+|---|---|---|
+| aerender の「合計時間 ÷ フレーム数」が、利用者がタイムラインの「レンダリング時間」で見る値の 10 分の 1 程度になった | aerender は既定でマルチフレームレンダリング（MFR）をし、複数のフレームを同時に描く。割り算は 1 フレームの時間にならない | **`-mfr OFF`** で描き、aerender のログの「合計経過時間」（起動を除く）÷ フレーム数を使う（`tests/ae/run_user.ps1 -Mfr OFF`）。ビューアー経路の計測（下）と一致することを確かめた（142 ms と 141 ms） |
+| aerender の起動の時間が計測の大半になる | AE の起動に 60〜190 秒かかり、ばらつく | 壁時計ではなく、ログの「合計経過時間」を読む。ログは CP932（日本語）。読み取りは `FileShare.ReadWrite` で開く（aerender の子プロセスがまだ掴んでいることがある） |
+| aerender が「No render settings template was found」で 1 フレームも描かない | `-RStemplate "Best Settings"` は英語名。日本語版では名前が違う | テンプレートを指定しない（既定の設定） |
+| `saveFrameToPng` で時間を測ると、本物のレイヤー 10 枚が 0.4 ms などの不自然な値になる | `saveFrameToPng` は書き出しの完了を待たずに戻る | 壁時計で測らない。プラグインの中で測る（下） |
+| 時間を 1 フレームずつ進めても、2 フレーム目以降が描かれない | 動きのないシーンでは、AE は同じ内容のフレームを見分けて最初の結果を使い回す | 比較用のコンプのカメラに `value + [time * 40, 0, 0]` のエクスプレッションを付けて、フレームごとに内容を変える。素材のキャッシュは残るので、実際の使い方に近い。`app.purge(ALL_CACHES)` は素材の作り直しまで含んで大きく出るので使わない |
+| 条件を変えたのに描かれない（例: サンプリングをバイリニアに） | その条件で絵が変わらないと、ほかのコンプの結果が使い回される | 「描かれなかった」こと自体を結果として読む。必要なら別の試験（`tests/ae/sampling.jsx`）で確かめる |
+
+**プラグインの中での計測**（`RANDAMU_TIMING=1` と `RANDAMU_LOG`、`src/hook/timing.*`）: コンプと時刻ごとに、そのフレームでの DupliX の処理の最初から最後のコピーの描画（不透明度のフック）までの時間と、プラグインの処理の時間をログに 1 行ずつ出す（`timing: comp ... span=... in-plugin=...`）。コピーの描画が 0 回の行は、AE がコンプの全フレームについて前処理だけを呼んだもの（コンプを開いたときに約 1600 回）なので、集計から外す。
+
+**起動したままの AE にスクリプトを送る**（`tests/ae/run_preview.ps1`）:
+- AE を見えないデスクトップで普通に起動しておき（aep を引数に渡す）、あとから 2 つ目の `AfterFX.exe -r <jsx>` を、これも見えないデスクトップで起動すると、スクリプトは起動中の AE で実行され、AE は終わらない（`-r` で起動した AE は、スクリプトの終了とともに閉じる）。
+- **起動が終わる前に送ると、2 つの起動が干渉して AE が起動画面（「MediaCore を初期化しています」）のまま止まる**。メインウィンドウ（クラス `AE_CApplication_25.6`、タイトルあり）が見えるまで待ってから送る。
+- 送ったスクリプトの中で `app.scheduleTask` を使えば、AE が操作待ちの間に処理を続けられる（ビューアーの描画と同じ経路で 1 フレームずつ進める）。
+- 試行で残った AE を片付けるときは、`Get-CimInstance Win32_Process` で起動の時刻と引数を見て、自分が起動したものだけを止める。
+
+### 4.8 利用者のファイルを壊さない
+
+- **AE は、試験の後片付けで閉じるとき、変更のあるプロジェクトを確認なしで保存する**（ダイアログを抑止しているため）。2026-11-24 に、利用者の aep を直接開いて変更したため上書きしてしまい、変更を逆にたどって復元した（`tests/ae/restore_user.jsx`）。
+- 利用者のファイルは必ず `build/` の下にコピーしてから開く（`run_user.ps1`・`run_preview.ps1` はそうしている）。保存は別名（`app.project.save(new File(...))`）。最初に取ったコピーは、作業が終わるまで消さない。
+- 利用者のファイルは `tests/ae/user/`（Git の管理外。素材のパスなど私的な情報を含む）。
+
+### 4.9 プラグインの試験で踏んだ AE の内部確認
+
+| 症状 | 原因 | 対処 |
+|---|---|---|
+| 前処理は呼ばれるのに描画が始まらず、PNG も TIFF もできない。aerender のログに「内部確認に失敗しました。{I_MIX_GUID_DEPENDENCIES effect missing call to GuidMixInPtr during SMART_PRE_RENDER}」 | `PF_OutFlag2_I_MIX_GUID_DEPENDENCIES` を宣言したエフェクトが、前処理の別の分岐で `GuidMixInPtr` を呼ばなかった | 前処理のすべての分岐で `GuidMixInPtr` を呼ぶ |
+| 同じく描画が始まらない。「結果の長方形は、PF_Cmd_SMART_PRE_RENDER の要求の長方形を越えることはできません」 | 前処理で `result_rect` を要求より大きくした | `result_rect` は要求との共通部分、全体の大きさは `max_result_rect` に入れる。AE は `max_result_rect` を見て、次から必要な範囲を要求してくる |
+| UI の `saveFrameToPng` では何も起きず、ログにも出ない | 上の内部確認の失敗は UI では表に出ない | aerender で同じシーンを描いて、ログの WARNING 行を見る |
+| GPU の経路が一度も使われない（`PF_Cmd_SMART_RENDER_GPU` が来ない） | `out_flags2` に GPU のビットを立てても、PiPL の `AE_Effect_Global_OutFlags_2` に入っていなかった | PiPL にも `SUPPORTS_GPU_RENDER_F32`（1<<25）と `SUPPORTS_DIRECTX_RENDERING`（1<<29）を入れる |
+| パラメータの表示が 255 倍になる（位置の範囲 200 が 51000 と表示） | `PF_ValueDisplayFlag_PIXEL` は色の値（0〜1 を 0〜255 で見せる）用 | 位置などには `PF_ValueDisplayFlag_NONE` |
+
 ## 5. ほかのプロジェクトで使うときの手順
 
 1. `ae_bg.ps1` と `ae_guard.ps1` をコピーする。`AeBg.DesktopName`（`randamu_bg`）はプロジェクトごとに変えてもよい。
