@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/fast_plane.h"
 #include "core/scatter.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
@@ -222,6 +223,181 @@ TEST(drawcopy_matches_compute)
     rnd::CopyParams c0 = rnd::DrawCopy(p, 0);
     CHECK(c0.t[0] == 0 && c0.t[1] == 0 && c0.t[2] == 0 && c0.r[0] == 0 && c0.r[1] == 0 && c0.r[2] == 0);
     CHECK(c0.s == 100 && c0.o == 100);
+}
+
+// ---- fast mode: plane and per-copy projections
+static void LookAtCamera(double px, double py, double pz, double tx, double ty, double tz, double camToWorld[16])
+{
+    double f[3] = {tx - px, ty - py, tz - pz};
+    double fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    for (double& v : f) v /= fl;
+    const double d0[3] = {0, 1, 0};  // AE: y down, camera looks along +z
+    double r[3] = {d0[1] * f[2] - d0[2] * f[1], d0[2] * f[0] - d0[0] * f[2], d0[0] * f[1] - d0[1] * f[0]};
+    double rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    for (double& v : r) v /= rl;
+    double d[3] = {f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]};
+    const double m[16] = {r[0], r[1], r[2], 0, d[0], d[1], d[2], 0, f[0], f[1], f[2], 0, px, py, pz, 1};
+    std::memcpy(camToWorld, m, sizeof(m));
+}
+static rnd::CameraView CamMoved()
+{
+    rnd::CameraView c;
+    LookAtCamera(700, 300, -1500, 1100, 600, 200, c.camToWorld);
+    c.dist = 2666.6667;
+    c.compW = 1920;
+    c.compH = 1080;
+    return c;
+}
+static rnd::CameraView CamDefault()
+{
+    rnd::CameraView c;
+    LookAtCamera(960, 540, -2666.6667, 960, 540, 0, c.camToWorld);
+    c.dist = 2666.6667;
+    c.compW = 1920;
+    c.compH = 1080;
+    return c;
+}
+// A 577x680 layer, anchor at its centre, rotated, scaled 80%, at (1000, 500, 300).
+static void LayerXform(double W[16])
+{
+    rnd::detail::MakeM4(1000 - 288.5, 500 - 340, 300, 20, -35, 15, 0.8, 288.5, 340, W);
+}
+// layer px (x, y, z) -> camera space
+static void ToCam(const rnd::CameraView& cam, const double chain[16], double x, double y, double z, double c[3])
+{
+    double w[3], Cinv[16];
+    Apply(chain, x, y, z, w);
+    rnd::Invert4(cam.camToWorld, Cinv);
+    Apply(Cinv, w[0], w[1], w[2], c);
+}
+static void ProjectCam(const rnd::CameraView& cam, const double c[3], double* sx, double* sy)
+{
+    *sx = c[0] * cam.dist / c[2] + cam.compW / 2;
+    *sy = c[1] * cam.dist / c[2] + cam.compH / 2;
+}
+static void ApplyH(const double h[9], double x, double y, double* u, double* v)
+{
+    double a = x * h[0] + y * h[3] + h[6], b = x * h[1] + y * h[4] + h[7], w = x * h[2] + y * h[5] + h[8];
+    *u = a / w;
+    *v = b / w;
+}
+
+TEST(invert4_roundtrip)
+{
+    double W[16], Wi[16], I[16];
+    LayerXform(W);
+    CHECK(rnd::Invert4(W, Wi));
+    rnd::Mul4(W, Wi, I);
+    for (int k = 0; k < 16; k++) CHECK_NEAR(I[k], (k % 5 == 0) ? 1.0 : 0.0, 1e-9);
+}
+
+TEST(fast_plane_maps_pixels_1to1)
+{
+    rnd::CameraView cams[2] = {CamMoved(), CamDefault()};
+    double W[16];
+    LayerXform(W);
+    for (const auto& cam : cams) {
+        double M[16], MW[16];
+        CHECK(rnd::PlaneM4(cam, W, 1800.0, M));
+        rnd::Mul4(M, W, MW);
+        const double pts[4][2] = {{0, 0}, {1919, 0}, {123.5, 777.25}, {1919, 1079}};
+        for (const auto& p : pts) {
+            double c[3], sx, sy;
+            ToCam(cam, MW, p[0], p[1], 0, c);
+            ProjectCam(cam, c, &sx, &sy);
+            CHECK_NEAR(sx, p[0], 1e-6);
+            CHECK_NEAR(sy, p[1], 1e-6);
+        }
+    }
+}
+
+TEST(fast_plane_depth_is_anchor)
+{
+    rnd::CameraView cams[2] = {CamMoved(), CamDefault()};
+    double W[16];
+    LayerXform(W);
+    for (const auto& cam : cams) {
+        double d = rnd::AnchorDepth(cam, W, 288.5, 340);
+        double a[3];
+        ToCam(cam, W, 288.5, 340, 0, a);
+        CHECK_NEAR(d, a[2], 1e-9);
+        double M[16], MW[16];
+        CHECK(rnd::PlaneM4(cam, W, d, M));
+        rnd::Mul4(M, W, MW);
+        const double pts[3][2] = {{0, 0}, {960, 540}, {1500, 100}};
+        for (const auto& p : pts) {
+            double c[3];
+            ToCam(cam, MW, p[0], p[1], 0, c);
+            CHECK_NEAR(c[2], d, 1e-6);
+        }
+    }
+}
+
+static const double kSrcRect[4] = {0, 0, 577, 680};  // left, top, right, bottom (layer px)
+
+TEST(copy_homography_plane_is_identity)
+{
+    // A copy placed exactly on the screen plane maps screen px to the same layer px.
+    rnd::CameraView cam = CamMoved();
+    double W[16], M[16], H[9];
+    LayerXform(W);
+    CHECK(rnd::PlaneM4(cam, W, 1800.0, M));
+    const double big[4] = {0, 0, 1920, 1080};
+    CHECK(rnd::CopyHomography(cam, W, M, big, H));
+    const double pts[3][2] = {{0, 0}, {800.5, 300.25}, {1919, 1079}};
+    for (const auto& p : pts) {
+        double u, v;
+        ApplyH(H, p[0], p[1], &u, &v);
+        CHECK_NEAR(u, p[0], 1e-6);
+        CHECK_NEAR(v, p[1], 1e-6);
+    }
+}
+
+TEST(copy_homography_inverts_projection)
+{
+    rnd::CameraView cams[2] = {CamMoved(), CamDefault()};
+    double W[16], C[16], CW[16];
+    LayerXform(W);
+    rnd::detail::MakeM4(40, -70, 250, 10, 30, -50, 1.3, 288.5, 340, C);
+    rnd::Mul4(C, W, CW);
+    for (const auto& cam : cams) {
+        double H[9];
+        CHECK(rnd::CopyHomography(cam, W, C, kSrcRect, H));
+        const double pts[4][2] = {{0, 0}, {576, 0}, {100.5, 600.25}, {576, 679}};
+        for (const auto& p : pts) {
+            double c[3], sx, sy, u, v;
+            ToCam(cam, CW, p[0], p[1], 0, c);
+            ProjectCam(cam, c, &sx, &sy);
+            ApplyH(H, sx, sy, &u, &v);
+            CHECK_NEAR(u, p[0], 1e-6);
+            CHECK_NEAR(v, p[1], 1e-6);
+        }
+    }
+}
+
+TEST(copy_homography_behind_camera)
+{
+    // Default camera at z = -2666.67, a 577x680 layer facing it, turned 80 deg about Y around its anchor:
+    // its left/right edges are about +-284 px apart in depth.
+    rnd::CameraView cam = CamDefault();
+    double W[16], H[9];
+    rnd::detail::MakeM4(960 - 288.5, 540 - 340, 0, 0, 0, 0, 1, 288.5, 340, W);
+    double near[16], far[16];
+    rnd::detail::MakeM4(0, 0, -2666.6667 + 200, 0, 80, 0, 1, 288.5, 340, near);  // anchor 200 px ahead
+    rnd::detail::MakeM4(0, 0, -2666.6667 + 400, 0, 80, 0, 1, 288.5, 340, far);   // anchor 400 px ahead
+    CHECK(!rnd::CopyHomography(cam, W, near, kSrcRect, H));
+    CHECK(rnd::CopyHomography(cam, W, far, kSrcRect, H));
+}
+
+TEST(copy_depth_is_center_z)
+{
+    rnd::CameraView cam = CamMoved();
+    double W[16], C[16], CW[16], c[3];
+    LayerXform(W);
+    rnd::detail::MakeM4(40, -70, 250, 10, 30, -50, 1.3, 288.5, 340, C);
+    rnd::Mul4(C, W, CW);
+    ToCam(cam, CW, 288.5, 340, 0, c);
+    CHECK_NEAR(rnd::CopyDepth(cam, W, C, 288.5, 340), c[2], 1e-9);
 }
 
 // ---- hook tests
