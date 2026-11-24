@@ -183,6 +183,16 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
 {
     LayerKey k;
     if (!KeyOf(layer, &k) || !RegLookup(k, out) || !out->valid) return false;
+    // Thread statistics for the UI test (tests/ae/run_ui.ps1): main-thread queries use the snapshot.
+    {
+        static std::atomic<int> qMain{0}, qRender{0};
+        bool onMain = GetCurrentThreadId() == g_mainThread;
+        int m = onMain ? ++qMain : qMain.load();
+        int r = onMain ? qRender.load() : ++qRender;
+        int c = onMain ? m : r;
+        if ((c & (c - 1)) == 0 || c % 500 == 0)
+            RLog("stats: ParamsFor main=%d (snapshot) render=%d (aegp)", m, r);
+    }
     if (tm && GetCurrentThreadId() != g_mainThread) {
         const int* ti = (const int*)tm;
         A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};

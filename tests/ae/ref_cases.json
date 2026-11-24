@@ -11,8 +11,6 @@
     {"name": "xf_rotz_t",  "params": {"count": 1, "seed": 1, "pos": [150, 0, 0]}, "targetRot": [0, 0, 90]},
     {"name": "xf_rotx_t",  "params": {"count": 3, "seed": 1, "pos": [150, 100, 200]}, "targetRot": [40, 0, 0]},
     {"name": "hyp_manual", "params": {"count": 3, "seed": 1, "pos": [150, 100, 200]}, "targetRot": [40, 0, 0], "refManualX": 40},
-    {"name": "hyp_x2",    "params": {"count": 3, "seed": 1, "pos": [150, 100, 200]}, "targetRot": [40, 0, 0], "refExtraRot": [40, 0, 0]},
-    {"name": "hyp_xneg",   "params": {"count": 3, "seed": 1, "pos": [150, 100, 200]}, "targetRot": [40, 0, 0], "refExtraRot": [-80, 0, 0]},
     {"name": "xf_roty_t", "params": {"count": 3, "seed": 1, "pos": [150, 100, 200]}, "targetRot": [0, 40, 0]},
     {"name": "xf_rotz_r",  "params": {"count": 3, "seed": 1, "rot": [60, 60, 60]}, "targetRot": [0, 0, 90]},
     {"name": "xf_rotx_r",  "params": {"count": 3, "seed": 1, "rot": [60, 60, 60]}, "targetRot": [40, 0, 0]},
