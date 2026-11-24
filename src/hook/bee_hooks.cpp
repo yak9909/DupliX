@@ -30,6 +30,7 @@ typedef unsigned long long (*VirtGetU64Fn)(const void*);
 typedef int (*ParadeNumSeqsFn)(void*, int*);
 typedef void* (*ParadeGetEffectFn)(void*, unsigned);
 typedef bool (*EffectIsActiveFn)(const void*);
+typedef bool (*CompBoolFn)(const void*);
 
 std::atomic<HookStatus> g_status{HookStatus::NotInstalled};
 DWORD g_mainThread = 0;
@@ -48,6 +49,7 @@ int g_slotSwitches = -1;         // vtable slot of the switch getter (from SubLa
 ParadeNumSeqsFn g_paradeNum = nullptr;
 ParadeGetEffectFn g_paradeGet = nullptr;
 EffectIsActiveFn g_effectActive = nullptr;
+CompBoolFn g_compIsCalder = nullptr, g_compIsErnst = nullptr, g_compIsEscher = nullptr, g_compIsPicasso = nullptr;
 std::atomic<int> g_effectKey{-1};  // this effect's installed key (-1 = not known yet)
 uintptr_t g_betaFn = 0;
 
@@ -193,6 +195,37 @@ bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
     return ok;
 }
 
+// ---- profiling (RANDAMU_LOG only): calls and total time per hook, logged every 2^k calls
+enum ProfId { PF_SEP, PF_CNT, PF_RECTS, PF_ISTYPE, PF_OPAC, PF_AEGP, PF_N };
+const char* const kProfNames[PF_N] = {"Separately", "Count", "Rects", "IsLayerType", "Opacity", "AEGP read"};
+std::atomic<long long> g_profTicks[PF_N], g_profCalls[PF_N];
+long long QpcNow()
+{
+    LARGE_INTEGER v;
+    QueryPerformanceCounter(&v);
+    return v.QuadPart;
+}
+struct Prof {
+    ProfId id;
+    long long t0;
+    explicit Prof(ProfId i) : id(i), t0(QpcNow()) {}
+    ~Prof()
+    {
+        g_profTicks[id] += QpcNow() - t0;
+        long long c = ++g_profCalls[id];
+        if ((c & (c - 1)) == 0 && c >= 64) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            char buf[512];
+            int n = 0;
+            for (int k = 0; k < PF_N; k++)
+                n += snprintf(buf + n, sizeof(buf) - n, " %s=%lld/%.1fms", kProfNames[k], g_profCalls[k].load(),
+                              g_profTicks[k].load() * 1000.0 / f.QuadPart);
+            RLog("prof:%s", buf);
+        }
+    }
+};
+
 // The parameters for `layer` at time t (t may be null). Snapshot from the effect's own commands; on
 // render threads the AEGP values at t replace it.
 bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
@@ -216,7 +249,11 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
         static std::atomic<int> dbg{0};
         int d = ++dbg;
         if (d <= 40) RLog("dbg: ParamsFor AEGP enter comp %d layer %d", k.compItemId, k.layerId);
-        bool r = ReadParamsAegp(layer, t, out);
+        bool r;
+        {
+            Prof pf(PF_AEGP);
+            r = ReadParamsAegp(layer, t, out);
+        }
         if (d <= 40) RLog("dbg: ParamsFor AEGP leave ok=%d valid=%d", (int)r, (int)out->valid);
         if (!r) {
             static std::atomic<int> warned{0};
@@ -246,6 +283,7 @@ uintptr_t HookSeparately(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uin
                          uintptr_t h)
 {
     DbgScope ds("Separately", g_dbgSep);
+    Prof pf(PF_SEP);
     if (IsMine((const void*)a)) {
         static std::atomic<int> dbgN{0};
         if (++dbgN <= 200) {
@@ -266,6 +304,7 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     // Rasterize2DGraph asks with an empty cache and switches to the layer-set raster node (empty for
     // raster layers) when the answer is >= 2: give it the original answer so the whole layer is rasterised.
     DbgScope ds("Count", g_dbgCnt);
+    Prof pf(PF_CNT);
     bool emptyCache = c && *(void**)c == nullptr;
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
@@ -284,6 +323,7 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
                     uintptr_t h)
 {
     DbgScope ds("Rects", g_dbgRc);
+    Prof pf(PF_RECTS);
     ParamSnapshot s;
     if (!IsMine((const void*)a) || !ParamsFor((const void*)a, (const void*)c, &s))
         return g_origRects(a, b, c, d, e, f, g, h);
@@ -338,6 +378,7 @@ uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, ui
                           uintptr_t h)
 {
     uintptr_t ra = (uintptr_t)_ReturnAddress();
+    Prof pf(PF_ISTYPE);
     if ((int)b == 0 && IsMine((const void*)a) && IsFlattenSite(ra)) return 0;
     return g_origIsLayerType(a, b, c, d, e, f, g, h);
 }
@@ -345,6 +386,7 @@ uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, ui
 double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
 {
     DbgScope ds("ArtOpacity", g_dbgOp);
+    Prof pf(PF_OPAC);
     double op = g_origArtOpacity(ctx, trace, t, bag);
     if (!trace) return op;
     char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
@@ -436,6 +478,12 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     g_betaFn = bee ? (uintptr_t)GetProcAddress(bee, bee::kBetaExpressionEffects) : 0;
     g_m3Identity = u ? (M3IdentityFn)GetProcAddress(u, bee::kM3SetIdentity) : nullptr;
     g_hasEffectApplied = bee ? (HasEffectAppliedFn)GetProcAddress(bee, bee::kLayerHasEffectApplied) : nullptr;
+    if (bee) {
+        g_compIsCalder = (CompBoolFn)GetProcAddress(bee, bee::kCompIsCalder);
+        g_compIsErnst = (CompBoolFn)GetProcAddress(bee, bee::kCompIsErnst);
+        g_compIsEscher = (CompBoolFn)GetProcAddress(bee, bee::kCompIsEscher);
+        g_compIsPicasso = (CompBoolFn)GetProcAddress(bee, bee::kCompIsPicasso);
+    }
     HMODULE flt = GetModuleHandleA(bee::kFltModule);
     g_paradeNum = flt ? (ParadeNumSeqsFn)GetProcAddress(flt, bee::kParadeNumSeqs) : nullptr;
     g_paradeGet = flt ? (ParadeGetEffectFn)GetProcAddress(flt, bee::kParadeGetEffect) : nullptr;
@@ -453,7 +501,7 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     if (!vt || sIs < 0 || sSep < 0 || sCnt < 0 || sRc < 0 || !iat || !g_layerGetId || !g_layerGetComp ||
         !g_itemGetId || !g_betaFn || !g_m3Identity || !g_hasEffectApplied || g_slotParade < 0 ||
         g_slotSwitches < 0 || g_slotSwitches >= bee::kVtableScanSlots || !g_paradeNum || !g_paradeGet ||
-        !g_effectActive) {
+        !g_effectActive || !g_compIsCalder || !g_compIsErnst || !g_compIsEscher || !g_compIsPicasso) {
         g_status = HookStatus::MissingSymbols;
         RLog("hooks: something is missing -> not installing");
         return g_status;
@@ -523,6 +571,16 @@ bool LayerIsLive(const void* layer)
     void** vt = *(void***)layer;
     unsigned long long sw = ((VirtGetU64Fn)vt[g_slotSwitches])(layer);
     if (!(sw & bee::kSwitch3D)) return false;
+    // Classic 3D only (other renderers: the layer is drawn as is).
+    const void* comp = g_layerGetComp(layer);
+    if (!comp || g_compIsCalder(comp) || g_compIsErnst(comp)) {
+        static std::atomic<int> dbgR{0};
+        if (++dbgR <= 5)
+            RLog("hook: not Classic 3D (calder=%d ernst=%d escher=%d picasso=%d): copies off",
+                 comp ? (int)g_compIsCalder(comp) : -1, comp ? (int)g_compIsErnst(comp) : -1,
+                 comp ? (int)g_compIsEscher(comp) : -1, comp ? (int)g_compIsPicasso(comp) : -1);
+        return false;
+    }
     int key = g_effectKey.load(std::memory_order_acquire);
     if (key < 0) return true;  // not resolved yet: registry only
     void* parade = ((VirtGetPtrFn)vt[g_slotParade])(layer);
@@ -535,7 +593,9 @@ bool LayerIsLive(const void* layer)
             live = true;
     }
     static std::atomic<int> dbgN{0};
-    if (++dbgN <= 20) RLog("dbg: LayerIsLive sw=%llx numSeqs rc=%d n=%d -> %d", sw, rc, n, (int)live);
+    if (++dbgN <= 20)
+        RLog("dbg: LayerIsLive sw=%llx numSeqs rc=%d n=%d -> %d (escher=%d picasso=%d)", sw, rc, n, (int)live,
+             (int)g_compIsEscher(comp), (int)g_compIsPicasso(comp));
     return live;
 }
 

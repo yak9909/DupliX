@@ -1,0 +1,13 @@
+{
+  "comment": "Performance cases for tests/ae/run_perf.ps1 (same format as ref_cases.json).",
+  "cases": [
+    {"name": "perf200", "params": {"count": 200, "seed": 21, "pos": [300, 200, 600], "rot": [60, 60, 60], "scale": [50, 150]}},
+    {"name": "perf200s", "params": {"count": 200, "seed": 21, "pos": [300, 200, 600], "rot": [60, 60, 60], "scale": [50, 150]},
+                         "shadows": true},
+    {"name": "perf50", "params": {"count": 50, "seed": 21, "pos": [300, 200, 600], "rot": [60, 60, 60], "scale": [50, 150]}},
+    {"name": "perf100", "params": {"count": 100, "seed": 21, "pos": [300, 200, 600], "rot": [60, 60, 60], "scale": [50, 150]}},
+    {"name": "perf400", "params": {"count": 400, "seed": 21, "pos": [300, 200, 600], "rot": [60, 60, 60], "scale": [50, 150]}},
+    {"name": "perf400flat", "params": {"count": 400, "seed": 21, "pos": [300, 200, 600]}},
+    {"name": "perf0", "params": {"count": 0}}
+  ]
+}

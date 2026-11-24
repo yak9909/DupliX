@@ -48,6 +48,12 @@ constexpr ptrdiff_t kEffectTypeKey = 618;  // unsigned short: the effect's type 
 // BEE_AVLayer::SubLayersRenderSeparately starts with `call [rax+disp]` to the layer's switch getter;
 // for AV layers the 3D switch is bit 0x400 of its result.
 constexpr unsigned kSwitch3D = 0x400;
+// The comp's 3D renderer (bool (const BEE_CompItem*)). Copies are only made with Classic 3D: the
+// Advanced 3D renderer (Calder) crashed when asked for sub-layers; Cinema 4D (Ernst) is untested.
+constexpr const char* kCompIsCalder = "?ArtisanIsCalder@BEE_CompItem@@QEBA_NXZ";
+constexpr const char* kCompIsErnst = "?ArtisanIsErnst@BEE_CompItem@@QEBA_NXZ";
+constexpr const char* kCompIsEscher = "?ArtisanIsEscher@BEE_CompItem@@QEBA_NXZ";
+constexpr const char* kCompIsPicasso = "?ArtisanIsPicasso@BEE_CompItem@@QEBA_NXZ";
 constexpr const char* kBetaExpressionEffects = "?BEE_BetaFeature_AreExpressionEffectsAlwaysAllowedEnabled@@YA_NXZ";
 constexpr const char* kM3SetIdentity = "?SetIdentity@M_Matrix3@@QEAAXXZ";  // U.dll
 

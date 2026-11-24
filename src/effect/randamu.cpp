@@ -317,9 +317,9 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     AEFX_CLR_STRUCT(def);
     PF_ADD_SLIDER(UiName("乱数の種", "Random Seed"), 0, 1000000, 0, 1000, 0, RD_SEED);
 
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 X", "Position Range X"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_PIXEL, 0, RD_POS_X);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Y", "Position Range Y"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_PIXEL, 0, RD_POS_Y);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Z", "Position Range Z"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_PIXEL, 0, RD_POS_Z);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 X", "Position Range X"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_X);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Y", "Position Range Y"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_Y);
+    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Z", "Position Range Z"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_Z);
 
     PF_ADD_FLOAT_SLIDERX(UiName("回転の範囲 X", "Rotation Range X"), 0, 180, 0, 180, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_ROT_X);
     PF_ADD_FLOAT_SLIDERX(UiName("回転の範囲 Y", "Rotation Range Y"), 0, 180, 0, 180, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_ROT_Y);
@@ -339,7 +339,19 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     PF_Err err = PF_Err_NONE;
-    RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
+    {
+        static std::atomic<long long> ticks{0}, calls{0};
+        LARGE_INTEGER t0, t1, f;
+        QueryPerformanceCounter(&t0);
+        RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
+        QueryPerformanceCounter(&t1);
+        ticks += t1.QuadPart - t0.QuadPart;
+        long long c = ++calls;
+        if ((c & (c - 1)) == 0 && c >= 16) {
+            QueryPerformanceFrequency(&f);
+            RLog("prof: PreRender register %lld calls %.1fms", c, ticks.load() * 1000.0 / f.QuadPart);
+        }
+    }
     if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
 
     PF_RenderRequest req = extra->input->output_request;
