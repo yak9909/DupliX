@@ -13,6 +13,7 @@
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
+#include "hook/screen_plane.h"
 #include "hook/timing.h"
 
 namespace rnd {
@@ -346,6 +347,7 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) {
             MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
+            if (SpikeScreenEnabled()) return 1;
             return (uintptr_t)(unsigned)s.p.count;
         }
         uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
@@ -384,6 +386,25 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     auto* v3 = (bee::RawVec*)f;
     auto* v4 = (bee::RawVec*)g;
     for (int k = 0; k < 4; k++) ret[k] = rect[k];
+    if (SpikeScreenEnabled()) {
+        LayerKey sk;
+        double m[16];
+        if (KeyOf((const void*)a, &sk) && SpikeGetPlane(sk.compItemId, sk.layerId, m) &&
+            bee::VecReserve(vR, bee::kRectBytes, 1) && bee::VecReserve(v3, bee::kM3Bytes, 1) &&
+            bee::VecReserve(v4, bee::kM4Bytes, 1)) {
+            std::memcpy(vR->last, rect, bee::kRectBytes);
+            vR->last += bee::kRectBytes;
+            g_m3Identity(v3->last);
+            v3->last += bee::kM3Bytes;
+            std::memcpy(v4->last, m, bee::kM4Bytes);
+            v4->last += bee::kM4Bytes;
+            static std::atomic<int> logged{0};
+            if (++logged <= 3)
+                RLog("spike: rects rect=(%.1f,%.1f,%.1f,%.1f) m4 row3=(%.2f,%.2f,%.2f)", rect[0], rect[1], rect[2],
+                     rect[3], m[12], m[13], m[14]);
+        }
+        return b;
+    }
     size_t n = (size_t)s.p.count;
     if (!bee::VecReserve(vR, bee::kRectBytes, n) || !bee::VecReserve(v3, bee::kM3Bytes, n) ||
         !bee::VecReserve(v4, bee::kM4Bytes, n))
@@ -465,6 +486,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     int index = *(int*)(v + bee::kArtLayerToSubIndex);
     ParamSnapshot s;
     if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
+    if (SpikeScreenEnabled()) return op;
     CopyXform x;
     ComputeCopy(s.p, index, s.anchorX, s.anchorY, &x);
     MarkTiming(layer, t, TK_COPY, t0);

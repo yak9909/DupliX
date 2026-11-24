@@ -39,5 +39,6 @@ foreach ($v in $Variants -split ",") {
     $fs.Close()
     $m = [regex]::Match($t, "合計経過時間 : ([^\r\n]+)")
     $n = ([regex]::Matches($t, "\((\d+)\): ")).Count
-    Write-Host ("{0,-14} {1} frames  render {2}" -f $v, $n, $(if ($m.Success) { $m.Groups[1].Value } else { "(no total)" }))
+    Write-Host ("{0,-14} {1} frames  render {2}  (MFR {3}: with MFR OFF, render / frames = time per frame)" -f
+        $v, $n, $(if ($m.Success) { $m.Groups[1].Value } else { "(no total)" }), $Mfr)
 }

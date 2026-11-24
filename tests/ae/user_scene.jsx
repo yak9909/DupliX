@@ -68,6 +68,10 @@
             var T = null;
             for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a))) T = c.layer(a);
             fn(c, T, fxOf(T));
+            // every frame different (AE reuses identical frames): move the camera a bit
+            for (var b = 1; b <= c.numLayers; b++)
+                if (c.layer(b) instanceof CameraLayer)
+                    tg(c.layer(b)).property("ADBE Position").expression = "value + [time * 40, 0, 0]";
             log("variant " + name);
         }
         variant("v_asis", function () {});

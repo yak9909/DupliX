@@ -14,7 +14,10 @@
 #include "effect/gpu_copy.h"
 #include "hook/bee_hooks.h"
 #include "hook/registry.h"
+#include "hook/screen_plane.h"
 #include "hook/timing.h"
+
+#include <cmath>
 
 namespace {
 
@@ -346,8 +349,139 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     return PF_Err_NONE;
 }
 
+// ---- SPIKE (RANDAMU_SPIKE_SCREEN=1): screen-aligned single plane (spec 12.7)
+bool Invert4(const double a[16], double out[16])
+{
+    double m[4][8];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 8; c++) m[r][c] = c < 4 ? a[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
+    for (int c = 0; c < 4; c++) {
+        int p = c;
+        for (int r = c + 1; r < 4; r++)
+            if (std::fabs(m[r][c]) > std::fabs(m[p][c])) p = r;
+        if (std::fabs(m[p][c]) < 1e-12) return false;
+        for (int k = 0; k < 8; k++) std::swap(m[c][k], m[p][k]);
+        double d = m[c][c];
+        for (int k = 0; k < 8; k++) m[c][k] /= d;
+        for (int r = 0; r < 4; r++)
+            if (r != c) {
+                double f = m[r][c];
+                for (int k = 0; k < 8; k++) m[r][k] -= f * m[c][k];
+            }
+    }
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) out[r * 4 + c] = m[r][c + 4];
+    return true;
+}
+void Mul4(const double a[16], const double b[16], double out[16])
+{
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double s = 0;
+            for (int k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
+            out[r * 4 + c] = s;
+        }
+}
+
+// M4 (row vectors, layer px -> layer px) of a plane that maps layer px (x, y) to comp px (x, y).
+// Facts (spike S5b): camera matrix = camera->world; comp px = cam.xy * dist / cam.z + size/2.
+bool SpikeComputePlane(PF_InData* in_data, int* cw, int* ch)
+{
+    SPBasicSuite* sp = in_data->pica_basicP;
+    Suite<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    Suite<AEGP_LayerSuite9> ls(sp, kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    Suite<AEGP_CompSuite12> cs(sp, kAEGPCompSuite, kAEGPCompSuiteVersion12);
+    Suite<AEGP_ItemSuite9> is(sp, kAEGPItemSuite, kAEGPItemSuiteVersion9);
+    if (!pfi || !ls || !cs || !is) return false;
+    A_Time t = {0, 1};
+    pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &t);
+    AEGP_LayerH L = nullptr;
+    AEGP_CompH comp = nullptr;
+    AEGP_ItemH item = nullptr;
+    A_long itemId = 0;
+    AEGP_LayerIDVal layerId = 0;
+    if (pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || ls->AEGP_GetLayerParentComp(L, &comp) ||
+        cs->AEGP_GetItemFromComp(comp, &item) || is->AEGP_GetItemID(item, &itemId) || ls->AEGP_GetLayerID(L, &layerId))
+        return false;
+    A_long w = 0, h = 0;
+    is->AEGP_GetItemDimensions(item, &w, &h);
+    A_Matrix4 cam, l2w;
+    A_FpLong dist = 0;
+    A_short ipw = 0, iph = 0;
+    RLog("spike: before GetEffectCameraMatrix");
+    A_Err ec = pfi->AEGP_GetEffectCameraMatrix(in_data->effect_ref, &t, &cam, &dist, &ipw, &iph);
+    RLog("spike: after GetEffectCameraMatrix err=%d", (int)ec);
+    if (ec || dist <= 0) return false;
+    A_Err el = ls->AEGP_GetLayerToWorldXform(L, &t, &l2w);
+    RLog("spike: after GetLayerToWorldXform err=%d", (int)el);
+    if (el) return false;
+    double C[16], W[16], Winv[16], Cinv[16];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            C[r * 4 + c] = cam.mat[r][c];
+            W[r * 4 + c] = l2w.mat[r][c];
+        }
+    if (!Invert4(W, Winv) || !Invert4(C, Cinv)) return false;
+    // depth: the layer origin in camera space
+    double o[16] = {0}, oc[16];
+    o[12] = W[12], o[13] = W[13], o[14] = W[14], o[15] = 1;  // row 3 = layer origin in world
+    double ow[4] = {W[12], W[13], W[14], 1}, c4[4] = {0, 0, 0, 0};
+    for (int c = 0; c < 4; c++)
+        for (int k = 0; k < 4; k++) c4[c] += ow[k] * Cinv[k * 4 + c];
+    (void)o;
+    (void)oc;
+    double d = c4[2] > 1 ? c4[2] : dist;
+    double k = d / dist;
+    double S[16] = {k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1, 0, -k * w / 2.0, -k * h / 2.0, d, 1};
+    double SC[16], M[16];
+    Mul4(S, C, SC);
+    Mul4(SC, Winv, M);
+    rnd::SpikeSetPlane((int)itemId, (int)layerId, M);
+    *cw = (int)w;
+    *ch = (int)h;
+    static std::atomic<int> logged{0};
+    if (++logged <= 3) RLog("spike: plane comp %dx%d dist=%.2f depth=%.2f", (int)w, (int)h, dist, d);
+    return true;
+}
+
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
+    if (rnd::SpikeScreenEnabled()) {
+        RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
+        int cw = 0, ch = 0;
+        PF_Err e = PF_Err_NONE;
+        PF_RenderRequest req = extra->input->output_request;
+        PF_CheckoutResult in_result;
+        e = extra->cb->checkout_layer(in_data->effect_ref, RP_INPUT, RP_INPUT, &req, in_data->current_time,
+                                      in_data->time_step, in_data->time_scale, &in_result);
+        bool planeOk = !e && SpikeComputePlane(in_data, &cw, &ch);
+        // required by I_MIX_GUID_DEPENDENCIES (AE aborts the render otherwise); a real version must
+        // also mix the camera, the layer transform and the comp size (the output depends on them)
+        if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+        char nx[4] = {0};
+        bool noExpand = GetEnvironmentVariableA("RANDAMU_SPIKE_NOEXPAND", nx, sizeof(nx)) > 0;
+        if (planeOk && !noExpand) {
+            PF_LRect r = {0, 0, cw, ch};  // left, top, right, bottom (layer px)
+            // the result may not exceed the request; the full extent goes in max_result_rect
+            PF_LRect q = req.rect;
+            PF_LRect x = {std::max(q.left, r.left), std::max(q.top, r.top), std::min(q.right, r.right),
+                          std::min(q.bottom, r.bottom)};
+            if (x.right < x.left) x.right = x.left;
+            if (x.bottom < x.top) x.bottom = x.top;
+            extra->output->result_rect = x;
+            extra->output->max_result_rect = r;
+        } else if (!e) {
+            extra->output->result_rect = in_result.result_rect;
+            extra->output->max_result_rect = in_result.max_result_rect;
+        }
+        RLog("spike: prerender req=(%d,%d,%d,%d) in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) e=%d",
+             (int)req.rect.left, (int)req.rect.top, (int)req.rect.right, (int)req.rect.bottom,
+             (int)in_result.result_rect.left, (int)in_result.result_rect.top, (int)in_result.result_rect.right,
+             (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
+             (int)extra->output->result_rect.top, (int)extra->output->result_rect.right,
+             (int)extra->output->result_rect.bottom, (int)e);
+        return e;
+    }
     PF_Err err = PF_Err_NONE;
     long long tStart = rnd::TimingNow();
     struct MarkAtExit {
@@ -456,7 +590,23 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
     PF_EffectWorld* outW = nullptr;
     ERR(extra->cb->checkout_layer_pixels(in_data->effect_ref, RP_INPUT, &inW));
     ERR(extra->cb->checkout_output(in_data->effect_ref, &outW));
-    if (!err && inW && outW) {
+    if (!err && outW && rnd::SpikeScreenEnabled()) {
+        // SPIKE: a pattern that is a function of layer px (8 bpc only)
+        for (int y = 0; y < outW->height; y++) {
+            auto* row = (PF_Pixel8*)((char*)outW->data + (size_t)y * outW->rowbytes);
+            for (int x = 0; x < outW->width; x++) {
+                int lx = x + outW->origin_x, ly = y + outW->origin_y;
+                row[x].alpha = 255;
+                row[x].red = (A_u_char)((lx * 7) & 255);
+                row[x].green = (A_u_char)((ly * 13) & 255);
+                row[x].blue = (A_u_char)(((lx + ly) * 5) & 255);
+            }
+        }
+        static std::atomic<int> logged{0};
+        if (++logged <= 3)
+            RLog("spike: render out %dx%d origin (%d,%d)", (int)outW->width, (int)outW->height, (int)outW->origin_x,
+                 (int)outW->origin_y);
+    } else if (!err && inW && outW) {
         PF_WorldTransformSuite1* wts = nullptr;
         if (in_data->pica_basicP->AcquireSuite(kPFWorldTransformSuite, kPFWorldTransformSuiteVersion1,
                                                (const void**)&wts) == kSPNoError &&
