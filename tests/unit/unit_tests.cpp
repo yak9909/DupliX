@@ -9,6 +9,7 @@
 #include "core/fast_plane.h"
 #include "core/raster.h"
 #include "core/scatter.h"
+#include "core/world.h"
 #include "hook/fast_registry.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
@@ -228,6 +229,153 @@ TEST(drawcopy_matches_compute)
     rnd::CopyParams c0 = rnd::DrawCopy(p, 0);
     CHECK(c0.t[0] == 0 && c0.t[1] == 0 && c0.t[2] == 0 && c0.r[0] == 0 && c0.r[1] == 0 && c0.r[2] == 0);
     CHECK(c0.s == 100 && c0.o == 100);
+}
+
+// ---- world transform (plan 2026-11-25 Task 2)
+static void CheckM4Near(const double a[16], const double b[16], double eps)
+{
+    for (int i = 0; i < 16; i++) CHECK_NEAR(a[i], b[i], eps);
+}
+// A layer-to-world like AE builds it: T(-A) S Rz Ry Rx O(rz,ry,rx) T(P) [* parent]
+static void LayerXform(double ax, double ay, const double s[3], const double r[3], const double o[3], const double p[3],
+                       double out[16])
+{
+    rnd::WorldXform w;
+    for (int k = 0; k < 3; k++) w.scale[k] = s[k], w.rotDeg[k] = r[k];
+    double m[16];
+    rnd::WorldM4(w, ax, ay, m);  // T(-A) S R T(A)
+    rnd::WorldXform wo;
+    for (int k = 0; k < 3; k++) wo.rotDeg[k] = o[k];
+    double mo[16];
+    rnd::WorldM4(wo, 0, 0, mo);  // orientation about the origin
+    // m = T(-A) S R T(A); want T(-A) S R O T(P): m * T(-A) * O * T(P)
+    double tA[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -ax, -ay, 0, 1};
+    double tP[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p[0], p[1], p[2], 1};
+    double a[16], b[16];
+    Mul(m, tA, a);
+    Mul(a, mo, b);
+    Mul(b, tP, out);
+}
+
+TEST(world_default_identity)
+{
+    rnd::WorldXform w;
+    double m[16];
+    rnd::WorldM4(w, 288.5, 340, m);
+    const double I[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CheckM4Near(m, I, 1e-12);
+}
+
+TEST(world_roundtrip)
+{
+    const double rots[2][3] = {{25, -40, 70}, {10, 90, -30}};  // the second is gimbal lock
+    for (auto& r : rots) {
+        rnd::WorldXform w;
+        w.pos[0] = 12, w.pos[1] = -30, w.pos[2] = 400;
+        w.scale[0] = 80, w.scale[1] = 120, w.scale[2] = 150;
+        for (int k = 0; k < 3; k++) w.rotDeg[k] = r[k];
+        double m[16], m2[16];
+        rnd::WorldM4(w, 288.5, 340, m);
+        rnd::WorldXform d;
+        CHECK(rnd::DecomposeWorld(m, 288.5, 340, &d));
+        rnd::WorldM4(d, 288.5, 340, m2);
+        CheckM4Near(m, m2, 1e-9);
+    }
+}
+
+TEST(world_anchor_fixed)
+{
+    rnd::WorldXform w;
+    w.rotDeg[0] = 20, w.rotDeg[1] = 35, w.rotDeg[2] = -15;
+    w.scale[0] = w.scale[1] = w.scale[2] = 120;
+    double m[16], o[3];
+    rnd::WorldM4(w, 100, 50, m);
+    Apply(m, 100, 50, 0, o);
+    CHECK_NEAR(o[0], 100, 1e-9);
+    CHECK_NEAR(o[1], 50, 1e-9);
+    CHECK_NEAR(o[2], 0, 1e-9);
+}
+
+TEST(world_matches_copy_convention)
+{
+    // same rotation order and signs as the copies (detail::MakeM4, checked against AE by run_ref)
+    rnd::WorldXform w;
+    w.pos[0] = 5, w.pos[1] = -7, w.pos[2] = 30;
+    w.rotDeg[0] = 20, w.rotDeg[1] = 35, w.rotDeg[2] = -15;
+    w.scale[0] = w.scale[1] = w.scale[2] = 120;
+    double m[16], c[16];
+    rnd::WorldM4(w, 100, 50, m);
+    rnd::detail::MakeM4(5, -7, 30, 20, 35, -15, 1.2, 100, 50, c);
+    CheckM4Near(m, c, 1e-12);
+}
+
+TEST(transfer_keeps_world_placement)
+{
+  // exact cases only: a world rotation followed by a non-uniform layer scale is a shear (see the next test)
+  for (int scenario = 0; scenario < 2; scenario++) {
+    const double ax = 288.5, ay = 340, cw = 1920, ch = 1080;
+    const double s0[3] = {90, 110, 100}, s1[3] = {110, 110, 110};
+    const double* s = scenario == 0 ? s0 : s1;
+    const double r[3] = {15, -25, 40}, o[3] = {10, 20, 30}, p[3] = {700, 300, -200};
+    double layer[16], parent[16], l2w[16];
+    LayerXform(ax, ay, s, r, o, p, layer);
+    const double ps[3] = {100, 100, 100}, pr[3] = {0, 26, 0}, po[3] = {0, 0, 0}, pp[3] = {960, 540, 0};
+    LayerXform(0, 0, ps, pr, po, pp, parent);
+    Mul(layer, parent, l2w);
+    rnd::WorldXform cur;
+    cur.pos[0] = 30, cur.pos[1] = 0, cur.pos[2] = -50;
+    cur.rotDeg[2] = scenario == 0 ? 0 : 12;
+    cur.scale[0] = cur.scale[1] = cur.scale[2] = 80;
+    rnd::WorldXform out;
+    CHECK(rnd::TransferToWorld(cur, l2w, ax, ay, cw, ch, &out));
+    double gOld[16], gNew[16], V[16], before[16], after[16];
+    rnd::WorldM4(cur, ax, ay, gOld);
+    rnd::WorldM4(out, ax, ay, gNew);
+    rnd::InitialLayerToWorld(ax, ay, cw, ch, V);
+    Mul(gOld, l2w, before);
+    Mul(gNew, V, after);
+    const double pts[3][2] = {{0, 0}, {577, 680}, {100, 50}};
+    for (auto& q : pts) {
+        double a[3], b[3];
+        Apply(before, q[0], q[1], 0, a);
+        Apply(after, q[0], q[1], 0, b);
+        for (int k = 0; k < 3; k++) CHECK_NEAR(a[k], b[k], 1e-6);
+    }
+  }
+}
+
+TEST(transfer_initial_layer_is_identity)
+{
+    // a layer already in the initial state: the world transform is unchanged
+    const double ax = 40, ay = 30, cw = 400, ch = 300;
+    double V[16];
+    rnd::InitialLayerToWorld(ax, ay, cw, ch, V);
+    double o[3];
+    Apply(V, ax, ay, 0, o);
+    CHECK_NEAR(o[0], 200, 1e-12);
+    CHECK_NEAR(o[1], 150, 1e-12);
+    CHECK_NEAR(o[2], 0, 1e-12);
+    rnd::WorldXform cur, out;
+    cur.rotDeg[1] = 33;
+    CHECK(rnd::TransferToWorld(cur, V, ax, ay, cw, ch, &out));
+    for (int k = 0; k < 3; k++) {
+        CHECK_NEAR(out.pos[k], cur.pos[k], 1e-9);
+        CHECK_NEAR(out.rotDeg[k], cur.rotDeg[k], 1e-9);
+        CHECK_NEAR(out.scale[k], cur.scale[k], 1e-9);
+    }
+}
+
+TEST(transfer_shear_is_approximate)
+{
+    const double ax = 40, ay = 30;
+    const double s1[3] = {100, 100, 100}, r1[3] = {0, 0, 30}, z[3] = {0, 0, 0}, p1[3] = {10, 20, 0};
+    const double s2[3] = {200, 100, 100}, p2[3] = {200, 150, 0};
+    double child[16], parent[16], l2w[16];
+    LayerXform(ax, ay, s1, r1, z, p1, child);
+    LayerXform(0, 0, s2, z, z, p2, parent);
+    Mul(child, parent, l2w);
+    rnd::WorldXform cur, out;
+    CHECK(rnd::TransferToWorld(cur, l2w, ax, ay, 400, 300, &out));
 }
 
 // ---- fast mode: plane and per-copy projections
