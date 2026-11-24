@@ -387,6 +387,19 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 // ---- fast mode (spec 12.11): all copies drawn here into one screen-sized image, shown by the hooks as
 // one plane facing the camera that maps the effect's output px (x, y) to comp px (x, y).
 
+// The build ID (a new build never reuses AE's disk cache of an old one) and, for timing tests only, the
+// value of RANDAMU_CACHE_SALT (a new salt makes AE render again instead of reading its disk cache).
+void MixBuildId(PF_InData* in_data, PF_PreRenderExtra* extra)
+{
+    static const std::string salt = [] {
+        char v[64] = {0};
+        DWORD n = GetEnvironmentVariableA("RANDAMU_CACHE_SALT", v, sizeof(v));
+        return std::string(v, n < sizeof(v) ? n : 0);
+    }();
+    extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+    if (!salt.empty()) extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)salt.size(), salt.data());
+}
+
 // What SmartRender needs, worked out in PreRender (pre_render_data).
 struct FastPre {
     rnd::CameraView cam;
@@ -502,7 +515,7 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
                            (double)in_data->time_scale, f->anchorX, f->anchorY, ok ? 1.0 : 0.0};
     for (double v : more) key[n++] = v;
     if (extra->cb->GuidMixInPtr) {
-        extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+        MixBuildId(in_data, extra);
         extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(double) * n, key);
     }
     if (err) {
@@ -619,7 +632,7 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
             RLog("prof: PreRender register %lld calls %.1fms", c, ticks.load() * 1000.0 / f.QuadPart);
         }
     }
-    if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+    if (extra->cb->GuidMixInPtr) MixBuildId(in_data, extra);
 
     PF_RenderRequest req = extra->input->output_request;
     PF_CheckoutResult in_result;

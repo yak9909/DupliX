@@ -21,6 +21,8 @@ if (-not $SkipScene) {
 . (Join-Path $root "spike\tools\ae_guard.ps1")
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
 $enc = [Text.Encoding]::GetEncoding(932)
+# AE keeps rendered frames in its disk cache across runs: a new salt makes the effect render again.
+$env:RANDAMU_CACHE_SALT = [guid]::NewGuid().ToString()
 foreach ($v in $Variants -split ",") {
     $null = Repair-AeCrashState
     $log = Join-Path $outDir "aerender_$v.log"
