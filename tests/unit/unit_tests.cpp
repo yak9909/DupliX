@@ -9,6 +9,7 @@
 #include "core/fast_plane.h"
 #include "core/raster.h"
 #include "core/scatter.h"
+#include "hook/fast_registry.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
 #include "hook/bee_abi.h"
@@ -616,6 +617,57 @@ TEST(raster_speed_report)
     rnd::RasterizeCopies(s, c, 0, 1.0, 1.0, d, counts[1]);
     std::printf("raster speed: 1920x1080, 0 copies (clear only), %d threads: %.2f ms\n", counts[1],
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+// ---- fast mode: plane table
+static void PlaneOf(double v, double m[16])
+{
+    for (int k = 0; k < 16; k++) m[k] = v + k;
+}
+
+TEST(fast_registry_exact_time_rational)
+{
+    double a[16], b[16], o[16];
+    PlaneOf(1, a);
+    PlaneOf(2, b);
+    rnd::FastSetPlane({40, 2}, 10, 30, a);
+    rnd::FastSetPlane({40, 2}, 11, 30, b);
+    bool exact = false;
+    CHECK(rnd::FastGetPlane({40, 2}, 10, 30, o, &exact) && exact && o[0] == 1);
+    CHECK(rnd::FastGetPlane({40, 2}, 22, 60, o, &exact) && exact && o[0] == 2);  // same time, other scale
+    rnd::FastClear({40, 2});
+}
+
+TEST(fast_registry_fallback_last)
+{
+    double a[16], b[16], o[16];
+    PlaneOf(1, a);
+    PlaneOf(2, b);
+    rnd::FastSetPlane({41, 2}, 11, 30, b);
+    rnd::FastSetPlane({41, 2}, 10, 30, a);  // registered last
+    bool exact = true;
+    CHECK(rnd::FastGetPlane({41, 2}, 99, 30, o, &exact) && !exact && o[0] == 1);
+    CHECK(!rnd::FastGetPlane({41, 3}, 10, 30, o, &exact));  // other layer
+    CHECK(!rnd::FastGetPlane({42, 2}, 10, 30, o, &exact));  // other comp
+    rnd::FastClear({41, 2});
+    CHECK(!rnd::FastGetPlane({41, 2}, 10, 30, o, &exact));
+}
+
+TEST(fast_registry_keeps_recent_8)
+{
+    double m[16], o[16];
+    for (int i = 0; i < 10; i++) {
+        PlaneOf(i, m);
+        rnd::FastSetPlane({43, 1}, i, 30, m);
+    }
+    bool exact = false;
+    CHECK(rnd::FastGetPlane({43, 1}, 2, 30, o, &exact) && exact && o[0] == 2);
+    CHECK(rnd::FastGetPlane({43, 1}, 1, 30, o, &exact) && !exact && o[0] == 9);  // dropped: the last one
+    PlaneOf(50, m);
+    rnd::FastSetPlane({43, 1}, 5, 30, m);  // same time again: replaced in place
+    CHECK(rnd::FastGetPlane({43, 1}, 5, 30, o, &exact) && exact && o[0] == 50);
+    CHECK(rnd::FastGetPlane({43, 1}, 2, 30, o, &exact) && exact && o[0] == 2);
+    rnd::FastClear({43, 1});
 }
 
 // ---- hook tests

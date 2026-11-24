@@ -13,11 +13,15 @@
 
 #include "effect/gpu_copy.h"
 #include "hook/bee_hooks.h"
+#include "core/fast_plane.h"
+#include "core/raster.h"
+#include "hook/fast_registry.h"
 #include "hook/registry.h"
-#include "hook/screen_plane.h"
 #include "hook/timing.h"
 
 #include <cmath>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -100,8 +104,12 @@ struct SeqData {
     rnd::ScatterParams p;
     bool hasParams;
 };
+// Sequence data is saved in projects as raw bytes: its size must never change. ScatterParams::fast sits in
+// the padding after keepFirst; old projects may hold any byte there, so the SeqData path ignores it.
+static_assert(sizeof(rnd::ScatterParams) == 96, "ScatterParams layout is saved in projects");
+static_assert(sizeof(SeqData) == 112, "SeqData layout is saved in projects");
 
-enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown };
+enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, FastLights };
 
 rnd::ScatterParams DefaultParams()
 {
@@ -127,6 +135,7 @@ rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
     p.opacityMin = params[RP_OPACITY_MIN]->u.fs_d.value;
     p.opacityMax = params[RP_OPACITY_MAX]->u.fs_d.value;
     p.keepFirst = params[RP_KEEP_FIRST]->u.bd.value != 0;
+    p.fast = params[RP_FAST]->u.bd.value != 0;
     return p;
 }
 
@@ -155,6 +164,24 @@ enum class ParamSource {
     Aegp,       // read the effect through AEGP (only while rendering: during SEQUENCE_SETUP and while AE
                 // duplicates an effect, reading it fails AE's check "child not found in parent")
 };
+
+// The layer's "Accepts Lights" switch at layer time t (false if unreadable).
+bool AcceptsLights(SPBasicSuite* sp, AEGP_LayerH L, const A_Time& t)
+{
+    Suite<AEGP_StreamSuite6> ss(sp, kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
+    if (!ss) return false;
+    AEGP_StreamRefH s = nullptr;
+    if (ss->AEGP_GetNewLayerStream(g_pluginId, L, AEGP_LayerStream_ACCEPTS_LIGHTS, &s) || !s) return false;
+    AEGP_StreamValue2 v;
+    std::memset(&v, 0, sizeof(v));
+    bool on = false;
+    if (!ss->AEGP_GetNewStreamValue(g_pluginId, s, AEGP_LTimeMode_LayerTime, &t, FALSE, &v)) {
+        on = v.val.one_d != 0;
+        ss->AEGP_DisposeStreamValue(&v);
+    }
+    ss->AEGP_DisposeStream(s);
+    return on;
+}
 
 // Registers this effect's layer (key + parameter snapshot) for the hooks.
 // writeSeq: store key and parameters in sequence data (only in commands that may write it).
@@ -209,6 +236,7 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
         } else if (in_data->sequence_data) {
             auto* sd = (SeqData*)PF_LOCK_HANDLE(in_data->sequence_data);
             if (sd->hasParams) snap.p = sd->p;
+            snap.p.fast = false;  // may be an old project's padding byte; render threads read the real value
             PF_UNLOCK_HANDLE(in_data->sequence_data);
         }
         read = rnd::ReadLayerAnchor(L, t, &snap.anchorX, &snap.anchorY);
@@ -222,6 +250,9 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
                                                                        : SelfState::Ready;
     if (st != SelfState::Ready) snap.valid = false;
     rnd::RegRegister(key, snap);
+    // Fast mode draws without lights; AE would light the one plane as a flat board (spec 12.11).
+    if (st == SelfState::Ready && snap.p.fast && src != ParamSource::Aegp && AcceptsLights(sp, L, t))
+        st = SelfState::FastLights;
 
     if (writeSeq) {
         if (!out_data->sequence_data && in_data->sequence_data) out_data->sequence_data = in_data->sequence_data;
@@ -260,7 +291,10 @@ const char* StatusText(SelfState st)
     static const char* not3d = UiName("3D レイヤーにしてください", "Make the layer 3D");
     static const char* off = UiName("エフェクトがオフです", "Effect is off");
     static const char* unknown = UiName("状態を確認できません", "Unknown");
+    static const char* fastLights = UiName("高速モードではライトは使えません。『ライトを受ける』をオフにしてください",
+                                           "Fast Mode ignores lights. Turn off Accepts Lights");
     switch (st) {
+    case SelfState::FastLights: return fastLights;
     case SelfState::Ready: return ready;
     case SelfState::NoHooks: return noHooks;
     case SelfState::Not3D: return not3d;
@@ -344,48 +378,57 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     PF_ADD_FLOAT_SLIDERX(UiName("不透明度の最大", "Opacity Max"), 0, 100, 0, 100, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_OPACITY_MAX);
 
     PF_ADD_CHECKBOXX(UiName("1 枚目は元の位置", "Keep First at Original"), FALSE, 0, RD_KEEP_FIRST);
+    PF_ADD_CHECKBOXX(UiName("高速モード", "Fast Mode"), FALSE, 0, RD_FAST);
 
     out_data->num_params = RP_NUM_PARAMS;
     return PF_Err_NONE;
 }
 
-// ---- SPIKE (RANDAMU_SPIKE_SCREEN=1): screen-aligned single plane (spec 12.7)
-bool Invert4(const double a[16], double out[16])
+// ---- fast mode (spec 12.11): all copies drawn here into one screen-sized image, shown by the hooks as
+// one plane facing the camera that maps the effect's output px (x, y) to comp px (x, y).
+
+// What SmartRender needs, worked out in PreRender (pre_render_data).
+struct FastPre {
+    rnd::CameraView cam;
+    double W[16];             // layer -> world
+    rnd::ScatterParams p;
+    double anchorX, anchorY;  // layer px
+    double dsX, dsY;
+    PF_LRect inRect;          // the input's result rect (downsampled layer px)
+};
+void DeleteFastPre(void* p) { delete (FastPre*)p; }
+
+// The parameter values at the effect's current time (smart render: params[] is not passed).
+bool CheckoutScatterParams(PF_InData* in_data, rnd::ScatterParams* out)
 {
-    double m[4][8];
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 8; c++) m[r][c] = c < 4 ? a[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
-    for (int c = 0; c < 4; c++) {
-        int p = c;
-        for (int r = c + 1; r < 4; r++)
-            if (std::fabs(m[r][c]) > std::fabs(m[p][c])) p = r;
-        if (std::fabs(m[p][c]) < 1e-12) return false;
-        for (int k = 0; k < 8; k++) std::swap(m[c][k], m[p][k]);
-        double d = m[c][c];
-        for (int k = 0; k < 8; k++) m[c][k] /= d;
-        for (int r = 0; r < 4; r++)
-            if (r != c) {
-                double f = m[r][c];
-                for (int k = 0; k < 8; k++) m[r][k] -= f * m[c][k];
-            }
+    PF_ParamDef defs[RP_NUM_PARAMS];
+    PF_ParamDef* ptrs[RP_NUM_PARAMS] = {};
+    bool ok = true;
+    int last = RP_COUNT - 1;
+    for (int i = RP_COUNT; i < RP_NUM_PARAMS && ok; i++) {
+        AEFX_CLR_STRUCT(defs[i]);
+        ok = PF_CHECKOUT_PARAM(in_data, i, in_data->current_time, in_data->time_step, in_data->time_scale,
+                               &defs[i]) == PF_Err_NONE;
+        if (ok) last = i, ptrs[i] = &defs[i];
     }
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) out[r * 4 + c] = m[r][c + 4];
-    return true;
-}
-void Mul4(const double a[16], const double b[16], double out[16])
-{
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            double s = 0;
-            for (int k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
-            out[r * 4 + c] = s;
-        }
+    if (ok) *out = ParamsFromArray(ptrs);
+    for (int i = RP_COUNT; i <= last; i++) PF_CHECKIN_PARAM(in_data, &defs[i]);
+    return ok;
 }
 
-// M4 (row vectors, layer px -> layer px) of a plane that maps layer px (x, y) to comp px (x, y).
-// Facts (spike S5b): camera matrix = camera->world; comp px = cam.xy * dist / cam.z + size/2.
-bool SpikeComputePlane(PF_InData* in_data, int* cw, int* ch)
+bool FastModeOn(PF_InData* in_data)
+{
+    PF_ParamDef d;
+    AEFX_CLR_STRUCT(d);
+    if (PF_CHECKOUT_PARAM(in_data, RP_FAST, in_data->current_time, in_data->time_step, in_data->time_scale, &d))
+        return false;
+    bool on = d.u.bd.value != 0;
+    PF_CHECKIN_PARAM(in_data, &d);
+    return on;
+}
+
+// Camera, layer transform, comp size and anchor at the effect's current time; registers the plane.
+bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
 {
     SPBasicSuite* sp = in_data->pica_basicP;
     Suite<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
@@ -393,95 +436,164 @@ bool SpikeComputePlane(PF_InData* in_data, int* cw, int* ch)
     Suite<AEGP_CompSuite12> cs(sp, kAEGPCompSuite, kAEGPCompSuiteVersion12);
     Suite<AEGP_ItemSuite9> is(sp, kAEGPItemSuite, kAEGPItemSuiteVersion9);
     if (!pfi || !ls || !cs || !is) return false;
-    A_Time t = {0, 1};
-    pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &t);
+    A_Time ct = {0, 1};  // comp time: what the camera and layer-to-world reads take
     AEGP_LayerH L = nullptr;
     AEGP_CompH comp = nullptr;
     AEGP_ItemH item = nullptr;
     A_long itemId = 0;
     AEGP_LayerIDVal layerId = 0;
-    if (pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || ls->AEGP_GetLayerParentComp(L, &comp) ||
+    if (pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &ct) ||
+        pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || ls->AEGP_GetLayerParentComp(L, &comp) ||
         cs->AEGP_GetItemFromComp(comp, &item) || is->AEGP_GetItemID(item, &itemId) || ls->AEGP_GetLayerID(L, &layerId))
         return false;
     A_long w = 0, h = 0;
-    is->AEGP_GetItemDimensions(item, &w, &h);
     A_Matrix4 cam, l2w;
     A_FpLong dist = 0;
     A_short ipw = 0, iph = 0;
-    RLog("spike: before GetEffectCameraMatrix");
-    A_Err ec = pfi->AEGP_GetEffectCameraMatrix(in_data->effect_ref, &t, &cam, &dist, &ipw, &iph);
-    RLog("spike: after GetEffectCameraMatrix err=%d", (int)ec);
-    if (ec || dist <= 0) return false;
-    A_Err el = ls->AEGP_GetLayerToWorldXform(L, &t, &l2w);
-    RLog("spike: after GetLayerToWorldXform err=%d", (int)el);
-    if (el) return false;
-    double C[16], W[16], Winv[16], Cinv[16];
+    if (is->AEGP_GetItemDimensions(item, &w, &h) || w <= 0 || h <= 0 ||
+        pfi->AEGP_GetEffectCameraMatrix(in_data->effect_ref, &ct, &cam, &dist, &ipw, &iph) || !(dist > 0) ||
+        ls->AEGP_GetLayerToWorldXform(L, &ct, &l2w))
+        return false;
+    A_Time lt = {in_data->current_time, (A_u_long)(in_data->time_scale ? in_data->time_scale : 1)};
+    if (!rnd::ReadLayerAnchor(L, lt, &f->anchorX, &f->anchorY)) return false;
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++) {
-            C[r * 4 + c] = cam.mat[r][c];
-            W[r * 4 + c] = l2w.mat[r][c];
+            f->cam.camToWorld[r * 4 + c] = cam.mat[r][c];
+            f->W[r * 4 + c] = l2w.mat[r][c];
         }
-    if (!Invert4(W, Winv) || !Invert4(C, Cinv)) return false;
-    // depth: the layer origin in camera space
-    double o[16] = {0}, oc[16];
-    o[12] = W[12], o[13] = W[13], o[14] = W[14], o[15] = 1;  // row 3 = layer origin in world
-    double ow[4] = {W[12], W[13], W[14], 1}, c4[4] = {0, 0, 0, 0};
-    for (int c = 0; c < 4; c++)
-        for (int k = 0; k < 4; k++) c4[c] += ow[k] * Cinv[k * 4 + c];
-    (void)o;
-    (void)oc;
-    double d = c4[2] > 1 ? c4[2] : dist;
-    double k = d / dist;
-    double S[16] = {k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1, 0, -k * w / 2.0, -k * h / 2.0, d, 1};
-    double SC[16], M[16];
-    Mul4(S, C, SC);
-    Mul4(SC, Winv, M);
-    rnd::SpikeSetPlane((int)itemId, (int)layerId, M);
-    *cw = (int)w;
-    *ch = (int)h;
-    static std::atomic<int> logged{0};
-    if (++logged <= 3) RLog("spike: plane comp %dx%d dist=%.2f depth=%.2f", (int)w, (int)h, dist, d);
+    f->cam.dist = dist;
+    f->cam.compW = (double)w;
+    f->cam.compH = (double)h;
+    // The plane's depth is the anchor's (spec 12.11). At or behind the camera any positive depth shows the
+    // same 1:1 picture, so keep it just in front of the camera.
+    double depth = std::max(rnd::AnchorDepth(f->cam, f->W, f->anchorX, f->anchorY), 2.0);
+    double m4[16];
+    if (!rnd::PlaneM4(f->cam, f->W, depth, m4)) return false;
+    rnd::FastSetPlane({(int)itemId, (int)layerId}, in_data->current_time, lt.scale, m4);
+    *compW = (int)w;
+    *compH = (int)h;
     return true;
+}
+
+PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
+{
+    RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
+    auto* f = new FastPre();
+    f->dsX = in_data->downsample_x.den ? (double)in_data->downsample_x.num / in_data->downsample_x.den : 1.0;
+    f->dsY = in_data->downsample_y.den ? (double)in_data->downsample_y.num / in_data->downsample_y.den : 1.0;
+    int cw = 0, ch = 0;
+    bool ok = CheckoutScatterParams(in_data, &f->p) && FastSetup(in_data, f, &cw, &ch);
+    // The whole source is needed whatever part of the screen is asked for.
+    PF_RenderRequest req = extra->input->output_request;
+    req.rect.left = req.rect.top = -30000;
+    req.rect.right = req.rect.bottom = 30000;
+    PF_CheckoutResult in_result;
+    AEFX_CLR_STRUCT(in_result);
+    PF_Err err = extra->cb->checkout_layer(in_data->effect_ref, RP_INPUT, RP_INPUT, &req, in_data->current_time,
+                                           in_data->time_step, in_data->time_scale, &in_result);
+    f->inRect = in_result.result_rect;
+    // The output depends on the camera, the layer's transform, the comp size, the time and the downsample:
+    // mix them all into the cache key (required with I_MIX_GUID_DEPENDENCIES in any case).
+    double key[64] = {0};
+    int n = 0;
+    for (int i = 0; i < 16; i++) key[n++] = f->cam.camToWorld[i];
+    for (int i = 0; i < 16; i++) key[n++] = f->W[i];
+    const double more[] = {f->cam.dist, f->cam.compW, f->cam.compH, f->dsX, f->dsY, (double)in_data->current_time,
+                           (double)in_data->time_scale, f->anchorX, f->anchorY, ok ? 1.0 : 0.0};
+    for (double v : more) key[n++] = v;
+    if (extra->cb->GuidMixInPtr) {
+        extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+        extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(double) * n, key);
+    }
+    if (err) {
+        delete f;
+        return err;
+    }
+    if (ok) {
+        PF_LRect full = {0, 0, (A_long)std::ceil(cw * f->dsX), (A_long)std::ceil(ch * f->dsY)};  // l, t, r, b
+        const PF_LRect& q = extra->input->output_request.rect;
+        PF_LRect x = {std::max(q.left, full.left), std::max(q.top, full.top), std::min(q.right, full.right),
+                      std::min(q.bottom, full.bottom)};
+        if (x.right < x.left) x.right = x.left;
+        if (x.bottom < x.top) x.bottom = x.top;
+        extra->output->result_rect = x;
+        extra->output->max_result_rect = full;
+        extra->output->pre_render_data = f;
+        extra->output->delete_pre_render_data_func = DeleteFastPre;
+    } else {
+        // Nothing to show (camera or transform unreadable): an empty output, so no stale plane shows.
+        delete f;
+        PF_LRect none = {0, 0, 0, 0};
+        extra->output->result_rect = none;
+        extra->output->max_result_rect = none;
+    }
+    static std::atomic<int> logged{0};
+    if (++logged <= 6)
+        RLog("fast: prerender ok=%d comp %dx%d ds %.3f/%.3f in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) t=%d/%d", (int)ok, cw,
+             ch, ok ? f->dsX : 0.0, ok ? f->dsY : 0.0, (int)in_result.result_rect.left, (int)in_result.result_rect.top,
+             (int)in_result.result_rect.right, (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
+             (int)extra->output->result_rect.top, (int)extra->output->result_rect.right,
+             (int)extra->output->result_rect.bottom, (int)in_data->current_time, (int)in_data->time_scale);
+    return PF_Err_NONE;
+}
+
+int WorldBpc(PF_InData* in_data, PF_EffectWorld* w)
+{
+    PF_WorldSuite2* ws = nullptr;
+    PF_PixelFormat fmt = PF_PixelFormat_INVALID;
+    if (in_data->pica_basicP->AcquireSuite(kPFWorldSuite, kPFWorldSuiteVersion2, (const void**)&ws) != kSPNoError || !ws)
+        return 0;
+    ws->PF_GetPixelFormat(w, &fmt);
+    in_data->pica_basicP->ReleaseSuite(kPFWorldSuite, kPFWorldSuiteVersion2);
+    switch (fmt) {
+    case PF_PixelFormat_ARGB32: return 8;
+    case PF_PixelFormat_ARGB64: return 16;
+    case PF_PixelFormat_ARGB128: return 32;
+    default: return 0;
+    }
+}
+
+PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW, PF_EffectWorld* outW)
+{
+    int bpc = WorldBpc(in_data, outW);
+    if (!bpc) return PF_Err_BAD_CALLBACK_PARAM;
+    rnd::RasterImage dst = {outW->data, (int)outW->width, (int)outW->height, (long)outW->rowbytes, bpc,
+                            (int)outW->origin_x, (int)outW->origin_y};
+    rnd::RasterImage src = {nullptr, 0, 0, 0, bpc, 0, 0};
+    std::vector<rnd::RasterCopy> copies;
+    if (f && inW && inW->data && WorldBpc(in_data, inW) == bpc) {
+        src = {inW->data, (int)inW->width, (int)inW->height, (long)inW->rowbytes, bpc, (int)f->inRect.left,
+               (int)f->inRect.top};
+        // the source in full-resolution layer px
+        const double srcRect[4] = {f->inRect.left / f->dsX, f->inRect.top / f->dsY,
+                                   (f->inRect.left + inW->width) / f->dsX, (f->inRect.top + inW->height) / f->dsY};
+        const double cx = (srcRect[0] + srcRect[2]) / 2, cy = (srcRect[1] + srcRect[3]) / 2;
+        copies.reserve((size_t)std::max(f->p.count, 0));
+        for (int i = 0; i < f->p.count; i++) {
+            rnd::CopyXform x;
+            rnd::ComputeCopy(f->p, i, f->anchorX, f->anchorY, &x);
+            rnd::RasterCopy rc;
+            if (x.opacity <= 0 || !rnd::CopyHomography(f->cam, f->W, x.m4, srcRect, rc.screenToSrc)) continue;
+            rc.opacity = x.opacity;
+            rc.depth = rnd::CopyDepth(f->cam, f->W, x.m4, cx, cy);
+            copies.push_back(rc);
+        }
+        static std::atomic<int> logged{0};
+        if (++logged <= 3)
+            RLog("fast: render bpc %d in %dx%d origin(%d,%d) inRect(%d,%d) out %dx%d origin(%d,%d) copies %zu/%d", bpc,
+                 (int)inW->width, (int)inW->height, (int)inW->origin_x, (int)inW->origin_y, (int)f->inRect.left,
+                 (int)f->inRect.top, (int)outW->width, (int)outW->height, (int)outW->origin_x, (int)outW->origin_y,
+                 copies.size(), f->p.count);
+    }
+    unsigned hw = std::thread::hardware_concurrency();
+    rnd::RasterizeCopies(src, copies.data(), (int)copies.size(), f ? f->dsX : 1.0, f ? f->dsY : 1.0, dst,
+                         hw ? (int)hw : 4);
+    return PF_Err_NONE;
 }
 
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
-    if (rnd::SpikeScreenEnabled()) {
-        RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
-        int cw = 0, ch = 0;
-        PF_Err e = PF_Err_NONE;
-        PF_RenderRequest req = extra->input->output_request;
-        PF_CheckoutResult in_result;
-        e = extra->cb->checkout_layer(in_data->effect_ref, RP_INPUT, RP_INPUT, &req, in_data->current_time,
-                                      in_data->time_step, in_data->time_scale, &in_result);
-        bool planeOk = !e && SpikeComputePlane(in_data, &cw, &ch);
-        // required by I_MIX_GUID_DEPENDENCIES (AE aborts the render otherwise); a real version must
-        // also mix the camera, the layer transform and the comp size (the output depends on them)
-        if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
-        char nx[4] = {0};
-        bool noExpand = GetEnvironmentVariableA("RANDAMU_SPIKE_NOEXPAND", nx, sizeof(nx)) > 0;
-        if (planeOk && !noExpand) {
-            PF_LRect r = {0, 0, cw, ch};  // left, top, right, bottom (layer px)
-            // the result may not exceed the request; the full extent goes in max_result_rect
-            PF_LRect q = req.rect;
-            PF_LRect x = {std::max(q.left, r.left), std::max(q.top, r.top), std::min(q.right, r.right),
-                          std::min(q.bottom, r.bottom)};
-            if (x.right < x.left) x.right = x.left;
-            if (x.bottom < x.top) x.bottom = x.top;
-            extra->output->result_rect = x;
-            extra->output->max_result_rect = r;
-        } else if (!e) {
-            extra->output->result_rect = in_result.result_rect;
-            extra->output->max_result_rect = in_result.max_result_rect;
-        }
-        RLog("spike: prerender req=(%d,%d,%d,%d) in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) e=%d",
-             (int)req.rect.left, (int)req.rect.top, (int)req.rect.right, (int)req.rect.bottom,
-             (int)in_result.result_rect.left, (int)in_result.result_rect.top, (int)in_result.result_rect.right,
-             (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
-             (int)extra->output->result_rect.top, (int)extra->output->result_rect.right,
-             (int)extra->output->result_rect.bottom, (int)e);
-        return e;
-    }
+    if (FastModeOn(in_data)) return FastPreRender(in_data, out_data, extra);
     PF_Err err = PF_Err_NONE;
     long long tStart = rnd::TimingNow();
     struct MarkAtExit {
@@ -590,22 +702,8 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
     PF_EffectWorld* outW = nullptr;
     ERR(extra->cb->checkout_layer_pixels(in_data->effect_ref, RP_INPUT, &inW));
     ERR(extra->cb->checkout_output(in_data->effect_ref, &outW));
-    if (!err && outW && rnd::SpikeScreenEnabled()) {
-        // SPIKE: a pattern that is a function of layer px (8 bpc only)
-        for (int y = 0; y < outW->height; y++) {
-            auto* row = (PF_Pixel8*)((char*)outW->data + (size_t)y * outW->rowbytes);
-            for (int x = 0; x < outW->width; x++) {
-                int lx = x + outW->origin_x, ly = y + outW->origin_y;
-                row[x].alpha = 255;
-                row[x].red = (A_u_char)((lx * 7) & 255);
-                row[x].green = (A_u_char)((ly * 13) & 255);
-                row[x].blue = (A_u_char)(((lx + ly) * 5) & 255);
-            }
-        }
-        static std::atomic<int> logged{0};
-        if (++logged <= 3)
-            RLog("spike: render out %dx%d origin (%d,%d)", (int)outW->width, (int)outW->height, (int)outW->origin_x,
-                 (int)outW->origin_y);
+    if (!err && outW && FastModeOn(in_data)) {
+        err = FastSmartRender(in_data, (const FastPre*)extra->input->pre_render_data, inW, outW);
     } else if (!err && inW && outW) {
         PF_WorldTransformSuite1* wts = nullptr;
         if (in_data->pica_basicP->AcquireSuite(kPFWorldTransformSuite, kPFWorldTransformSuiteVersion1,

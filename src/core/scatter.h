@@ -11,6 +11,7 @@ struct ScatterParams {
     double scaleMin = 100, scaleMax = 100;      // percent (100 = same size)
     double opacityMin = 100, opacityMax = 100;  // percent (0..100)
     bool keepFirst = false;         // copy 0 = identity transform, opacity 100%
+    bool fast = false;              // fast mode: all copies drawn by the effect into one screen-aligned plane
 };
 
 // m4: row-vector matrix (p' = p * M), row 3 = translation, layer-space px. opacity: 0..1.

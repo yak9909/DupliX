@@ -18,6 +18,7 @@ enum RandamuParam {
     RP_OPACITY_MIN,
     RP_OPACITY_MAX,
     RP_KEEP_FIRST,
+    RP_FAST,          // fast mode (spec 12.11)
     RP_NUM_PARAMS
 };
 
@@ -37,6 +38,7 @@ enum RandamuDiskId {
     RD_OPACITY_MIN,
     RD_OPACITY_MAX,
     RD_KEEP_FIRST,
+    RD_FAST,
 };
 
 #define RANDAMU_MATCH_NAME "RANDAMU Scatter"

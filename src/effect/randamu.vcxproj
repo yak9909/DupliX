@@ -85,7 +85,12 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="*.cpp" />
-    <ClCompile Include="..\core\*.cpp" />
+    <ClCompile Include="..\core\*.cpp" Exclude="..\core\raster.cpp" />
+    <!-- the fast mode's rasterizer is optimised in every configuration (AE loads the Debug build) -->
+    <ClCompile Include="..\core\raster.cpp">
+      <Optimization>MaxSpeed</Optimization>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+    </ClCompile>
     <ClCompile Include="..\hook\*.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

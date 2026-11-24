@@ -185,7 +185,11 @@ void Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, do
     };
     int t = std::max(1, std::min(threads, chunks));
     std::vector<std::thread> pool;
-    for (int i = 1; i < t; i++) pool.emplace_back(worker);
+    try {
+        for (int i = 1; i < t; i++) pool.emplace_back(worker);
+    } catch (...) {
+        // no more threads: the ones already started and this one take all the chunks
+    }
     worker();
     for (auto& th : pool) th.join();
 }
