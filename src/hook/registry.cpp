@@ -18,6 +18,7 @@ struct Entry {
 Entry g_entries[kCapacity];
 std::atomic<int> g_used{0};    // entries [0, g_used) may hold a key
 std::mutex g_writeMutex;       // writers only; readers never lock
+std::atomic<unsigned> g_generation{0};
 
 uint64_t Pack(LayerKey k) { return ((uint64_t)(uint32_t)k.compItemId << 32) | (uint32_t)k.layerId; }
 
@@ -47,13 +48,17 @@ void RegRegister(LayerKey k, const ParamSnapshot& snap)
         g_used.store(n + 1, std::memory_order_release);
     }
     e->snap.store(new ParamSnapshot(snap), std::memory_order_release);
+    ++g_generation;
 }
 
 void RegUnregister(LayerKey k)
 {
     std::lock_guard<std::mutex> lk(g_writeMutex);
     if (Entry* e = Find(Pack(k))) e->snap.store(nullptr, std::memory_order_release);
+    ++g_generation;
 }
+
+unsigned RegGeneration() { return g_generation.load(std::memory_order_acquire); }
 
 bool RegLookup(LayerKey k, ParamSnapshot* out)
 {

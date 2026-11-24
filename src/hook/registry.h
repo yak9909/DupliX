@@ -21,5 +21,8 @@ void RegRegister(LayerKey k, const ParamSnapshot& snap);  // add, or replace the
 void RegUnregister(LayerKey k);
 bool RegLookup(LayerKey k, ParamSnapshot* out);
 bool RegContains(LayerKey k);
+// Incremented by every RegRegister / RegUnregister (the effect re-registers before each render), so
+// a value read under one generation may be reused until it changes.
+unsigned RegGeneration();
 
 }  // namespace rnd

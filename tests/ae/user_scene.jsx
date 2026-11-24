@@ -1,0 +1,103 @@
+// Inspects a user-provided project and times frame renders under variants.
+// Env: RANDAMU_TEST_DIR (output), RANDAMU_USER_AEP (a COPY of the user's project: run_user.ps1 makes it.
+// AE saves a modified project on close, so the user's file itself must never be opened).
+// Writes jsx.log: project/comp/layer/footage info, then "time <variant> <ms per frame>", "done".
+(function () {
+    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var logFile = new File(outDir + "/jsx.log");
+    logFile.encoding = "UTF-8";
+    function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
+    function tg(L) { return L.property("ADBE Transform Group"); }
+    function fxOf(L) {
+        var p = L.property("ADBE Effect Parade");
+        if (!p) return null;
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        return null;
+    }
+    // ms per frame over `n` frames (cache purged first; the PNG write is included and the same for all)
+    function timeFrames(comp, name, n) {
+        app.purge(PurgeTarget.ALL_CACHES);
+        var f = new File(outDir + "/" + name + ".png");
+        var t0 = new Date().getTime();
+        for (var i = 0; i < n; i++) {
+            comp.saveFrameToPng(i * comp.frameDuration, f);
+        }
+        var ms = (new Date().getTime() - t0) / n;
+        log("time " + name + " " + ms.toFixed(1) + " ms/frame");
+        return ms;
+    }
+    try {
+        app.beginSuppressDialogs();
+        app.open(new File($.getenv("RANDAMU_USER_AEP")));
+        var P = app.project;
+        log("bpc=" + P.bitsPerChannel + " gpu=" + P.gpuAccelType + " items=" + P.numItems);
+        var main = null;
+        for (var i = 1; i <= P.numItems; i++) {
+            var it = P.item(i);
+            if (it instanceof CompItem) {
+                var info = "comp '" + it.name + "'";
+                var keys = ["width", "height", "frameRate", "duration", "renderer", "numLayers", "resolutionFactor"];
+                for (var kk = 0; kk < keys.length; kk++) {
+                    try { info += " " + keys[kk] + "=" + it[keys[kk]]; } catch (ek) { info += " " + keys[kk] + "=(err)"; }
+                }
+                log(info);
+                for (var j = 1; j <= it.numLayers; j++) {
+                    var L = it.layer(j);
+                    var src = L.source ? (L.source.name + " " + L.source.width + "x" + L.source.height) : "-";
+                    var fx = fxOf(L);
+                    var fxs = "";
+                    if (fx) {
+                        main = {comp: it, layer: L};
+                        for (var k = 1; k <= fx.numProperties; k++) { try { fxs += " " + fx.property(k).value; } catch (e0) {} }
+                    }
+                    var par = L.property("ADBE Effect Parade");
+                    log("  layer " + j + " '" + L.name + "' 3d=" + L.threeDLayer + " src=" + src + " effects=" +
+                        (par ? par.numProperties : "-") + (fx ? " randamu:" + fxs : "") +
+                        " quality=" + L.quality + " mb=" + L.motionBlur);
+                }
+            } else if (it instanceof FootageItem) {
+                log("footage '" + it.name + "' " + it.width + "x" + it.height + " file=" +
+                    (it.file ? it.file.fsName : "-"));
+            }
+        }
+        if (!main) throw new Error("no layer with the effect");
+        // Variant comps (rendered by run_user.ps1 with aerender). Each is a duplicate of the user's comp.
+        function variant(name, fn) {
+            var c = main.comp.duplicate();
+            c.name = name;
+            var T = null;
+            for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a))) T = c.layer(a);
+            fn(c, T, fxOf(T));
+            log("variant " + name);
+        }
+        variant("v_asis", function () {});
+        variant("v_count1", function (c, T, f) { f.property(2).setValue(1); });
+        variant("v_count0", function (c, T, f) { f.property(2).setValue(0); });
+        variant("v_plain", function (c, T, f) { f.remove(); });
+        // 10 real layers (no effect), spread over the same kind of range
+        variant("v_real10", function (c, T, f) {
+            f.remove();
+            for (var d = 0; d < 10; d++) {
+                var D = T.duplicate();
+                var p = tg(D).property("ADBE Position").value;
+                tg(D).property("ADBE Position").setValue([p[0] + (d - 5) * 150, p[1] + ((d * 53) % 400) - 200, p[2] + ((d * 71) % 400) - 200]);
+            }
+            T.enabled = false;
+        });
+        // the same with the effect on each real layer (count 1, ranges 0): the cost of the effect itself
+        variant("v_real10_fx", function (c, T, f) {
+            f.property(2).setValue(1);
+            for (var q = 4; q <= 9; q++) f.property(q).setValue(0);
+            for (var d = 0; d < 10; d++) {
+                var D = T.duplicate();
+                var p = tg(D).property("ADBE Position").value;
+                tg(D).property("ADBE Position").setValue([p[0] + (d - 5) * 150, p[1] + ((d * 53) % 400) - 200, p[2] + ((d * 71) % 400) - 200]);
+            }
+            T.enabled = false;
+        });
+        app.project.save(new File(outDir + "/variants.aep"));
+        log("done");
+    } catch (ex) {
+        log("EXCEPTION " + ex.message + " (line " + ex.line + ")");
+    }
+})();

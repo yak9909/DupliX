@@ -246,6 +246,22 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
         const int* ti = (const int*)tm;
         A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
         if (t.scale == 0) t.scale = 1;
+        // Per-thread reuse: the opacity hook asks once per copy for the same layer and time.
+        struct Cached {
+            bool used = false;
+            LayerKey k{};
+            A_long tv = 0;
+            A_u_long ts = 0;
+            unsigned gen = 0;
+            ParamSnapshot s;
+        };
+        thread_local Cached cache;
+        unsigned gen = RegGeneration();
+        if (cache.used && cache.gen == gen && cache.k.compItemId == k.compItemId && cache.k.layerId == k.layerId &&
+            cache.tv == t.value && cache.ts == t.scale) {
+            *out = cache.s;
+            return out->valid;
+        }
         static std::atomic<int> dbg{0};
         int d = ++dbg;
         if (d <= 40) RLog("dbg: ParamsFor AEGP enter comp %d layer %d", k.compItemId, k.layerId);
@@ -259,6 +275,13 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
             static std::atomic<int> warned{0};
             if (++warned <= 5) RLog("hook: AEGP param read failed (comp %d layer %d), using snapshot", k.compItemId, k.layerId);
             RegLookup(k, out);
+        } else {
+            cache.used = true;
+            cache.k = k;
+            cache.tv = t.value;
+            cache.ts = t.scale;
+            cache.gen = gen;
+            cache.s = *out;
         }
     }
     return out->valid;
@@ -357,29 +380,47 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     return b;
 }
 
-std::atomic<uintptr_t> g_siteYes[8], g_siteNo[16];
-bool IsFlattenSite(uintptr_t ra)
+// Return addresses of Artisan's flatten check, found once at install by scanning BEE's code.
+// IsLayerType is one of AE's hottest virtuals (hundreds of thousands of calls while the UI is used),
+// so the hook must cost no more than an address compare for every other caller.
+constexpr int kMaxSites = 4;
+uintptr_t g_sites[kMaxSites] = {};
+int g_numSites = 0;
+
+int ScanFlattenSites(HMODULE mod)
 {
-    for (auto& y : g_siteYes)
-        if (y.load() == ra) return true;
-    for (auto& n : g_siteNo)
-        if (n.load() == ra) return false;
-    bool ok = MatchFlattenCheckSite((const unsigned char*)ra, g_betaFn);
-    auto* arr = ok ? g_siteYes : g_siteNo;
-    size_t cap = ok ? 8 : 16;
-    for (size_t k = 0; k < cap; k++) {
-        uintptr_t z = 0;
-        if (arr[k].compare_exchange_strong(z, ra)) break;
+    auto base = (const unsigned char*)mod;
+    auto nt = (const IMAGE_NT_HEADERS64*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    for (int s = 0; s < nt->FileHeader.NumberOfSections; s++, sec++) {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        const unsigned char* p = base + sec->VirtualAddress;
+        size_t n = sec->Misc.VirtualSize;
+        for (size_t i = 0; i + 64 < n; i++) {
+            if (p[i] != 0x84 || p[i + 1] != 0xC0 || p[i + 2] != 0x75) continue;
+            if (MatchFlattenCheckSite(p + i, g_betaFn)) {
+                if (g_numSites >= kMaxSites) return -1;  // ambiguous: refuse
+                g_sites[g_numSites++] = (uintptr_t)(p + i);
+            }
+        }
     }
-    return ok;
+    return g_numSites;
+}
+
+inline bool IsFlattenSite(uintptr_t ra)
+{
+    for (int i = 0; i < g_numSites; i++)
+        if (g_sites[i] == ra) return true;
+    return false;
 }
 
 uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
                           uintptr_t h)
 {
-    uintptr_t ra = (uintptr_t)_ReturnAddress();
-    Prof pf(PF_ISTYPE);
-    if ((int)b == 0 && IsMine((const void*)a) && IsFlattenSite(ra)) return 0;
+    if ((int)b == 0 && IsFlattenSite((uintptr_t)_ReturnAddress())) {
+        Prof pf(PF_ISTYPE);
+        if (IsMine((const void*)a)) return 0;
+    }
     return g_origIsLayerType(a, b, c, d, e, f, g, h);
 }
 
@@ -492,6 +533,8 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
         g_slotParade = FindSlot(vt, bee, bee::kLayerGetFilterParade);
         if (sSep >= 0) g_slotSwitches = FirstVirtualCallSlot(vt[sSep]);
     }
+    int sites = (bee && g_betaFn) ? ScanFlattenSites(bee) : 0;
+    RLog("hooks: flatten check sites %d", sites);
     RLog("hooks: parade slot %d switches slot %d FLT numSeqs=%p getEffect=%p isActive=%p", g_slotParade,
          g_slotSwitches, (void*)g_paradeNum, (void*)g_paradeGet, (void*)g_effectActive);
     RLog("hooks: BEE=%p vt=%p slots IsLayerType=%d Separately=%d Count=%d Rects=%d; AEGPDriver=%p iat=%p; "
@@ -501,7 +544,7 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     if (!vt || sIs < 0 || sSep < 0 || sCnt < 0 || sRc < 0 || !iat || !g_layerGetId || !g_layerGetComp ||
         !g_itemGetId || !g_betaFn || !g_m3Identity || !g_hasEffectApplied || g_slotParade < 0 ||
         g_slotSwitches < 0 || g_slotSwitches >= bee::kVtableScanSlots || !g_paradeNum || !g_paradeGet ||
-        !g_effectActive || !g_compIsCalder || !g_compIsErnst || !g_compIsEscher || !g_compIsPicasso) {
+        !g_effectActive || sites < 1 || !g_compIsCalder || !g_compIsErnst || !g_compIsEscher || !g_compIsPicasso) {
         g_status = HookStatus::MissingSymbols;
         RLog("hooks: something is missing -> not installing");
         return g_status;

@@ -48,14 +48,10 @@ const char* UiName(const char* utf8, const char* english)
 void RLog(const char* fmt, ...)
 {
     static char path[MAX_PATH] = {0};
-    static bool init = false;
-    static bool enabled = false;
-    std::lock_guard<std::mutex> lk(g_logMutex);
-    if (!init) {
-        enabled = GetEnvironmentVariableA("RANDAMU_LOG", path, sizeof(path)) > 0;
-        init = true;
-    }
+    // Decided once (thread-safe static init); when logging is off, return without taking the lock.
+    static const bool enabled = GetEnvironmentVariableA("RANDAMU_LOG", path, sizeof(path)) > 0;
     if (!enabled) return;
+    std::lock_guard<std::mutex> lk(g_logMutex);
     FILE* fp = nullptr;
     if (fopen_s(&fp, path, "a") || !fp) return;
     SYSTEMTIME st;
