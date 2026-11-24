@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdarg>
+#include <cstring>
 #include <cstdio>
 #include <deque>
 #include <mutex>
@@ -89,17 +90,55 @@ struct Suite {
     explicit operator bool() const { return s != nullptr; }
 };
 
-// Sequence data: the key this instance registered last (plain data, no flattening needed).
+// Sequence data: the key this instance registered last and its last parameter values
+// (plain data, no flattening needed; saved with the project).
 struct SeqData {
     int compItemId;
     int layerId;
+    rnd::ScatterParams p;
+    bool hasParams;
 };
 
 enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown };
 
-// Registers this effect's layer (key + parameter snapshot at the current time) for the hooks.
-// writeSeq: store the key in sequence data (only in commands that may write it).
-SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, bool writeSeq)
+rnd::ScatterParams DefaultParams()
+{
+    rnd::ScatterParams p;  // same defaults as ParamsSetup
+    p.count = 10;
+    p.pos[0] = p.pos[1] = p.pos[2] = 200;
+    return p;
+}
+
+rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
+{
+    rnd::ScatterParams p;
+    p.count = params[RP_COUNT]->u.sd.value;
+    p.seed = params[RP_SEED]->u.sd.value;
+    p.pos[0] = params[RP_POS_X]->u.fs_d.value;
+    p.pos[1] = params[RP_POS_Y]->u.fs_d.value;
+    p.pos[2] = params[RP_POS_Z]->u.fs_d.value;
+    p.rotDeg[0] = params[RP_ROT_X]->u.fs_d.value;
+    p.rotDeg[1] = params[RP_ROT_Y]->u.fs_d.value;
+    p.rotDeg[2] = params[RP_ROT_Z]->u.fs_d.value;
+    p.scaleMin = params[RP_SCALE_MIN]->u.fs_d.value;
+    p.scaleMax = params[RP_SCALE_MAX]->u.fs_d.value;
+    p.opacityMin = params[RP_OPACITY_MIN]->u.fs_d.value;
+    p.opacityMax = params[RP_OPACITY_MAX]->u.fs_d.value;
+    p.keepFirst = params[RP_KEEP_FIRST]->u.bd.value != 0;
+    return p;
+}
+
+// Where RegisterSelf takes the parameter values from.
+enum class ParamSource {
+    Array,      // the params[] AE passed with the command
+    SeqData,    // the copy kept in sequence data (SEQUENCE_RESETUP: no params[] yet)
+    Aegp,       // read the effect through AEGP (only while rendering: during SEQUENCE_SETUP and while AE
+                // duplicates an effect, reading it fails AE's check "child not found in parent")
+};
+
+// Registers this effect's layer (key + parameter snapshot) for the hooks.
+// writeSeq: store key and parameters in sequence data (only in commands that may write it).
+SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src, PF_ParamDef* params[], bool writeSeq)
 {
     SPBasicSuite* sp = in_data->pica_basicP;
     Suite<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
@@ -119,14 +158,27 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, bool writeSeq)
         return SelfState::Unknown;
     rnd::LayerKey key = {(int)itemId, (int)layerId};
 
+    A_Time t = {in_data->current_time, (A_u_long)in_data->time_scale};
+    if (t.scale == 0) t.scale = 1;
     rnd::ParamSnapshot snap;
-    AEGP_EffectRefH eff = nullptr;
     bool read = false;
-    if (!pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) && eff) {
-        A_Time t = {in_data->current_time, (A_u_long)in_data->time_scale};
-        if (t.scale == 0) t.scale = 1;
-        read = rnd::ReadParamsFromEffect(eff, L, t, &snap);
-        es->AEGP_DisposeEffect(eff);
+    if (src == ParamSource::Aegp) {
+        AEGP_EffectRefH eff = nullptr;
+        if (!pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) && eff) {
+            read = rnd::ReadParamsFromEffect(eff, L, t, &snap);
+            es->AEGP_DisposeEffect(eff);
+        }
+    } else {
+        snap.p = DefaultParams();
+        if (src == ParamSource::Array && params) {
+            snap.p = ParamsFromArray(params);
+        } else if (in_data->sequence_data) {
+            auto* sd = (SeqData*)PF_LOCK_HANDLE(in_data->sequence_data);
+            if (sd->hasParams) snap.p = sd->p;
+            PF_UNLOCK_HANDLE(in_data->sequence_data);
+        }
+        read = rnd::ReadLayerAnchor(L, t, &snap.anchorX, &snap.anchorY);
+        snap.valid = true;
     }
     AEGP_LayerFlags lflags = 0;
     ls->AEGP_GetLayerFlags(L, &lflags);
@@ -143,16 +195,19 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, bool writeSeq)
             out_data->sequence_data = PF_NEW_HANDLE(sizeof(SeqData));
             if (out_data->sequence_data) {
                 auto* z = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
-                z->compItemId = z->layerId = 0;
+                std::memset(z, 0, sizeof(SeqData));
                 PF_UNLOCK_HANDLE(out_data->sequence_data);
             }
         }
         if (out_data->sequence_data) {
+            // A duplicated effect starts with the original's sequence data: just take the new key.
+            // (Do not unregister the old key here: it belongs to the original instance.)
             auto* sd = (SeqData*)PF_LOCK_HANDLE(out_data->sequence_data);
-            if (sd->compItemId != key.compItemId || sd->layerId != key.layerId) {
-                if (sd->compItemId || sd->layerId) rnd::RegUnregister({sd->compItemId, sd->layerId});
-                sd->compItemId = key.compItemId;
-                sd->layerId = key.layerId;
+            sd->compItemId = key.compItemId;
+            sd->layerId = key.layerId;
+            if (src != ParamSource::SeqData) {
+                sd->p = snap.p;
+                sd->hasParams = true;
             }
             PF_UNLOCK_HANDLE(out_data->sequence_data);
         }
@@ -181,7 +236,7 @@ const char* StatusText(SelfState st)
 
 PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
-    SelfState st = RegisterSelf(in_data, out_data, false);
+    SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
     PF_ParamDef copy = *params[RP_STATUS];
     copy.ui_flags |= PF_PUI_DISABLED;
     copy.u.bd.u.nameptr = StatusText(st);
@@ -261,7 +316,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     PF_Err err = PF_Err_NONE;
-    RegisterSelf(in_data, out_data, false);
+    RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
     if (extra->cb->GuidMixInPtr) extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
 
     PF_RenderRequest req = extra->input->output_request;
@@ -317,8 +372,10 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             // ("child not found in parent") and the effect is not added. SEQUENCE_RESETUP follows at once.
             break;
         case PF_Cmd_SEQUENCE_RESETUP:
+            if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, ParamSource::SeqData, nullptr, true);
+            break;
         case PF_Cmd_USER_CHANGED_PARAM:
-            if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, true);
+            if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, ParamSource::Array, params, true);
             break;
         case PF_Cmd_SEQUENCE_SETDOWN:
             err = SequenceSetdown(in_data, out_data);

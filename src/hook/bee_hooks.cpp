@@ -75,6 +75,24 @@ struct Suite {
 
 }  // namespace
 
+bool ReadLayerAnchor(AEGP_LayerH L, const A_Time& t, double* x, double* y)
+{
+    Suite<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
+    if (!ss) return false;
+    AEGP_StreamRefH as = nullptr;
+    if (ss->AEGP_GetNewLayerStream(g_pluginId, L, AEGP_LayerStream_ANCHORPOINT, &as) || !as) return false;
+    AEGP_StreamValue2 val;
+    std::memset(&val, 0, sizeof(val));
+    bool ok = !ss->AEGP_GetNewStreamValue(g_pluginId, as, AEGP_LTimeMode_LayerTime, &t, FALSE, &val);
+    if (ok) {
+        *x = val.val.three_d.x;
+        *y = val.val.three_d.y;
+        ss->AEGP_DisposeStreamValue(&val);
+    }
+    ss->AEGP_DisposeStream(as);
+    return ok;
+}
+
 bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, ParamSnapshot* out)
 {
     Suite<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
@@ -117,21 +135,7 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     one(RP_OPACITY_MIN, &r.p.opacityMin);
     one(RP_OPACITY_MAX, &r.p.opacityMax);
     one(RP_KEEP_FIRST, &keep);
-    AEGP_StreamRefH as = nullptr;
-    if (!ss->AEGP_GetNewLayerStream(g_pluginId, L, AEGP_LayerStream_ANCHORPOINT, &as) && as) {
-        AEGP_StreamValue2 val;
-        std::memset(&val, 0, sizeof(val));
-        if (!ss->AEGP_GetNewStreamValue(g_pluginId, as, AEGP_LTimeMode_LayerTime, &t, FALSE, &val)) {
-            r.anchorX = val.val.three_d.x;
-            r.anchorY = val.val.three_d.y;
-            ss->AEGP_DisposeStreamValue(&val);
-        } else {
-            ok = false;
-        }
-        ss->AEGP_DisposeStream(as);
-    } else {
-        ok = false;
-    }
+    if (!ReadLayerAnchor(L, t, &r.anchorX, &r.anchorY)) ok = false;
     if (!ok) return false;
     r.p.count = count < 0 ? 0 : (int)(count + 0.5);
     r.p.seed = (int)(seed + 0.5);

@@ -20,5 +20,7 @@ struct ParamSnapshot;
 // valid = false when the effect is switched off or L is not a 3D layer. Returns false if a read failed.
 // Needs InstallHooks to have run (it stores the suite pointer and plugin ID).
 bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, ParamSnapshot* out);
+// Anchor point of L at layer time t (layer-space px). Needs InstallHooks to have run.
+bool ReadLayerAnchor(AEGP_LayerH L, const A_Time& t, double* x, double* y);
 
 }  // namespace rnd
