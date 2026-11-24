@@ -55,9 +55,20 @@ def main() -> int:
         report(name, ok, f"{tag}fast vs normal {stats(dd)}")
         return ok
 
-    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_half", "fast_nocam", "fast_count0", "fast_toggle"]
+    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_half", "fast_nocam", "fast_count0", "fast_toggle",
+             "fast_grow", "fast_remove"]
     for c in cases:
         if only and c not in only:
+            continue
+        if c == "fast_remove":  # PNGs from the AE session only
+            on, off, plain = d / "rm_on.png", d / "rm_off.png", d / "rm_plain.png"
+            if not (on.exists() and off.exists() and plain.exists()):
+                report(c, False, "rm_*.png missing")
+                continue
+            doff = diff(load(off), load(plain))
+            report(c, doff.max() <= 1, f"removed in the session vs never had it {stats(doff)}")
+            don = diff(load(on), load(plain))
+            report(c + " on", don.max() > 32, f"while on, the copies were shown (vs plain {stats(don)})")
             continue
         fm, nm = frame(d, "fm_" + c, 0), frame(d, "nm_" + c, 0)
         if not fm.exists() or not nm.exists():
@@ -71,7 +82,7 @@ def main() -> int:
             dd, db = diff(a, b), np.abs(box3(a) - box3(b)).max(axis=2)
             report(c, dd.mean() <= 0.5 and db.max() <= 24,
                    f"fast vs normal {stats(dd)}; 3x3-averaged max={db.max():.1f} (mean<=0.5, averaged max<=24)")
-        elif c in ("fast_scatter", "fast_nocam"):
+        elif c in ("fast_scatter", "fast_nocam", "fast_grow"):
             near(c, a, b, 2.0, 0.01)
         elif c == "fast_half":
             size_ok = a.shape[:2] == (H // 2, W // 2) and b.shape[:2] == (H // 2, W // 2)

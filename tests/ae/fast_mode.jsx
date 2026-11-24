@@ -26,7 +26,13 @@
          noCam: true},
         {name: "fast_count0", image: true, params: {count: 0}},
         {name: "fast_toggle", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         toggle: true}
+         toggle: true},
+        // an effect before randamu grows the layer: the input's origin is negative
+        {name: "fast_grow", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
+         shadow: true},
+        // removing the effect while fast mode is on (same session): the plain layer again (PNGs only)
+        {name: "fast_remove", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
+         remove: true}
     ];
 
     function setParams(fx, p, fast) {
@@ -38,8 +44,8 @@
         fx.property(12).setValue(op[0]); fx.property(13).setValue(op[1]);
         fx.property(FAST).setValue(fast ? 1 : 0);
     }
-    function build(c, fast) {
-        var comp = app.project.items.addComp((fast ? "fm_" : "nm_") + c.name, W, H, 1, c.frames ? c.frames / 30 : 2, 30);
+    function build(c, fast, noFx) {
+        var comp = app.project.items.addComp((noFx ? "plain_" : fast ? "fm_" : "nm_") + c.name, W, H, 1, c.frames ? c.frames / 30 : 2, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
         // another 3D layer behind the copies (the plane must sort in front of it)
         var back = comp.layers.addSolid([0.2, 0.3, 0.6], "Back", 300, 200, 1);
@@ -82,6 +88,12 @@
             cp.setValueAtTime(0, [p0[0] - 150, p0[1] - 60, p0[2]]);
             cp.setValueAtTime(29 / 30, [p0[0] + 150, p0[1] + 40, p0[2] + 250]);
         }
+        if (c.shadow) {
+            var ds = T.property("ADBE Effect Parade").addProperty("ADBE Drop Shadow");
+            ds.property("ADBE Drop Shadow-0004").setValue(25);  // distance
+            ds.property("ADBE Drop Shadow-0005").setValue(10);  // softness
+        }
+        if (noFx) return comp;
         var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
         setParams(fx, c.params, fast);
         if (c.half) comp.resolutionFactor = [2, 2];
@@ -115,7 +127,11 @@
     }
     function fxOf(comp) {
         for (var i = 1; i <= comp.numLayers; i++)
-            if (comp.layer(i).name === "Target") return comp.layer(i).property("ADBE Effect Parade").property(1);
+            if (comp.layer(i).name === "Target") {
+                var par = comp.layer(i).property("ADBE Effect Parade");
+                for (var k = 1; k <= par.numProperties; k++)
+                    if (par.property(k).matchName === "RANDAMU Scatter") return par.property(k);
+            }
         return null;
     }
 
@@ -128,6 +144,14 @@
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;
             var fm = build(c, true), nm = build(c, false);
+            if (c.remove) {
+                png(fm, "rm_on", 0);
+                fxOf(fm).remove();
+                png(fm, "rm_off", 0);
+                png(build(c, false, true), "rm_plain", 0);
+                log("built " + c.name);
+                continue;
+            }
             addRQ(fm, c);
             addRQ(nm, c);
             if (c.anim) {

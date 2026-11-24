@@ -2,6 +2,8 @@
 // output image (bilinear, "over", per-copy opacity, far copies first). No AE dependency.
 #pragma once
 
+#include <functional>
+
 namespace rnd {
 
 // ARGB, straight (unpremultiplied) alpha like AE's effect worlds, the channel order of PF_Pixel8 /
@@ -27,7 +29,9 @@ struct RasterCopy {
 // dsX/dsY: the downsample factor of both src and dst (1 = full, 0.5 = half): buffer px p of either image
 // covers full-resolution px [(p + origin) / ds, (p + origin + 1) / ds). Pixel centres are sampled.
 // Source px outside src are transparent. `threads` bands of dst rows are drawn in parallel.
-void RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
-                     int threads);
+// abort (optional) is polled on the calling thread between chunks of rows; when it returns true the drawing
+// stops (dst is left incomplete) and the function returns false.
+bool RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
+                     int threads, const std::function<bool()>& abort = {});
 
 }  // namespace rnd

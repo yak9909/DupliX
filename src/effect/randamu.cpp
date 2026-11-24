@@ -599,8 +599,11 @@ PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW
                  copies.size(), f->p.count);
     }
     unsigned hw = std::thread::hardware_concurrency();
-    rnd::RasterizeCopies(src, copies.data(), (int)copies.size(), f ? f->dsX : 1.0, f ? f->dsY : 1.0, dst,
-                         hw ? (int)hw : 4);
+    // Many large copies take long: stop when AE cancels (scrubbing, render queue stop).
+    auto aborted = [in_data]() { return in_data->inter.abort && PF_ABORT(in_data) != PF_Err_NONE; };
+    if (!rnd::RasterizeCopies(src, copies.data(), (int)copies.size(), f ? f->dsX : 1.0, f ? f->dsY : 1.0, dst,
+                              hw ? (int)hw : 4, aborted))
+        return PF_Interrupt_CANCEL;
     return PF_Err_NONE;
 }
 

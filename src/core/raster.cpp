@@ -178,8 +178,8 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
 }
 
 template <class P>
-void Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY, const RasterImage& dst,
-         int threads)
+bool Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY, const RasterImage& dst,
+         int threads, const std::function<bool()>& abort)
 {
     std::vector<Box> boxes((size_t)std::max(n, 1));
     for (int i = 0; i < n; i++) {
@@ -190,37 +190,45 @@ void Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, do
     const int kRows = 8;
     const int chunks = (dst.height + kRows - 1) / kRows;
     std::atomic<int> next{0};
-    auto worker = [&]() {
+    std::atomic<bool> stop{false};
+    auto worker = [&](bool caller) {
         std::vector<float> acc((size_t)kRows * dst.width * 4);
-        for (int k; (k = next.fetch_add(1)) < chunks;)
+        for (int k; !stop.load(std::memory_order_relaxed) && (k = next.fetch_add(1)) < chunks;) {
+            // AE's abort callback is only asked on the calling (render) thread
+            if (caller && abort && abort()) {
+                stop = true;
+                break;
+            }
             DrawRows<P>(src, copies, boxes.data(), n, dsX, dsY, dst, k * kRows, std::min(dst.height, (k + 1) * kRows),
                         acc.data());
+        }
     };
     int t = std::max(1, std::min(threads, chunks));
     std::vector<std::thread> pool;
     try {
-        for (int i = 1; i < t; i++) pool.emplace_back(worker);
+        for (int i = 1; i < t; i++) pool.emplace_back(worker, false);
     } catch (...) {
         // no more threads: the ones already started and this one take all the chunks
     }
-    worker();
+    worker(true);
     for (auto& th : pool) th.join();
+    return !stop.load();
 }
 
 }  // namespace
 
-void RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
-                     int threads)
+bool RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
+                     int threads, const std::function<bool()>& abort)
 {
-    if (dst.width <= 0 || dst.height <= 0 || !dst.data) return;
+    if (dst.width <= 0 || dst.height <= 0 || !dst.data) return true;
     if (!(dsX > 0) || !(dsY > 0) || src.bpc != dst.bpc || !src.data) n = 0;
     if (n > 0)
         std::stable_sort(copies, copies + n, [](const RasterCopy& a, const RasterCopy& b) { return a.depth > b.depth; });
     switch (dst.bpc) {
-    case 8: Run<P8>(src, copies, n, dsX, dsY, dst, threads); break;
-    case 16: Run<P16>(src, copies, n, dsX, dsY, dst, threads); break;
-    case 32: Run<PF>(src, copies, n, dsX, dsY, dst, threads); break;
-    default: break;
+    case 8: return Run<P8>(src, copies, n, dsX, dsY, dst, threads, abort);
+    case 16: return Run<P16>(src, copies, n, dsX, dsY, dst, threads, abort);
+    case 32: return Run<PF>(src, copies, n, dsX, dsY, dst, threads, abort);
+    default: return true;
     }
 }
 

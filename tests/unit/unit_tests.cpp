@@ -586,6 +586,21 @@ TEST(raster_behind_camera)
     for (auto& p : dst) CHECK(p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0);
 }
 
+TEST(raster_abort_stops)
+{
+    // AE's abort (the user scrubs or cancels): the drawing stops and reports it; without abort it completes.
+    std::vector<Px8> src = MakeSrc8(40, 40), dst((size_t)200 * 200);
+    rnd::RasterImage s = Img(src, 40, 40, 8), d = Img(dst, 200, 200, 8);
+    rnd::RasterCopy c = Copy(1.0, 100, 0.2);
+    int asked = 0;
+    auto stop = [&]() { ++asked; return true; };
+    CHECK(!rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 4, stop));
+    CHECK(asked >= 1);
+    auto never = []() { return false; };
+    CHECK(rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 4, never));
+    CHECK(rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 4));
+}
+
 TEST(raster_identity_16bpc)
 {
     const int w = 7, h = 5;
@@ -668,30 +683,46 @@ TEST(fast_registry_fallback_last)
     PlaneOf(1, a);
     PlaneOf(2, b);
     rnd::FastSetPlane({41, 2}, 11, 30, b);
-    rnd::FastSetPlane({41, 2}, 10, 30, a);  // registered last
+    rnd::FastSetPlane({41, 2}, 10, 30, a);
     bool exact = true;
-    CHECK(rnd::FastGetPlane({41, 2}, 99, 30, o, &exact) && !exact && o[0] == 1);
+    CHECK(rnd::FastGetPlane({41, 2}, 99, 30, o, &exact) && !exact && o[0] == 2);  // nearest: 11
     CHECK(!rnd::FastGetPlane({41, 3}, 10, 30, o, &exact));  // other layer
     CHECK(!rnd::FastGetPlane({42, 2}, 10, 30, o, &exact));  // other comp
     rnd::FastClear({41, 2});
     CHECK(!rnd::FastGetPlane({41, 2}, 10, 30, o, &exact));
 }
 
-TEST(fast_registry_keeps_recent_8)
+TEST(fast_registry_keeps_recent_64)
 {
+    // MFR on a many-core machine renders dozens of frames at once: keep 64 times per layer.
     double m[16], o[16];
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 70; i++) {
         PlaneOf(i, m);
         rnd::FastSetPlane({43, 1}, i, 30, m);
     }
     bool exact = false;
-    CHECK(rnd::FastGetPlane({43, 1}, 2, 30, o, &exact) && exact && o[0] == 2);
-    CHECK(rnd::FastGetPlane({43, 1}, 1, 30, o, &exact) && !exact && o[0] == 9);  // dropped: the last one
-    PlaneOf(50, m);
-    rnd::FastSetPlane({43, 1}, 5, 30, m);  // same time again: replaced in place
-    CHECK(rnd::FastGetPlane({43, 1}, 5, 30, o, &exact) && exact && o[0] == 50);
-    CHECK(rnd::FastGetPlane({43, 1}, 2, 30, o, &exact) && exact && o[0] == 2);
+    CHECK(rnd::FastGetPlane({43, 1}, 6, 30, o, &exact) && exact && o[0] == 6);
+    CHECK(rnd::FastGetPlane({43, 1}, 5, 30, o, &exact) && !exact);  // dropped
+    PlaneOf(500, m);
+    rnd::FastSetPlane({43, 1}, 40, 30, m);  // same time again: replaced in place
+    CHECK(rnd::FastGetPlane({43, 1}, 40, 30, o, &exact) && exact && o[0] == 500);
+    CHECK(rnd::FastGetPlane({43, 1}, 6, 30, o, &exact) && exact && o[0] == 6);
     rnd::FastClear({43, 1});
+}
+
+TEST(fast_registry_fallback_nearest)
+{
+    // Motion blur asks for sub-frame times; MFR registers other frames in between: use the nearest time.
+    double m[16], o[16];
+    const int times[4] = {30, 10, 20, 40};  // registration order; 40 is the last
+    for (int t : times) {
+        PlaneOf(t, m);
+        rnd::FastSetPlane({44, 1}, t, 30, m);
+    }
+    bool exact = true;
+    CHECK(rnd::FastGetPlane({44, 1}, 41, 60, o, &exact) && !exact && o[0] == 20);  // 20.5/30 -> 20
+    CHECK(rnd::FastGetPlane({44, 1}, 11, 30, o, &exact) && !exact && o[0] == 10);
+    rnd::FastClear({44, 1});
 }
 
 // ---- hook tests

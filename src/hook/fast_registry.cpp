@@ -1,5 +1,6 @@
 #include "hook/fast_registry.h"
 
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -9,7 +10,7 @@ namespace rnd {
 
 namespace {
 
-constexpr int kKeep = 8;
+constexpr int kKeep = 64;  // MFR on many-core machines renders dozens of frames at once
 
 struct Entry {
     long long v = 0;
@@ -69,7 +70,15 @@ bool FastGetPlane(LayerKey k, long long tValue, unsigned long long tScale, doubl
     const Slots& sl = it->second;
     int i = Find(sl, tValue, tScale);
     if (exact) *exact = i >= 0;
-    if (i < 0) i = sl.last;
+    if (i < 0) {  // nearest registered time (motion-blur sub-frames, or a frame not prepared yet)
+        const double t = (double)tValue / (double)tScale;
+        double best = 1e300;
+        for (int j = 0; j < kKeep; j++) {
+            if (!sl.e[j].s) continue;
+            double dt = std::fabs((double)sl.e[j].v / (double)sl.e[j].s - t);
+            if (dt < best) best = dt, i = j;
+        }
+    }
     std::memcpy(m4, sl.e[i].m, sizeof(double) * 16);
     return true;
 }
