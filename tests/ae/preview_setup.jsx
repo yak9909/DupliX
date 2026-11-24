@@ -38,6 +38,9 @@
             lines.push(name + " " + c.id + " " + c.frameDuration);
         }
         variant("pv_asis", function () {});
+        // sampling cost probes: lower layer quality / bilinear sampling (classic 3D samples every pixel)
+        variant("pv_draft", function (c, T, f) { T.quality = LayerQuality.DRAFT; });
+        variant("pv_bilinear", function (c, T, f) { T.samplingQuality = LayerSamplingQuality.BILINEAR; });
         variant("pv_one", function (c, T, f) { plain1(f); });
         variant("pv_real10", function (c, T, f) {
             plain1(f);
