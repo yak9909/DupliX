@@ -3,7 +3,8 @@
 ## 再開の手順（2026-11-24 深夜、高速モードの実装後）
 
 - **高速モードは実装済み（計画 `docs/superpowers/plans/2026-11-24-fast-mode.md` の Task 1〜4 と最終レビューの修正。ブランチ `feat/mvp`）。次: 利用者に AE で試してもらう**（ビルドの置き換えは利用者が AE を閉じているときだけ。今の `dev_plugins\randamu.aex` は最新）。使い方と失われるものは `docs/randamu-quickstart.md` の「高速モード」。
-- 確かめたこと: 単体テスト ALL PASS（42）、`run_fast_mode.ps1` FAST ALL PASS（9 ケース、MFR オフ・オン）、`run_ref.ps1` REF ALL PASS、`fx_remove`・`run_ui.ps1` 合格（高速モードはオフ）。
+- （11/24 23 時）利用者の報告「軌道ヌルの Y 回転で前後が入れ替わる」を修正（画素ごとの奥行きで重ねる。commit 651b00a。再現試験 `tests/ae/run_orbit_order.ps1`）。A ドライブの空きがほぼない（試験の大きな書き出しは %TEMP% へ）。
+- 確かめたこと: 単体テスト ALL PASS（43）、`run_fast_mode.ps1` FAST ALL PASS（9 ケース、MFR オフ・オン）、`run_ref.ps1` REF ALL PASS、`fx_remove`・`run_ui.ps1` 合格（高速モードはオフ）。
 - 速さ（利用者のシーン、aerender MFR オフ、CPU が他の作業で約 60% 使われた状態）: 通常 10 枚 150 ms、高速 10 枚 117 ms、100 枚 267 ms、1000 枚 2.2 秒。通常は 1 枚約 14 ms なので枚数が多いほど差が開くが、計画の「10 枚で半分以下」「1000 枚が 10 枚の 3 倍以内」は未達（自前の描画がコピーの覆う画素数に比例する）。次の高速化の候補は GPU（CUDA）か、CPU のさらなる最適化。**CUDA Toolkit は導入済み**（v13.3＝`CUDA_PATH`、v12.2 も。nvcc・NVRTC あり。RTX 3060、ドライバー 596.36。Everything 1.5a は `C:\Tools\es.exe -instance 1.5a` で検索できる）。
 - 判断の一覧（計画からの逸脱を含む）と、後回しにした軽微な指摘は `docs/superpowers/plans/2026-11-24-fast-mode-rulings.md`。主なもの: AE のエフェクトの画素はストレートアルファ（計画はプリマルチプライと書いていた）、面の表はレイヤー時間で鍵・64 件・最も近い時刻、2 画面表示の制限、`fast_identity` の判定の変更。
 - 計測の注意: AE のディスクキャッシュは同じビルド・同じ内容の絵を返す。`run_user.ps1` は毎回 `RANDAMU_CACHE_SALT` を変える。
