@@ -2,8 +2,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <thread>
+#include <vector>
 
 #include "core/fast_plane.h"
+#include "core/raster.h"
 #include "core/scatter.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
@@ -398,6 +402,220 @@ TEST(copy_depth_is_center_z)
     rnd::Mul4(C, W, CW);
     ToCam(cam, CW, 288.5, 340, 0, c);
     CHECK_NEAR(rnd::CopyDepth(cam, W, C, 288.5, 340), c[2], 1e-9);
+}
+
+// ---- fast mode: CPU rasterizer
+struct Px8 { unsigned char a, r, g, b; };
+struct Px16 { unsigned short a, r, g, b; };
+struct PxF { float a, r, g, b; };
+
+// A premultiplied 8 bpc test image with distinct values (alpha >= colour channels).
+static std::vector<Px8> MakeSrc8(int w, int h)
+{
+    std::vector<Px8> v((size_t)w * h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            Px8& p = v[(size_t)y * w + x];
+            p.a = (unsigned char)(150 + (x * 7 + y * 3) % 106);
+            p.r = (unsigned char)((x * 37 + y * 11) % (p.a + 1));
+            p.g = (unsigned char)((x * 5 + y * 29) % (p.a + 1));
+            p.b = (unsigned char)((x * 13 + y * 17) % (p.a + 1));
+        }
+    return v;
+}
+template <class P>
+static rnd::RasterImage Img(std::vector<P>& v, int w, int h, int bpc, int ox = 0, int oy = 0)
+{
+    rnd::RasterImage r;
+    r.data = v.data();
+    r.width = w;
+    r.height = h;
+    r.rowBytes = (long)(w * sizeof(P));
+    r.bpc = bpc;
+    r.originX = ox;
+    r.originY = oy;
+    return r;
+}
+static rnd::RasterCopy Copy(double opacity, double depth, double sx = 1, double tx = 0, double ty = 0)
+{
+    // screen -> src: u = sx * x + tx, v = sx * y + ty
+    rnd::RasterCopy c = {{sx, 0, 0, 0, sx, 0, tx, ty, 1}, opacity, depth};
+    return c;
+}
+static bool SamePx(const Px8& p, const Px8& q) { return p.a == q.a && p.r == q.r && p.g == q.g && p.b == q.b; }
+
+TEST(raster_identity_copies_source)
+{
+    const int w = 9, h = 7;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> dst((size_t)w * h, Px8{9, 9, 9, 9});
+    rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, w, h, 8);
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    for (size_t i = 0; i < dst.size(); i++) CHECK(SamePx(dst[i], src[i]));
+}
+
+TEST(raster_origins)
+{
+    // src buffer starts at layer px (-2, -1); dst buffer starts at screen px (5, 4).
+    const int w = 12, h = 10;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> dst(4 * 3);
+    rnd::RasterImage s = Img(src, w, h, 8, -2, -1), d = Img(dst, 4, 3, 8, 5, 4);
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    for (int y = 0; y < 3; y++)
+        for (int x = 0; x < 4; x++) CHECK(SamePx(dst[(size_t)y * 4 + x], src[(size_t)(y + 5) * w + (x + 7)]));
+}
+
+TEST(raster_opacity_half)
+{
+    const int w = 6, h = 5;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> dst((size_t)w * h);
+    rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, w, h, 8);
+    rnd::RasterCopy c = Copy(0.5, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    for (size_t i = 0; i < dst.size(); i++) {
+        CHECK_NEAR(dst[i].a, src[i].a / 2.0, 1.0);
+        CHECK_NEAR(dst[i].r, src[i].r / 2.0, 1.0);
+        CHECK_NEAR(dst[i].g, src[i].g / 2.0, 1.0);
+        CHECK_NEAR(dst[i].b, src[i].b / 2.0, 1.0);
+    }
+}
+
+TEST(raster_back_to_front)
+{
+    // Opaque source; the near copy (depth 100) is listed first, the far one (depth 200) is shifted 1 px.
+    const int w = 8, h = 6;
+    auto src = MakeSrc8(w, h);
+    for (auto& p : src) p.a = 255;
+    std::vector<Px8> dst((size_t)w * h);
+    rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, w, h, 8);
+    rnd::RasterCopy c[2] = {Copy(1.0, 100), Copy(1.0, 200, 1, 1, 0)};
+    rnd::RasterizeCopies(s, c, 2, 1.0, 1.0, d, 1);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w - 1; x++) CHECK(SamePx(dst[(size_t)y * w + x], src[(size_t)y * w + x]));
+}
+
+TEST(raster_downsample_half)
+{
+    // At 1/2 resolution AE hands both the input and the output at half size.
+    const int w = 8, h = 6;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> dst((size_t)w * h);
+    rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, w, h, 8);
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 0.5, 0.5, d, 1);
+    for (size_t i = 0; i < dst.size(); i++) CHECK(SamePx(dst[i], src[i]));
+    // A copy at half size (src = 2 * screen): dst (x, y) samples src index (2x + 0.5, 2y + 0.5).
+    std::vector<Px8> dst2((size_t)(w / 2) * (h / 2));
+    rnd::RasterImage d2 = Img(dst2, w / 2, h / 2, 8);
+    rnd::RasterCopy c2 = Copy(1.0, 100, 2.0);
+    rnd::RasterizeCopies(s, &c2, 1, 0.5, 0.5, d2, 1);
+    for (int y = 0; y < h / 2; y++)
+        for (int x = 0; x < w / 2; x++) {
+            const Px8* q[4] = {&src[(size_t)(2 * y) * w + 2 * x], &src[(size_t)(2 * y) * w + 2 * x + 1],
+                               &src[(size_t)(2 * y + 1) * w + 2 * x], &src[(size_t)(2 * y + 1) * w + 2 * x + 1]};
+            const Px8& o = dst2[(size_t)y * (w / 2) + x];
+            CHECK_NEAR(o.a, (q[0]->a + q[1]->a + q[2]->a + q[3]->a) / 4.0, 1.0);
+            CHECK_NEAR(o.r, (q[0]->r + q[1]->r + q[2]->r + q[3]->r) / 4.0, 1.0);
+        }
+}
+
+static void RandomCopies(rnd::RasterCopy* c, int n)
+{
+    for (int i = 0; i < n; i++) {
+        double a = 0.3 * i, s = 0.8 + 0.05 * i;
+        rnd::RasterCopy k = {{s * std::cos(a), s * std::sin(a), 0.0002 * i, -s * std::sin(a), s * std::cos(a), 0.0001,
+                              -40.0 * i, 25.0 * i, 1},
+                             0.4 + 0.05 * i,
+                             100.0 + 37 * ((i * 7) % 5)};
+        c[i] = k;
+    }
+}
+
+TEST(raster_threads_same_result)
+{
+    const int w = 60, h = 50;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> d1(200 * 150), d8(200 * 150);
+    rnd::RasterImage s = Img(src, w, h, 8), a = Img(d1, 200, 150, 8, -20, -10), b = Img(d8, 200, 150, 8, -20, -10);
+    rnd::RasterCopy c[12];
+    RandomCopies(c, 12);
+    rnd::RasterizeCopies(s, c, 12, 1.0, 1.0, a, 1);
+    RandomCopies(c, 12);
+    rnd::RasterizeCopies(s, c, 12, 1.0, 1.0, b, 8);
+    CHECK(std::memcmp(d1.data(), d8.data(), d1.size() * sizeof(Px8)) == 0);
+    bool any = false;
+    for (auto& p : d1) any |= p.a != 0;
+    CHECK(any);
+}
+
+TEST(raster_behind_camera)
+{
+    // Copies behind the camera are dropped by the caller (CopyHomography false): with none left, all clear.
+    std::vector<Px8> src = MakeSrc8(4, 4), dst(16, Px8{7, 7, 7, 7});
+    rnd::RasterImage s = Img(src, 4, 4, 8), d = Img(dst, 4, 4, 8);
+    rnd::RasterizeCopies(s, nullptr, 0, 1.0, 1.0, d, 4);
+    for (auto& p : dst) CHECK(p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0);
+}
+
+TEST(raster_identity_16bpc)
+{
+    const int w = 7, h = 5;
+    auto s8 = MakeSrc8(w, h);
+    std::vector<Px16> src((size_t)w * h), dst((size_t)w * h);
+    for (size_t i = 0; i < src.size(); i++)
+        src[i] = Px16{(unsigned short)(s8[i].a * 128), (unsigned short)(s8[i].r * 128), (unsigned short)(s8[i].g * 128),
+                      (unsigned short)(s8[i].b * 128)};
+    src[0].a = 32768;
+    rnd::RasterImage s = Img(src, w, h, 16), d = Img(dst, w, h, 16);
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 2);
+    for (size_t i = 0; i < src.size(); i++)
+        CHECK(dst[i].a == src[i].a && dst[i].r == src[i].r && dst[i].g == src[i].g && dst[i].b == src[i].b);
+}
+
+TEST(raster_identity_32bpc)
+{
+    const int w = 7, h = 5;
+    auto s8 = MakeSrc8(w, h);
+    std::vector<PxF> src((size_t)w * h), dst((size_t)w * h);
+    for (size_t i = 0; i < src.size(); i++)
+        src[i] = PxF{s8[i].a / 255.f, s8[i].r / 255.f * 1.5f, s8[i].g / 255.f, s8[i].b / 255.f};  // overbright ok
+    rnd::RasterImage s = Img(src, w, h, 32), d = Img(dst, w, h, 32);
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 2);
+    for (size_t i = 0; i < src.size(); i++) {
+        CHECK_NEAR(dst[i].a, src[i].a, 1e-6);
+        CHECK_NEAR(dst[i].r, src[i].r, 1e-6);
+        CHECK_NEAR(dst[i].g, src[i].g, 1e-6);
+        CHECK_NEAR(dst[i].b, src[i].b, 1e-6);
+    }
+}
+
+TEST(raster_speed_report)
+{
+    std::vector<Px8> src = MakeSrc8(577, 680), dst((size_t)1920 * 1080);
+    rnd::RasterImage s = Img(src, 577, 680, 8), d = Img(dst, 1920, 1080, 8);
+    rnd::RasterCopy c[10];
+    for (int i = 0; i < 10; i++) c[i] = Copy(0.9, 100.0 + i, 1.0 + 0.03 * i, -130.0 * i, -40.0 * i);
+    const int counts[2] = {1, (int)std::thread::hardware_concurrency()};
+    for (int threads : counts) {
+        double best = 1e9;
+        for (int rep = 0; rep < 3; rep++) {
+            auto t0 = std::chrono::steady_clock::now();
+            rnd::RasterizeCopies(s, c, 10, 1.0, 1.0, d, threads);
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        std::printf("raster speed: 1920x1080, 10 copies of 577x680, %d threads: %.2f ms (best of 3)\n", threads, best);
+        CHECK(best >= 0);
+    }
+    auto t0 = std::chrono::steady_clock::now();
+    rnd::RasterizeCopies(s, c, 0, 1.0, 1.0, d, counts[1]);
+    std::printf("raster speed: 1920x1080, 0 copies (clear only), %d threads: %.2f ms\n", counts[1],
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
 // ---- hook tests
