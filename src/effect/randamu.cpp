@@ -27,6 +27,29 @@ namespace {
 
 const char kBuildId[] = "randamu build " __DATE__ " " __TIME__;
 
+// The identity of THIS build for AE's disk cache: the loaded .aex file's last-write time and size.
+// __DATE__/__TIME__ alone only change when this .cpp is recompiled, so a fix in another file (raster.cpp,
+// 11/24 23:00) kept the old key and AE served frames of the previous build from its disk cache.
+const std::string& BuildId()
+{
+    static const std::string id = [] {
+        std::string s = kBuildId;
+        HMODULE self = nullptr;
+        wchar_t path[MAX_PATH] = {0};
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)&BuildId, &self) &&
+            GetModuleFileNameW(self, path, MAX_PATH) && GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+            char b[96];
+            snprintf(b, sizeof(b), " file %08lx%08lx %lu", fa.ftLastWriteTime.dwHighDateTime,
+                     fa.ftLastWriteTime.dwLowDateTime, fa.nFileSizeLow);
+            s += b;
+        }
+        return s;
+    }();
+    return id;
+}
+
 std::mutex g_logMutex;
 
 // AE reads parameter names in the system ANSI code page (CP932 on Japanese Windows), not UTF-8.
@@ -341,7 +364,7 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
     out_data->out_flags2 = PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
                            PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING |
                            PF_OutFlag2_SUPPORTS_GPU_RENDER_F32 | PF_OutFlag2_SUPPORTS_DIRECTX_RENDERING;
-    RLog("GlobalSetup: %s, host %d.%d", kBuildId, in_data->version.major, in_data->version.minor);
+    RLog("GlobalSetup: %s, host %d.%d", BuildId().c_str(), in_data->version.major, in_data->version.minor);
     Suite<AEGP_UtilitySuite6> util(in_data->pica_basicP, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     if (util && !util->AEGP_RegisterWithAEGP(nullptr, "randamu", &g_pluginId))
         rnd::InstallHooks(in_data->pica_basicP, g_pluginId);
@@ -396,7 +419,8 @@ void MixBuildId(PF_InData* in_data, PF_PreRenderExtra* extra)
         DWORD n = GetEnvironmentVariableA("RANDAMU_CACHE_SALT", v, sizeof(v));
         return std::string(v, n < sizeof(v) ? n : 0);
     }();
-    extra->cb->GuidMixInPtr(in_data->effect_ref, sizeof(kBuildId), kBuildId);
+    const std::string& id = BuildId();
+    extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)id.size(), id.data());
     if (!salt.empty()) extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)salt.size(), salt.data());
 }
 
