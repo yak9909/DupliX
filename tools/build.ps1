@@ -2,8 +2,9 @@
 #   pwsh tools/build.ps1                 # effect -> dev_plugins\randamu.aex (AE loads it via the junction)
 #   pwsh tools/build.ps1 -Target unit    # tests\unit -> build\unit\unit_tests.exe
 #   pwsh tools/build.ps1 -Target dump    # tests\tools -> build\dump\randamu_dump.exe
+#   pwsh tools/build.ps1 -Target gpu     # tests\gpu -> build\gpu\gpu_test.exe (runs on an NVIDIA GPU)
 #   pwsh tools/build.ps1 -Target all
-param([ValidateSet("effect", "unit", "dump", "all")][string]$Target = "effect",
+param([ValidateSet("effect", "unit", "dump", "gpu", "all")][string]$Target = "effect",
       [string]$Configuration = "Debug")
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -17,7 +18,9 @@ function Invoke-Build([string]$proj, [string]$outDir) {
     if ($LASTEXITCODE -ne 0) { throw "msbuild failed: $proj ($LASTEXITCODE)" }
 }
 
-$targets = if ($Target -eq "all") { @("effect", "unit", "dump") } else { @($Target) }
+$targets = if ($Target -eq "all") { @("effect", "unit", "dump", "gpu") } else { @($Target) }
+# The CUDA kernel as PTX embedded in a header (src/gpu/fast_raster_ptx.h), for the effect and the GPU test.
+if ($targets -contains "effect" -or $targets -contains "gpu") { & (Join-Path $PSScriptRoot "build_ptx.ps1") }
 foreach ($t in $targets) {
     switch ($t) {
         "effect" {
@@ -28,6 +31,7 @@ foreach ($t in $targets) {
         }
         "unit" { Invoke-Build (Join-Path $root "tests\unit\unit_tests.vcxproj") (Join-Path $root "build\unit") }
         "dump" { Invoke-Build (Join-Path $root "tests\tools\randamu_dump.vcxproj") (Join-Path $root "build\dump") }
+        "gpu" { Invoke-Build (Join-Path $root "tests\gpu\gpu_test.vcxproj") (Join-Path $root "build\gpu") }
     }
 }
 Remove-Item env:AE_PLUGIN_BUILD_DIR -ErrorAction SilentlyContinue
