@@ -858,6 +858,42 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         ((void (*)(void*, uintptr_t, uintptr_t))(**pr))(pr, (uintptr_t)(unsigned)n, *(unsigned*)(ctx + a3d::kCtxProgressTotal));
         return 0;
     }
+    // RANDAMU_A3D_DRAW=3: capture the first draw of copy RANDAMU_A3D_CAPSUB (default 0) into RANDAMU_A3D_CAPDIR:
+    // the draw's raster state and texture, the surface, and every row's target span before and after AE drew it
+    // (the reference for an exact copy of AE's span drawing)
+    static std::atomic<int> s_capDone{0};
+    static bool s_cap = false;
+    static std::string s_capDir;
+    static std::mutex s_capMu;
+    struct CapRow {
+        int row, y, x0, x1;
+        std::vector<unsigned char> before, after;
+    };
+    static std::vector<CapRow> s_capRows;
+    s_cap = false;
+    if (mode == 3 && mine && !s_capDone.load()) {
+        char sv[16] = {0}, dir[512] = {0};
+        const int want = GetEnvironmentVariableA("RANDAMU_A3D_CAPSUB", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
+        // RANDAMU_A3D_CAPW: only a target of this width (buffer: +32 data, +40 rowbytes, +44 width, +48 height)
+        const int wantW = GetEnvironmentVariableA("RANDAMU_A3D_CAPW", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
+        const unsigned char* tgt = *(int*)a7 == 1 ? *(const unsigned char**)(a7 + 8) : nullptr;
+        const bool widthOk = !wantW || (tgt && *(const int*)(tgt + 44) == wantW);
+        if (sub == want && widthOk && GetEnvironmentVariableA("RANDAMU_A3D_CAPDIR", dir, sizeof(dir)) > 0 &&
+            !s_capDone.exchange(1)) {
+            s_cap = true, s_capDir = dir;
+            s_capRows.clear();
+            CreateDirectoryA(dir, nullptr);
+            auto dump = [&](const char* name, const void* p, size_t n) {
+                FILE* f = fopen((s_capDir + "\\" + name).c_str(), "wb");
+                if (f) fwrite(p, 1, n, f), fclose(f);
+            };
+            dump("surface.bin", (const void*)self, 232);
+            dump("ctx.bin", (const void*)ctx, 512);
+            const unsigned char* tb = *(const unsigned char**)(a7 + 8);
+            dump("target_hdr.bin", tb, 128);
+            RLog("a3d capture: sub %d into %s (kind %d)", sub, dir, *(int*)a7);
+        }
+    }
     // the draw's pixel loop: the ctx's iterate function (+224, rows on AE's threads); its time apart from the setup
     typedef int (*IterFn)(uintptr_t, uintptr_t, uintptr_t);
     static thread_local IterFn t_iter = nullptr;
@@ -874,8 +910,86 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     *slot = [](uintptr_t n, uintptr_t d, uintptr_t cb) {
         const auto s = std::chrono::steady_clock::now();
         s_row = (RowFn)cb;
+        if (s_cap) {
+            auto dump = [&](const char* name, const void* p, size_t sz) {
+                FILE* f = fopen((s_capDir + "\\" + name).c_str(), "wb");
+                if (f) fwrite(p, 1, sz, f), fclose(f);
+            };
+            dump("d.bin", (const void*)d, 64);
+            const unsigned char* st = *(const unsigned char**)(d + 8);
+            dump("state.bin", st, 1024);
+            const unsigned char* w = *(const unsigned char**)(st + 16);  // the texture's PF_World
+            if (w) {
+                dump("tex_hdr.bin", w, 128);
+                const unsigned char* data = *(const unsigned char**)(w + 32);
+                const int rb = *(const int*)(w + 40), ww = *(const int*)(w + 44), hh = *(const int*)(w + 48);
+                if (data && rb > 0 && ww > 0 && hh > 0 && hh < 20000 && rb < (1 << 20)) dump("tex.bin", data, (size_t)rb * hh);
+                RLog("a3d capture: texture %dx%d rowbytes %d", ww, hh, rb);
+            }
+            const unsigned char* ent = *(const unsigned char**)(st + 32);
+            const int ne = *(const int*)(st + 40);
+            if (ent && ne > 0 && ne < 64) dump("samples.bin", ent, (size_t)72 * ne);
+            RLog("a3d capture: iterate n %llu cb +%llx samples %d", (unsigned long long)n,
+                 (unsigned long long)(cb - g_a3dLo), ne);
+            // the span drawing's other inputs: the layer's render params (d+16: xfer mode +0x18, opacity +0x20,
+            // lights +0x8C, its vfunc 0), the mask rows (d+24), the blending tables (ctx+480), and the CPU flag the
+            // samplers branch on (U_G_CPU_DataP -> +8)
+            const unsigned char* lp = *(const unsigned char**)(d + 16);
+            if (lp) {
+                dump("params.bin", lp, 256);
+                const uintptr_t f0 = **(const uintptr_t**)lp;
+                RLog("a3d capture: params vfunc0 +%llx xfer %d opacity %.6f lights %d quality-ish %d", (unsigned long long)(f0 - g_a3dLo),
+                     lp[0x18], *(const double*)(lp + 0x20), lp[0x8C], lp[0x5B]);
+            }
+            const unsigned char* mk = *(const unsigned char**)(d + 24);
+            if (mk) dump("mask_hdr.bin", mk, 128);
+            const uintptr_t ctx0 = **(const uintptr_t**)d;
+            RLog("a3d capture: mask %p tables %p", (const void*)mk, *(void**)(ctx0 + 480));
+            HMODULE u = GetModuleHandleA("U.dll");
+            void* cpuP = u ? (void*)GetProcAddress(u, "U_G_CPU_DataP") : nullptr;
+            if (cpuP) {
+                const unsigned char* cd = *(const unsigned char**)cpuP;  // the variable holds the data pointer
+                RLog("a3d capture: U_G_CPU_DataP +8 = %d", cd ? *(const int*)(cd + 8) : -1);
+                if (cd) dump("cpu.bin", cd, 64);
+            } else {
+                RLog("a3d capture: U_G_CPU_DataP not found");
+            }
+            // PF.dll's CPU-dispatched pointers: the area sampler (qword_180425A28) and the in-front transfer
+            HMODULE pf = GetModuleHandleA("PF.dll");
+            if (pf) {
+                const uintptr_t pfb = (uintptr_t)pf;
+                typedef void* (*GetXferFn)(int);
+                auto gx = (GetXferFn)GetProcAddress(pf, "?PF_Get_Xfer1_Opacity_table8@@YAP6AXPEBVPF_Pixel8@@PEBUPF_LinearBlendingTables@@EPEAV1@@ZH@Z");
+                const uintptr_t area = *(const uintptr_t*)(pfb + 0x425A28);
+                RLog("a3d capture: PF base %p area sampler +%llx xfer[%d] +%llx", (void*)pf, (unsigned long long)(area - pfb),
+                     lp ? lp[0x18] & 0x7F : -1, gx && lp ? (unsigned long long)((uintptr_t)gx(lp[0x18] & 0x7F) - pfb) : 0ull);
+            }
+            if (lp) {
+                const unsigned char* b0 = *(const unsigned char**)(lp + 0xB0);
+                if (b0) dump("params_b0.bin", b0, 64);
+            }
+        }
         const int e = t_iter(n, d, (uintptr_t)(RowFn)[](uintptr_t a, uintptr_t b, uintptr_t c) {
             const auto r0 = std::chrono::steady_clock::now();
+            if (s_cap && (uintptr_t)s_row == g_a3dLo + 0x16900) {
+                // sub_180016900: spans **(d+32) (int16 x0, x1 per row), y = row + *(d+44), target a7 = *(d+56)
+                const short* sp = (const short*)(**(const uintptr_t**)(a + 32)) + 2 * c;
+                CapRow cr;
+                cr.row = (int)c, cr.y = (int)c + *(const int*)(a + 44), cr.x0 = sp[0], cr.x1 = sp[1];
+                const uintptr_t a7p = *(const uintptr_t*)(a + 56);
+                unsigned char* row = nullptr;
+                if (*(const int*)a7p == 1) {
+                    const unsigned char* t = *(const unsigned char**)(a7p + 8);
+                    row = *(unsigned char**)(t + 32) + (ptrdiff_t)cr.y * *(const int*)(t + 40);
+                }
+                if (row && cr.x1 > cr.x0) cr.before.assign(row + 4 * cr.x0, row + 4 * cr.x1);
+                const int x = s_row(a, b, c);
+                if (row && cr.x1 > cr.x0) cr.after.assign(row + 4 * cr.x0, row + 4 * cr.x1);
+                s_rows++;
+                std::lock_guard<std::mutex> lk(s_capMu);
+                s_capRows.push_back(std::move(cr));
+                return x;
+            }
             const int x = s_row(a, b, c);
             s_rowNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             s_rows++;
@@ -887,6 +1001,21 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     const auto t0 = std::chrono::steady_clock::now();
     const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     *slot = t_iter;
+    if (s_cap) {
+        // rows.bin: per row int32 row, y, x0, x1, nbytes, then the bytes before and after
+        FILE* f = fopen((s_capDir + "\\rows.bin").c_str(), "wb");
+        if (f) {
+            for (const CapRow& cr : s_capRows) {
+                const int hdr[5] = {cr.row, cr.y, cr.x0, cr.x1, (int)cr.before.size()};
+                fwrite(hdr, 4, 5, f);
+                if (!cr.before.empty()) fwrite(cr.before.data(), 1, cr.before.size(), f);
+                if (!cr.after.empty()) fwrite(cr.after.data(), 1, cr.after.size(), f);
+            }
+            fclose(f);
+        }
+        RLog("a3d capture: %zu rows written", s_capRows.size());
+        s_cap = false;
+    }
     const double all = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (g_a3dDrawLog.Take(4000))
         RLog("a3d draw time: seq %ld all %.2f ms pixels %.2f ms rows %d row-work %.2f ms", seq, all, t_iterMs,
