@@ -27,7 +27,18 @@
         // Task 4: a narrow opaque wall turned 60 deg between two copies (left and right, not overlapping it on
         // screen); run_merge.ps1 -ForceD puts the group plane through the wall's middle (in its transparent part)
         {name: "seam", params: {count: 2, seed: 16, pos: [150, 20, 0], scale: [40, 40]}, compare: true,
-         walls: [{pos: [200, 150, 300], w: 40, h: 220, rotY: 60, color: [0, 0, 1]}]}
+         walls: [{pos: [200, 150, 300], w: 40, h: 220, rotY: 60, color: [0, 0, 1]}]},
+        // Task 6: the order against other layers and between layers (merge on vs off)
+        {name: "wall_front_back", params: {count: 30, seed: 4, pos: [160, 100, 260], rot: [20, 40, 30], scale: [50, 90]},
+         compare: true, walls: [{pos: [200, 150, 60], w: 260, h: 200, color: [0.9, 0.1, 0.1]}]},
+        {name: "wall_tilted", params: {count: 30, seed: 6, pos: [150, 100, 200], rot: [0, 30, 30], scale: [50, 90]},
+         compare: true, walls: [{pos: [200, 150, 0], w: 300, h: 240, rotY: 60, color: [0.1, 0.8, 0.2]}]},
+        {name: "wall_side", params: {count: 20, seed: 8, pos: [170, 100, 30], scale: [40, 70]}, compare: true,
+         walls: [{pos: [200, 150, 0], w: 40, h: 260, color: [0.2, 0.2, 0.9]}]},
+        // a solid target: AE fills a solid's copies without a texture, so it must not merge (the same frame as merge off)
+        {name: "solid_target", params: scatter, compare: true, solid: true},
+        {name: "two_layers", params: {count: 15, seed: 9, pos: [150, 100, 300], rot: [0, 0, 60], scale: [50, 90]}, compare: true,
+         second: {count: 15, seed: 10, pos: [150, 100, 300], rot: [0, 0, 30], scale: [50, 90]}}
     ];
 
     function setParams(fx, p, merge) {
@@ -54,12 +65,19 @@
         if (c.light) comp.layers.addLight("Light", [200, 150]);
         if (!c.noCam) comp.layers.addCamera("Cam", [200, 150]);
         if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_MERGE_IMAGE"))));
-        var T = comp.layers.add(imgItem);
+        var T = c.solid ? comp.layers.addSolid([1, 0.8, 0.1], "Target", 90, 70, 1) : comp.layers.add(imgItem);
         T.name = "Target";
         T.threeDLayer = true;
         tg(T).property("ADBE Position").setValue([W / 2, H / 2, 0]);
         var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
         setParams(fx, c.params, merge);
+        if (c.second) {  // another DupliX layer (the same image; a solid would not merge) mixed in depth with the first
+            var S = comp.layers.add(imgItem);
+            S.name = "Second";
+            S.threeDLayer = true;
+            tg(S).property("ADBE Position").setValue([W / 2, H / 2, 0]);
+            setParams(S.property("ADBE Effect Parade").addProperty("RANDAMU Scatter"), c.second, merge);
+        }
         return comp;
     }
     var rqLines = [];

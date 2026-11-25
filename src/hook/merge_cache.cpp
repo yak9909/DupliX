@@ -76,7 +76,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     // every transform); one entry per comp keeps the latest frame
     const unsigned long long h = HashMergeScene(in);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
-        MergePlan p = BuildSingleGroupPlan(in);
+        MergePlan p = BuildMergePlan(in);
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
         char fv[96] = {0};
         double wp[3];
@@ -91,8 +91,9 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
             }
         }
         static std::atomic<int> logged{0};
+        if (p.overBudget) RLog("merge: plan over budget (%d rounds): no merging this frame", p.rounds);
         if (++logged <= 20) {
-            RLog("merge: read scene ok=1");
+            RLog("merge: read scene ok=1 (plan: %d rounds, %.1f ms)", p.rounds, p.ms[0] + p.ms[1] + p.ms[2] + p.ms[3]);
             LogMergeScene(in);
             for (const auto& kv : p.layers)
                 RLog("merge: plan layer %d/%d subs=%zu groups=%zu%s", kv.second.in.compItemId, kv.second.in.layerId,

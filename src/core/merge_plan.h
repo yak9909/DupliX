@@ -28,9 +28,11 @@ enum MergeBlock : unsigned {
     MB_MATTE = 64,
     MB_UNREADABLE = 128,
     MB_OTHER_EFFECTS = 256,  // other active effects on the layer may grow each copy beyond the rect the plan knows
+    MB_SOLID = 512,          // AE fills a solid's copies without asking for a texture: a group cannot be swapped in
 };
 
 struct LayerFlagsForMerge {
+    bool solid = false;
     bool otherEffects = false;
     bool compMotionBlur = false, layerMotionBlur = false;
     bool dof = false;

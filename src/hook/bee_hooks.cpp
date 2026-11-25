@@ -344,13 +344,32 @@ std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, 
     return plan;
 }
 
-// The time the opacity hook last saw for a layer on this thread: the texture hook (no time argument) is called
-// by the same Artisan render right after it.
+// The time the opacity hook last saw for each layer on this thread: the texture hook (no time argument) is called
+// by the same Artisan render after it (AE may ask several layers' opacities first).
 struct LastArtTime {
     LayerKey k{-1, -1};
     int t[2] = {0, 1};
 };
-thread_local LastArtTime t_lastArt;
+thread_local LastArtTime t_lastArt[8];
+thread_local int t_lastArtNext = 0;
+void RememberArtTime(const LayerKey& k, const void* t)
+{
+    for (auto& e : t_lastArt)
+        if (e.k.compItemId == k.compItemId && e.k.layerId == k.layerId) {
+            e.t[0] = ((const int*)t)[0], e.t[1] = ((const int*)t)[1];
+            return;
+        }
+    LastArtTime& e = t_lastArt[t_lastArtNext];
+    t_lastArtNext = (t_lastArtNext + 1) % 8;
+    e.k = k;
+    e.t[0] = ((const int*)t)[0], e.t[1] = ((const int*)t)[1];
+}
+const int* ArtTimeOf(const LayerKey& k)
+{
+    for (auto& e : t_lastArt)
+        if (e.k.compItemId == k.compItemId && e.k.layerId == k.layerId) return e.t;
+    return nullptr;
+}
 
 // ---- per-frame timing (RANDAMU_TIMING): an event for `layer` at hook time `tm` that started at t0
 void MarkTiming(const void* layer, const void* tm, TimingKind kind, long long t0)
@@ -554,11 +573,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     int copy = index;
     if (s.p.merge) {
         LayerKey k;
-        if (t && KeyOf(layer, &k)) {  // for the texture hook of this sub-layer (it has no time)
-            t_lastArt.k = k;
-            t_lastArt.t[0] = ((const int*)t)[0];
-            t_lastArt.t[1] = ((const int*)t)[1];
-        }
+        if (t && KeyOf(layer, &k)) RememberArtTime(k, t);  // for the texture hook of this sub-layer (it has no time)
         const MergeLayerPlan* lp = nullptr;
         auto plan = MergePlanOf(layer, t, s, false, &lp);
         if (lp && index < (int)lp->subs.size()) {
@@ -590,13 +605,16 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     if (index < 0 || !IsMine(layer)) return;
     LayerKey k;
     ParamSnapshot s;
-    if (!KeyOf(layer, &k) || !ParamsFor(layer, nullptr, &s) || !s.p.merge) return;
-    if (t_lastArt.k.compItemId != k.compItemId || t_lastArt.k.layerId != k.layerId) {
-        RLog("merge: texture failed (%s): no time for comp %d layer %d sub %d", which, k.compItemId, k.layerId, index);
+    if (!KeyOf(layer, &k)) return;
+    const int* tm = ArtTimeOf(k);
+    // the parameters at that time (render thread: AEGP); the registry's snapshot may hold merge off
+    if (!tm || !ParamsFor(layer, tm, &s) || !s.p.merge) {
+        if (!tm && ParamsFor(layer, nullptr, &s) && s.p.merge)
+            RLog("merge: texture failed (%s): no time for comp %d layer %d sub %d", which, k.compItemId, k.layerId, index);
         return;
     }
     const MergeLayerPlan* lp = nullptr;
-    auto plan = MergePlanOf(layer, t_lastArt.t, s, false, &lp);
+    auto plan = MergePlanOf(layer, tm, s, false, &lp);
     if (!lp || index >= (int)lp->subs.size() || lp->subs[index].cluster < 0) return;
     double out3[9];
     AEGP_WorldH w1 = RenderGroupTexture((AEGP_WorldH)*world, m3, *plan, *lp, lp->clusters[lp->subs[index].cluster], out3);

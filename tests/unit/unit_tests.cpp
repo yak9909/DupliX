@@ -954,6 +954,7 @@ TEST(merge_block_reasons)
     CHECK(one([](rnd::LayerFlagsForMerge& g) { g.fullOpacity = false; }) == rnd::MB_OPACITY);
     CHECK(one([](rnd::LayerFlagsForMerge& g) { g.trackMatte = true; }) == rnd::MB_MATTE);
     CHECK(one([](rnd::LayerFlagsForMerge& g) { g.otherEffects = true; }) == rnd::MB_OTHER_EFFECTS);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.solid = true; }) == rnd::MB_SOLID);
 }
 
 // AE's default camera of a comp without one: the comp's corners and centre on z = 0 land on the screen's.

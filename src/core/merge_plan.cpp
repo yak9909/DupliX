@@ -697,6 +697,7 @@ unsigned MergeBlockReasons(const LayerFlagsForMerge& f)
     if (!f.fullOpacity) b |= MB_OPACITY;
     if (f.trackMatte) b |= MB_MATTE;
     if (f.otherEffects) b |= MB_OTHER_EFFECTS;
+    if (f.solid) b |= MB_SOLID;
     return b;
 }
 

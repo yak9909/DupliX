@@ -23,7 +23,11 @@ if (-not $SkipScene) {
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
 $aep = Join-Path $outDir "merge.aep"
 $items = @{}
-foreach ($line in Get-Content (Join-Path $outDir "rq.txt")) { $k, $v = $line -split "=", 2; $items[$k] = $v }
+$sel = if ($Cases) { $Cases -split "," } else { @() }
+foreach ($line in Get-Content (Join-Path $outDir "rq.txt")) {
+    $k, $v = $line -split "=", 2
+    if ($sel.Count -eq 0 -or $sel -contains ($k -replace '^(mg|nm)_', '')) { $items[$k] = $v }
+}
 $fail = 0
 foreach ($mfr in $Mfrs) {
     foreach ($comp in $items.Keys | Sort-Object) {
@@ -32,7 +36,7 @@ foreach ($mfr in $Mfrs) {
         $log = Join-Path $outDir "plugin_${comp}_$mfr.log"
         if (Test-Path $log) { Remove-Item $log }
         $envs = @{ RANDAMU_LOG = $log; RANDAMU_CACHE_SALT = "merge-$(Get-Random)" }
-        if ($ForceD) { $envs["RANDAMU_MERGE_FORCE_DW"] = $ForceD }
+        if ($ForceD -and $comp -like "*_seam") { $envs["RANDAMU_MERGE_FORCE_DW"] = $ForceD }  # the seam case only
         $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
             -RedirectStandardOutput (Join-Path $outDir "aerender_${comp}_$mfr.log") `
             -Environment $envs `

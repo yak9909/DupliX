@@ -70,9 +70,22 @@ def load(comp):
     return np.asarray(Image.open(p).convert("RGBA")).astype(int)
 
 
-def compare(name, min_groups=1, mean_max=0.5, over2_max=0.03, over32_max=0.003):
-    """merge on vs off: the merged copies are drawn by DupliX's bilinear filter, not AE's: small differences at the
-    texture's sharp edges (like the fast mode); a wrong front/back order would differ by much more over large areas."""
+def box5(img):
+    """5x5 average (edges replicated)."""
+    import numpy as np
+    p = np.pad(img.astype(float), ((2, 2), (2, 2), (0, 0)), mode="edge")
+    s = np.zeros(img.shape, float)
+    for dy in range(5):
+        for dx in range(5):
+            s += p[dy:dy + img.shape[0], dx:dx + img.shape[1]]
+    return s / 25
+
+
+def compare(name, min_groups=1, mean_max=1.0, avg_frac_max=0.001, avg_mean_max=0.5, over2_max=None, over32_max=None):
+    """merge on vs off. The merged copies are drawn by DupliX's bilinear filter, not AE's: their texture's sharp edges
+    differ pixel by pixel (like the fast mode; magnified copies keep a grid of differences along the texels' edges).
+    A wrong front/back order differs over whole areas, which a 5x5 average keeps: judged on the share of pixels whose
+    5x5 averages differ by more than 16, the averages' mean and the raw mean."""
     import numpy as np
     a, b = load("mg_" + name), load("nm_" + name)
     if a is None or b is None:
@@ -81,15 +94,31 @@ def compare(name, min_groups=1, mean_max=0.5, over2_max=0.03, over32_max=0.003):
         return False, f"size {a.shape} vs {b.shape}"
     d = np.abs(a - b).max(axis=2)
     mean, f2, f32 = float(np.abs(a - b).mean()), float((d > 2).mean()), float((d > 32).mean())
+    avg = np.abs(box5(a) - box5(b))
+    amax, amean, afrac = float(avg.max()), float(avg.mean()), float((avg.max(axis=2) > 16).mean())
     text, off = log_of("mg_" + name), log_of("nm_" + name)
     groups = [int(g) for g in re.findall(r"merge:   group copies=(\d+)", text)]
     swaps = len(re.findall(r"merge: texture swapped", text))
     fails = len(re.findall(r"merge: texture failed", text)) + len(re.findall(r"merge: texture failed", off))
     off_swaps = len(re.findall(r"merge: texture swapped", off))
     ok = (len(groups) >= min_groups and all(g >= 2 for g in groups) and swaps > 0 and fails == 0 and off_swaps == 0 and
-          mean <= mean_max and f2 <= over2_max and f32 <= over32_max)
-    return ok, (f"max={int(d.max())} mean={mean:.3f} >2={100 * f2:.2f}% >32={100 * f32:.3f}% groups={groups} "
-                f"swaps={swaps} failed={fails} off-swaps={off_swaps} size={a.shape[1]}x{a.shape[0]}")
+          mean <= mean_max and afrac <= avg_frac_max and amean <= avg_mean_max and
+          (over2_max is None or f2 <= over2_max) and (over32_max is None or f32 <= over32_max))
+    return ok, (f"max={int(d.max())} mean={mean:.3f} >2={100 * f2:.2f}% >32={100 * f32:.3f}% avg5 max={amax:.1f} "
+                f">16={100 * afrac:.3f}% mean={amean:.3f} groups={groups} swaps={swaps} failed={fails} off-swaps={off_swaps} "
+                f"size={a.shape[1]}x{a.shape[0]}")
+
+
+def same(name, block):
+    """merge on but the layer must not merge (a reason in the log): the frame equals merge off."""
+    import numpy as np
+    a, b = load("mg_" + name), load("nm_" + name)
+    if a is None or b is None:
+        return False, "missing output"
+    text = log_of("mg_" + name)
+    blocks = [int(x, 16) for x in re.findall(r"merge:   layer \S+ count=\d+ block=([0-9a-f]+)", text)]
+    d = int(np.abs(a - b).max())
+    return d == 0 and blocks and all(x & block for x in blocks), f"max={d} blocks={['%x' % x for x in blocks]}"
 
 
 def seam(name):
@@ -115,6 +144,11 @@ def seam(name):
 
 CHECKS = {
     "seam": lambda: seam("seam"),
+    "wall_front_back": lambda: compare("wall_front_back"),
+    "wall_tilted": lambda: compare("wall_tilted"),
+    "wall_side": lambda: compare("wall_side"),
+    "two_layers": lambda: compare("two_layers"),
+    "solid_target": lambda: same("solid_target", 0x200),
     "scene_basic": lambda: check_scene("scene_basic", 2, [0, 1], 0),
     "scene_light": lambda: check_scene("scene_light", 1, [0], 4),
     "scene_nocam": lambda: check_scene("scene_nocam", 1, [0], 0),

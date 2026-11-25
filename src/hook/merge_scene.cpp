@@ -82,6 +82,7 @@ bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput*
     S<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
     S<AEGP_CameraSuite2> cams(kAEGPCameraSuite, kAEGPCameraSuiteVersion2);
     S<AEGP_LightSuite2> lights(kAEGPLightSuite, kAEGPLightSuiteVersion2);
+    S<AEGP_FootageSuite5> fs(kAEGPFootageSuite, kAEGPFootageSuiteVersion5);
     if (!ls || !cs || !is || !ss || !es || !cams || !lights) return false;
     *out = MergeSceneInput();
     AEGP_LayerH self = (AEGP_LayerH)layer;
@@ -177,6 +178,16 @@ bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput*
                 std::memcpy(in.srcRect, rect, sizeof(rect));
                 LayerFlagsForMerge f;
                 f.otherEffects = others > 0;
+                {
+                    // a solid: AE fills its copies without a texture
+                    AEGP_ItemH src = nullptr;
+                    AEGP_ItemType it = AEGP_ItemType_NONE;
+                    AEGP_FootageH foot = nullptr;
+                    AEGP_FootageSignature sig = AEGP_FootageSignature_NONE;
+                    f.solid = !ls->AEGP_GetLayerSourceItem(Li, &src) && src && !is->AEGP_GetItemType(src, &it) &&
+                              it == AEGP_ItemType_FOOTAGE && fs && !fs->AEGP_GetMainFootageFromItem(src, &foot) && foot &&
+                              !fs->AEGP_GetFootageSignature(foot, &sig) && sig == AEGP_FootageSignature_SOLID;
+                }
                 f.compMotionBlur = (compFlags & AEGP_CompFlag_ENABLE_MOTION_BLUR) != 0;
                 f.layerMotionBlur = (flags & AEGP_LayerFlag_MOTION_BLUR) != 0;
                 f.dof = dof;
