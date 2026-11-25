@@ -1,5 +1,7 @@
 #include "hook/merge_texture.h"
 
+#include <windows.h>
+
 #include <atomic>
 #include <cmath>
 #include <thread>
@@ -127,7 +129,18 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
     RasterImage dst = {obase, (int)dw, (int)dh, (long)orb, bpc, (int)std::lround(c.rect[0] * dsX),
                        (int)std::lround(c.rect[1] * dsY)};
     unsigned hw = std::thread::hardware_concurrency();
+    LARGE_INTEGER q0, q1, qf;
+    QueryPerformanceCounter(&q0);
     RasterizeCopies(src, copies.data(), (int)copies.size(), dsX, dsY, dst, hw ? (int)hw : 4);
+    QueryPerformanceCounter(&q1);
+    {
+        static std::atomic<int> timed{0};
+        if (++timed <= 64) {
+            QueryPerformanceFrequency(&qf);
+            RLog("merge: group draw %ldx%ld copies %d in %.1f ms", dw, dh, (int)copies.size(),
+                 (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart);
+        }
+    }
     GroupTextureM3(texRect, (int)dw, (int)dh, outM3);
     return out;
 }
