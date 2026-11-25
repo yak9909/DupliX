@@ -2,10 +2,11 @@
 
 ## 再開の手順（2026-11-25 昼前、高速モードの作り直しの実装後）
 
-- **計画 `docs/superpowers/plans/2026-11-25-fast-mode-plugin.md` の Task 1〜5 は実装済み（ブランチ `feat/mvp`、最後の実装の commit bd34d8f、push 済み）。** 進み具合と判断（Ruling）は `.superpowers/sdd/2026-11-25-fast-mode-plugin/progress.md`（git 管理外）、事実とトラブルは `docs/experiments/2026-11-25-dev-log.md`。
+- **計画 `docs/superpowers/plans/2026-11-25-fast-mode-plugin.md` の Task 1〜5 と最終レビューの修正は完了（ブランチ `feat/mvp`、commit 99a4c48、push 済み）。** 事実・判断・後回しにした軽微な指摘・トラブルは `docs/experiments/2026-11-25-dev-log.md`。
 - 中身: ワールド変形のパラメータ（両モード、群れ ＝ レイヤー × ワールド変形）、高速モードは 2D レイヤーの普通のプラグイン（フックなし）、オンにした瞬間に現在フレームのレイヤーの変形をワールド変形へ写す（取り消し 1 回で戻る）、オフは 3D に戻すだけ。使い方は `docs/randamu-quickstart.md` の「ワールド変形」「高速モード」。
 - 確かめた試験: 単体 ALL PASS（47）、`run_transfer.ps1` TRANSFER ALL PASS、`run_fast_mode.ps1` FAST ALL PASS（MFR オフ・オン）、`run_ref.ps1`、`run_ui.ps1`、fx_remove、`world_xform.jsx` WORLD ALL PASS、`run_as_is.ps1`（利用者のシーン）、`run_orbit_order.ps1 -Deg 26`。
-- **次: 最終レビュー（別のレビュー役）の結果を反映 → 利用者に AE で試してもらう**（ビルドの置き換えは利用者が AE を閉じているときだけ。今の `dev_plugins\randamu.aex` は最新）。
+- 最終レビューで直したもの: 位置の次元が分割されている・ワールド変形にキーフレームがある（レイヤーが初期状態でない）ときは、何も変えずに止めて「状態」で案内。カメラだけ動く場合の試験 `fast_camonly` を追加（問題なし）。
+- **次: 利用者に AE で試してもらう**（今の `dev_plugins\randamu.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。11/24 の高速モードで保存したプロジェクトは、高速モードを一度オフ → オンにし直すと新しい形になる（オンのまま開くと絵がずれる）。
 - 注意: 軌道のアニメーションを 120 フレーム比べる `run_orbit_order.ps1`（角度指定なし）は、親のアニメーションを写さない決定により前提がなくなった（`-Deg` 付きだけ有効）。
 - 次の作業の候補（利用者が順番を決める）: 複数の複製対象（設計書 12.13、高速モードのあと）、画質の選択、GPU での描画。保留は前のまま（まとめる最適化、シェイプ・テキスト対応、AE 2021/2026、改名、`dbg:` ログの整理、main への統合）。
 
