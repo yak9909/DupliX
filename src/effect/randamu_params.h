@@ -30,6 +30,7 @@ enum RandamuParam {
     RP_WORLD_SCALE_Y,
     RP_WORLD_SCALE_Z,
     RP_WORLD_TOPIC_END,
+    RP_MERGE,         // normal mode: merge copies into group planes (docs/superpowers/specs/2026-11-25-merge-optimization-design.md)
     RP_NUM_PARAMS
 };
 
@@ -61,6 +62,7 @@ enum RandamuDiskId {
     RD_WORLD_SCALE_Y,
     RD_WORLD_SCALE_Z,
     RD_WORLD_TOPIC_END,
+    RD_MERGE,
 };
 
 #define RANDAMU_MATCH_NAME "RANDAMU Scatter"

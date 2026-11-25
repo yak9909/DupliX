@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "core/fast_plane.h"
+#include "core/merge_plan.h"
+#include "effect/randamu_params.h"
 #include "core/raster.h"
 #include "core/raster_ref.h"
 #include "core/tiles.h"
@@ -930,6 +932,53 @@ TEST(tiles_cover_boxes)
     int with2 = 0;
     for (int k = 0; k < total; k++) with2 += t.index[k] == 2;
     CHECK(with2 == 0);
+}
+
+TEST(merge_block_reasons)
+{
+    rnd::LayerFlagsForMerge f;
+    CHECK(rnd::MergeBlockReasons(f) == rnd::MB_NONE);
+    auto one = [](void (*set)(rnd::LayerFlagsForMerge&)) {
+        rnd::LayerFlagsForMerge g;
+        set(g);
+        return rnd::MergeBlockReasons(g);
+    };
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.compMotionBlur = true; }) == rnd::MB_NONE);  // the layer's switch off
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.compMotionBlur = g.layerMotionBlur = true; }) == rnd::MB_MOTION_BLUR);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.dof = true; }) == rnd::MB_DOF);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.acceptsLights = true; }) == rnd::MB_NONE);  // no light
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.acceptsLights = g.anyLight = true; }) == rnd::MB_LIGHTS);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.castsShadows = g.anyShadowLight = true; }) == rnd::MB_SHADOWS);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.normalBlend = false; }) == rnd::MB_BLEND);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.fullOpacity = false; }) == rnd::MB_OPACITY);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.trackMatte = true; }) == rnd::MB_MATTE);
+    CHECK(one([](rnd::LayerFlagsForMerge& g) { g.otherEffects = true; }) == rnd::MB_OTHER_EFFECTS);
+}
+
+// AE's default camera of a comp without one: the comp's corners and centre on z = 0 land on the screen's.
+TEST(merge_default_camera)
+{
+    rnd::CameraView cam;
+    rnd::DefaultCamera(1920, 1080, 2666.67, &cam);
+    double I[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CHECK(std::fabs(rnd::AnchorDepth(cam, I, 960, 540) - 2666.67) < 1e-6);
+    // a plane at depth 2666.67 that shows layer px (x, y) at comp px (x, y) is the identity there
+    double M[16];
+    CHECK(rnd::PlaneM4(cam, I, 2666.67, M));
+    for (int k = 0; k < 16; k++) CHECK(std::fabs(M[k] - I[k]) < 1e-6);
+    CHECK(cam.compW == 1920 && cam.compH == 1080 && cam.dist == 2666.67);
+}
+
+// The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in
+// ScatterParams' padding (the saved sequence data keeps its size); it is off by default.
+TEST(params_merge_last)
+{
+    CHECK(RP_MERGE == RP_WORLD_TOPIC_END + 1);
+    CHECK(RP_NUM_PARAMS == RP_MERGE + 1);
+    CHECK(RD_MERGE == RD_WORLD_TOPIC_END + 1);
+    CHECK(sizeof(rnd::ScatterParams) == 96);
+    rnd::ScatterParams p;
+    CHECK(!p.merge);
 }
 
 // 20000 copies that each cover a whole 8K buffer (a corner behind the camera) make 2.6e9 tile entries: more than an

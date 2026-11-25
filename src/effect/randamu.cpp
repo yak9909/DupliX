@@ -180,6 +180,8 @@ rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
     p.opacityMax = params[RP_OPACITY_MAX]->u.fs_d.value;
     p.keepFirst = params[RP_KEEP_FIRST]->u.bd.value != 0;
     p.fast = params[RP_FAST]->u.bd.value != 0;
+    // projects saved before the merge checkbox have no such param (null)
+    p.merge = RP_MERGE < RP_NUM_PARAMS && params[RP_MERGE] && params[RP_MERGE]->u.bd.value != 0;
     return p;
 }
 
@@ -278,6 +280,7 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
             auto* sd = (SeqDataV2*)PF_LOCK_HANDLE(in_data->sequence_data);
             if (sd->base.hasParams) snap.p = sd->base.p;
             snap.p.fast = false;  // may be an old project's padding byte; render threads read the real value
+            snap.p.merge = false;  // the same padding
             if (v2 && sd->hasWorld) snap.world = sd->world;
             PF_UNLOCK_HANDLE(in_data->sequence_data);
         }
@@ -388,6 +391,17 @@ PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* par
             kSPNoError &&
         pu) {
         pu->PF_UpdateParamUI(in_data->effect_ref, RP_STATUS, &copy);
+        // the merge checkbox does nothing in fast mode: grey it out there
+        if (params[RP_MERGE]) {
+            PF_ParamDef m = *params[RP_MERGE];
+            const bool fast = params[RP_FAST]->u.bd.value != 0;
+            const bool was = (m.ui_flags & PF_PUI_DISABLED) != 0;
+            if (fast != was) {
+                if (fast) m.ui_flags |= PF_PUI_DISABLED;
+                else m.ui_flags &= ~PF_PUI_DISABLED;
+                pu->PF_UpdateParamUI(in_data->effect_ref, RP_MERGE, &m);
+            }
+        }
         in_data->pica_basicP->ReleaseSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
     }
     return PF_Err_NONE;
@@ -515,6 +529,13 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 Z", "Scale Z"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_Z);
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(RD_WORLD_TOPIC_END);
+
+    // Normal mode only (greyed out in fast mode). Merged copies may differ by 1-2 levels at their edges; the
+    // order against other layers stays exact; nothing merges with lights, shadows, depth of field or motion blur.
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(UiName("軽量化（群れをまとめる）", "Lightweight (Merge Groups)"),
+                    UiName("縁が少し変わることがあります", "edges may differ slightly"), FALSE,
+                    PF_ParamFlag_CANNOT_TIME_VARY, RD_MERGE);
 
     out_data->num_params = RP_NUM_PARAMS;
     return PF_Err_NONE;
@@ -791,6 +812,22 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
         }
     }
     if (extra->cb->GuidMixInPtr) MixBuildId(in_data, extra);
+    {
+        // merge (Task 2 gate, log only): AE's own camera for this effect, to compare with the one the hooks read
+        static std::atomic<int> logged{0};
+        PF_ParamDef d;
+        AEFX_CLR_STRUCT(d);
+        if (logged.load() < 3 && !PF_CHECKOUT_PARAM(in_data, RP_MERGE, in_data->current_time, in_data->time_step,
+                                                    in_data->time_scale, &d)) {
+            const bool merge = d.u.bd.value != 0;
+            PF_CHECKIN_PARAM(in_data, &d);
+            FastPre f;
+            int cw = 0, ch = 0;
+            if (merge && ++logged <= 3 && FastSetup(in_data, &f, &cw, &ch))
+                RLog("merge: effect cam dist=%.2f camPos=(%.2f,%.2f,%.2f)", f.cam.dist, f.cam.camToWorld[12],
+                     f.cam.camToWorld[13], f.cam.camToWorld[14]);
+        }
+    }
 
     PF_RenderRequest req = extra->input->output_request;
     PF_CheckoutResult in_result;

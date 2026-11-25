@@ -32,5 +32,12 @@ struct ParamSnapshot;
 bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, ParamSnapshot* out);
 // Anchor point of L at layer time t (layer-space px). Needs InstallHooks to have run.
 bool ReadLayerAnchor(AEGP_LayerH L, const A_Time& t, double* x, double* y);
+// Finds L's randamu effect and reads it at layer time t (render threads only). False if a read failed; an absent
+// or switched-off effect gives true with out->valid = false. *effectIndex (optional): its AEGP index, *otherActive
+// (optional): the layer's other active effects. Needs InstallHooks to have run.
+bool ReadLayerParams(AEGP_LayerH L, const A_Time& t, ParamSnapshot* out, int* effectIndex = nullptr,
+                     int* otherActive = nullptr);
+SPBasicSuite* HookPica();
+AEGP_PluginID HookPluginId();
 
 }  // namespace rnd

@@ -14,6 +14,7 @@
 #include "effect/randamu.h"
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
+#include "hook/merge_scene.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
 
@@ -164,6 +165,12 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     }
     if (!ReadLayerAnchor(L, t, &r.anchorX, &r.anchorY)) ok = false;
     if (!ok) return false;
+    {
+        double merge = 0;  // a failed read (an instance without it) leaves merging off
+        one(RP_MERGE, &merge);
+        ok = true;
+        r.p.merge = merge != 0;
+    }
     r.p.count = count < 0 ? 0 : (int)(count + 0.5);
     r.p.seed = (int)(seed + 0.5);
     r.p.keepFirst = keep != 0;
@@ -173,29 +180,37 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     return true;
 }
 
-namespace {
+SPBasicSuite* HookPica() { return g_pica; }
+AEGP_PluginID HookPluginId() { return g_pluginId; }
 
-// Finds this layer's randamu effect and reads it at layer time t. Render threads only.
-// Returns false if the read failed; an absent or inactive effect gives true with out->valid = false.
-bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
+bool ReadLayerParams(AEGP_LayerH L, const A_Time& t, ParamSnapshot* out, int* effectIndex, int* otherActive)
 {
     Suite<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
     if (!es) return false;
-    AEGP_LayerH L = (AEGP_LayerH)layer;
     A_long n = 0;
     if (es->AEGP_GetLayerNumEffects(L, &n)) return false;
     AEGP_EffectRefH eff = nullptr;
-    for (A_long i = 0; i < n && !eff; i++) {
+    int index = -1, others = 0;
+    for (A_long i = 0; i < n; i++) {
         AEGP_EffectRefH e = nullptr;
         if (es->AEGP_GetLayerEffectByIndex(g_pluginId, L, i, &e) || !e) continue;
         AEGP_InstalledEffectKey key = 0;
         A_char mn[AEGP_MAX_EFFECT_MATCH_NAME_SIZE + 1] = {0};
-        if (!es->AEGP_GetInstalledKeyFromLayerEffect(e, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
-            !std::strcmp(mn, RANDAMU_MATCH_NAME))
+        if (!eff && !es->AEGP_GetInstalledKeyFromLayerEffect(e, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
+            !std::strcmp(mn, RANDAMU_MATCH_NAME)) {
             eff = e;
-        else
-            es->AEGP_DisposeEffect(e);
+            index = (int)i;
+            continue;
+        }
+        if (otherActive) {
+            AEGP_EffectFlags fl = 0;
+            if (!es->AEGP_GetEffectFlags(e, &fl) && (fl & AEGP_EffectFlags_ACTIVE)) others++;
+        }
+        es->AEGP_DisposeEffect(e);
+        if (eff && !otherActive) break;
     }
+    if (effectIndex) *effectIndex = index;
+    if (otherActive) *otherActive = others;
     if (!eff) {  // the effect was removed: the layer is no longer ours
         out->valid = false;
         return true;
@@ -203,6 +218,15 @@ bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
     bool ok = ReadParamsFromEffect(eff, L, t, out);
     es->AEGP_DisposeEffect(eff);
     return ok;
+}
+
+namespace {
+
+// Finds this layer's randamu effect and reads it at layer time t. Render threads only.
+// Returns false if the read failed; an absent or inactive effect gives true with out->valid = false.
+bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
+{
+    return ReadLayerParams((AEGP_LayerH)layer, t, out);
 }
 
 // ---- profiling (RANDAMU_LOG only): calls and total time per hook, logged every 2^k calls
@@ -354,6 +378,18 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) {
+            if (s.p.merge && GetCurrentThreadId() != g_mainThread) {  // merge (Task 2 gate): the frame as read
+                static std::atomic<int> logged{0};
+                if (++logged <= 3) {
+                    const int* ti = (const int*)b;
+                    A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
+                    if (t.scale == 0) t.scale = 1;
+                    MergeSceneInput in;
+                    bool ok = ReadMergeScene((const void*)a, t, &in);
+                    RLog("merge: read scene ok=%d", (int)ok);
+                    if (ok) LogMergeScene(in);
+                }
+            }
             MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
             return (uintptr_t)(unsigned)s.p.count;
         }
