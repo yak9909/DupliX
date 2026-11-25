@@ -1,7 +1,10 @@
 #include "hook/merge_cache.h"
 
+#include <windows.h>
+
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <mutex>
 
@@ -74,6 +77,19 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     const unsigned long long h = HashMergeScene(in);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
         MergePlan p = BuildSingleGroupPlan(in);
+        // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
+        char fv[96] = {0};
+        double wp[3];
+        if (GetEnvironmentVariableA("RANDAMU_MERGE_FORCE_DW", fv, sizeof(fv)) > 0 &&
+            sscanf_s(fv, "%lf,%lf,%lf", &wp[0], &wp[1], &wp[2]) == 3) {
+            double inv[16];
+            if (Invert4(p.cam.camToWorld, inv)) {
+                const double z = wp[0] * inv[2] + wp[1] * inv[6] + wp[2] * inv[10] + inv[14];
+                for (auto& kv : p.layers)
+                    for (auto& c : kv.second.clusters) c.depth = z;
+                RLog("merge: test: group depth forced to %.2f", z);
+            }
+        }
         static std::atomic<int> logged{0};
         if (++logged <= 20) {
             RLog("merge: read scene ok=1");

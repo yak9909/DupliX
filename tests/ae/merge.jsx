@@ -23,7 +23,11 @@
         {name: "group_pair", params: {count: 2, seed: 5, pos: [150, 60, 100]}, compare: true},
         {name: "group_scatter", params: scatter, compare: true},
         {name: "group_half", params: scatter, compare: true, half: true},
-        {name: "group_nocam", params: scatter, compare: true, noCam: true}
+        {name: "group_nocam", params: scatter, compare: true, noCam: true},
+        // Task 4: a narrow opaque wall turned 60 deg between two copies (left and right, not overlapping it on
+        // screen); run_merge.ps1 -ForceD puts the group plane through the wall's middle (in its transparent part)
+        {name: "seam", params: {count: 2, seed: 16, pos: [150, 20, 0], scale: [40, 40]}, compare: true,
+         walls: [{pos: [200, 150, 300], w: 40, h: 220, rotY: 60, color: [0, 0, 1]}]}
     ];
 
     function setParams(fx, p, merge) {

@@ -92,7 +92,29 @@ def compare(name, min_groups=1, mean_max=0.5, over2_max=0.03, over32_max=0.003):
                 f"swaps={swaps} failed={fails} off-swaps={off_swaps} size={a.shape[1]}x{a.shape[0]}")
 
 
+def seam(name):
+    """The group plane crosses the wall only where the group texture is transparent: the wall's pixels (the band
+    between the copies) must be unchanged (0), or a seam appears."""
+    import numpy as np
+    # the copies are small (40%): DupliX's bilinear without prefiltering differs inside them more than usual
+    ok, msg = compare(name, over32_max=0.006)
+    a, b = load("mg_" + name), load("nm_" + name)
+    if a is None or b is None:
+        return False, msg
+    wall = (b[:, :, 2] > 150) & (b[:, :, 0] < 60) & (b[:, :, 1] < 60)  # the pure blue wall (merge off)
+    wall[:, :100] = False  # only between the copies (their checker has blue too)
+    wall[:, 250:] = False
+    near = wall.copy()
+    for dy in (-2, -1, 0, 1, 2):
+        for dx in (-2, -1, 0, 1, 2):
+            near |= np.roll(np.roll(wall, dy, 0), dx, 1)
+    band = int(np.abs(a - b).max(axis=2)[near].max()) if near.any() else -1
+    forced = "test: group depth forced" in log_of("mg_" + name)
+    return ok and forced and wall.sum() > 500 and band == 0, f"{msg} wall px={int(wall.sum())} wall max={band} forced={forced}"
+
+
 CHECKS = {
+    "seam": lambda: seam("seam"),
     "scene_basic": lambda: check_scene("scene_basic", 2, [0, 1], 0),
     "scene_light": lambda: check_scene("scene_light", 1, [0], 4),
     "scene_nocam": lambda: check_scene("scene_nocam", 1, [0], 0),

@@ -1,8 +1,9 @@
 # Merge optimisation checks: builds merge.aep with tests/ae/merge.jsx (hidden AE), renders each render queue item
 # with aerender (its own plugin log, a fresh cache salt) and judges with check_merge.py. Exit 1 on any failure.
 #   pwsh tests/ae/run_merge.ps1 [-Cases scene_basic,scene_light] [-Mfrs OFF,ON] [-SkipScene] [-Gpu CUDA]
+# -ForceD "x,y,z": every group plane at the camera depth of that world point (RANDAMU_MERGE_FORCE_DW; the seam case)
 param([string]$Cases = "", [string[]]$Mfrs = @("OFF"), [switch]$SkipScene, [int]$RenderTimeoutSec = 600,
-      [string]$Gpu = "")
+      [string]$Gpu = "", [string]$ForceD = "")
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\merge"
@@ -30,9 +31,11 @@ foreach ($mfr in $Mfrs) {
         $null = Repair-AeCrashState
         $log = Join-Path $outDir "plugin_${comp}_$mfr.log"
         if (Test-Path $log) { Remove-Item $log }
+        $envs = @{ RANDAMU_LOG = $log; RANDAMU_CACHE_SALT = "merge-$(Get-Random)" }
+        if ($ForceD) { $envs["RANDAMU_MERGE_FORCE_DW"] = $ForceD }
         $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
             -RedirectStandardOutput (Join-Path $outDir "aerender_${comp}_$mfr.log") `
-            -Environment @{ RANDAMU_LOG = $log; RANDAMU_CACHE_SALT = "merge-$(Get-Random)" } `
+            -Environment $envs `
             -ArgumentList @("-project", "`"$aep`"", "-rqindex", $items[$comp], "-mfr", $mfr, "100", "-v", "ERRORS_AND_PROGRESS")
         if (-not $p.WaitForExit($RenderTimeoutSec * 1000)) { Write-Host "TIMEOUT aerender $comp mfr=$mfr"; $p.Kill(); $fail++; continue }
         $tif = Get-ChildItem $outDir -Filter "r_${comp}_*.tif" | Select-Object -First 1
