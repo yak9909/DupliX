@@ -4,11 +4,14 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <memory>
+#include <mutex>
 #include <emmintrin.h>
 #include <thread>
 #include <vector>
 
-#include "core/fast_plane.h"
+#include "core/tiles.h"
 
 namespace rnd {
 
@@ -60,98 +63,99 @@ template <> struct Traits<PF> {
     static void Store(PF& p, __m128 v) { _mm_storeu_ps(p.c, v); }
 };
 
-// Bounding box (dst buffer px, inclusive) of a copy; false if it misses dst.
-bool CopyBox(const RasterImage& src, const RasterCopy& c, double dsX, double dsY, const RasterImage& dst, int* x0,
-             int* y0, int* x1, int* y1)
-{
-    double F[9];
-    bool whole = !Invert3(c.screenToSrc, F);
-    double mnx = 1e300, mny = 1e300, mxx = -1e300, mxy = -1e300;
-    const double us[2] = {src.originX / dsX, (src.originX + src.width) / dsX};
-    const double vs[2] = {src.originY / dsY, (src.originY + src.height) / dsY};
-    for (double u : us)
-        for (double v : vs) {
-            if (whole) break;
-            double a = u * F[0] + v * F[3] + F[6], b = u * F[1] + v * F[4] + F[7], w = u * F[2] + v * F[5] + F[8];
-            if (!(w > 0)) {
-                whole = true;
-                break;
-            }
-            double sx = (a / w - dst.screenShiftX) * dsX - dst.originX - 0.5,
-                   sy = (b / w - dst.screenShiftY) * dsY - dst.originY - 0.5;
-            mnx = std::min(mnx, sx), mxx = std::max(mxx, sx), mny = std::min(mny, sy), mxy = std::max(mxy, sy);
-        }
-    if (whole) {
-        *x0 = 0, *y0 = 0, *x1 = dst.width - 1, *y1 = dst.height - 1;
-        return true;
-    }
-    double lx = std::floor(mnx) - 1, hx = std::ceil(mxx) + 1, ly = std::floor(mny) - 1, hy = std::ceil(mxy) + 1;
-    if (hx < 0 || hy < 0 || lx > dst.width - 1 || ly > dst.height - 1) return false;
-    *x0 = (int)std::max(lx, 0.0);
-    *y0 = (int)std::max(ly, 0.0);
-    *x1 = (int)std::min(hx, (double)dst.width - 1);
-    *y1 = (int)std::min(hy, (double)dst.height - 1);
-    return true;
-}
-
-struct Box {
-    int x0, y0, x1, y1;
-    bool hit;
-};
-
 // One copy's contribution to one pixel.
 struct alignas(16) Frag {
-    __m128 c;   // premultiplied colour x opacity, 0..1
+    __m128 c;   // premultiplied colour x opacity, 0..1 (lane 0 = alpha)
     float iz;   // 1 / camera z at this pixel (larger = nearer)
-    int next;   // the pixel's previous fragment (-1: none)
-};
-// Per-thread working memory, reused row after row.
-struct RowScratch {
-    std::vector<int> head;  // per pixel of the row: its last fragment
-    std::vector<Frag> frags;
-    std::vector<const Frag*> order;
+    int rank;   // the copy's far-to-near rank: equal depths put the higher rank on top
 };
 
-// Draws rows [rowBegin, rowEnd). Per row, every copy's fragments are collected per pixel, then each pixel
-// composites its fragments far to near by the depth AT THAT PIXEL (copies seen at an angle overlap in an
-// order no single per-copy depth gives; spike of the user's orbiting camera, 11/24). Equal depths keep the
-// copies' order (sorted by `depth`, far first).
-template <class P>
-void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes, int n, double dsX, double dsY,
-              const RasterImage& dst, int rowBegin, int rowEnd, RowScratch& sc)
+constexpr int kTile = 16;
+constexpr int kTilePx = kTile * kTile;
+
+// Per-thread working memory for one tile: kMaxFrags fragments per pixel, fragment k of pixel p at
+// frags[k * kTilePx + p] (most pixels hold few fragments: their first ones stay together in the cache).
+struct TileScratch {
+    std::unique_ptr<Frag[]> frags{new Frag[(size_t)kTilePx * kMaxFrags]};  // not initialised (written before read)
+    int count[kTilePx];
+    float opaqueIz[kTilePx];  // the nearest fully opaque fragment so far (0: none): anything behind it is hidden
+    __m128 back[kTilePx];     // fragments evicted past kMaxFrags, composited under one another
+};
+
+// Scratch blocks reused across calls (each is 1.5 MB): taken by a worker for one call, then returned.
+std::mutex g_scratchMutex;
+std::vector<std::unique_ptr<TileScratch>> g_scratchFree;
+std::unique_ptr<TileScratch> TakeScratch()
 {
-    const int w = dst.width;
-    sc.head.resize((size_t)w);
+    {
+        std::lock_guard<std::mutex> lk(g_scratchMutex);
+        if (!g_scratchFree.empty()) {
+            auto s = std::move(g_scratchFree.back());
+            g_scratchFree.pop_back();
+            return s;
+        }
+    }
+    return std::unique_ptr<TileScratch>(new TileScratch);
+}
+void ReturnScratch(std::unique_ptr<TileScratch> s)
+{
+    std::lock_guard<std::mutex> lk(g_scratchMutex);
+    if (g_scratchFree.size() < 64) g_scratchFree.push_back(std::move(s));
+}
+
+inline __m128 Over(__m128 front, __m128 behind)
+{
+    return _mm_add_ps(front, _mm_mul_ps(behind, _mm_sub_ps(_mm_set1_ps(1.f), _mm_shuffle_ps(front, front, 0))));
+}
+
+// Draws one tile. Copies come nearest first; per pixel the fragments are kept (at most kMaxFrags), those behind
+// an opaque fragment dropped, then composited far to near by the depth AT THAT PIXEL (copies seen at an angle
+// overlap in an order no per-copy depth gives; the user's orbiting camera, 11/24), equal depths by rank.
+template <class P>
+void DrawTile(const RasterImage& src, const PreparedCopies& pc, int tile, double dsX, double dsY,
+              const RasterImage& dst, TileScratch& sc)
+{
+    const TileLists& tl = pc.tiles;
+    const int tx = tile % tl.tilesX, ty = tile / tl.tilesX;
+    const int px0 = tx * kTile, py0 = ty * kTile;
+    const int pw = std::min(kTile, dst.width - px0), ph = std::min(kTile, dst.height - py0);
+    if (tl.start[tile] == tl.start[tile + 1]) {  // no copy here: transparent
+        for (int yy = 0; yy < ph; yy++)
+            std::memset((char*)dst.data + (size_t)(py0 + yy) * dst.rowBytes + (size_t)px0 * sizeof(P), 0,
+                        (size_t)pw * sizeof(P));
+        return;
+    }
+    for (int i = 0; i < kTilePx; i++) sc.count[i] = 0, sc.opaqueIz[i] = 0.f, sc.back[i] = _mm_setzero_ps();
     const float inv = 1.f / Traits<P>::kMax;
-    const int sw = src.width, sh = src.height;
-    // AE's worlds are straight alpha: filter and composite premultiplied (colour x alpha / max).
     const __m128 invv = _mm_set1_ps(inv), ones = _mm_set1_ps(1.f);
     auto Premul = [invv, ones](__m128 v) {
-        // (1, a, a, a) / max: alpha broadcast, lane 0 replaced by 1
-        __m128 m = _mm_move_ss(_mm_mul_ps(_mm_shuffle_ps(v, v, 0), invv), ones);
+        __m128 m = _mm_move_ss(_mm_mul_ps(_mm_shuffle_ps(v, v, 0), invv), ones);  // (1, a, a, a) / max
         return _mm_mul_ps(v, m);
     };
+    const int sw = src.width, sh = src.height;
+    const char* base = (const char*)src.data;
     const double stepX = 1.0 / dsX;
-    // Raw pointers in the loops: AE loads the Debug build, whose checked std::vector is slow and locks.
-    int* head = sc.head.data();
-    if (sc.frags.size() < (size_t)w * 4) sc.frags.resize((size_t)w * 4);
-    if (sc.order.size() < 64) sc.order.resize(64);
-    for (int y = rowBegin; y < rowEnd; y++) {
-        for (int x = 0; x < w; x++) head[x] = -1;
-        Frag* frags = sc.frags.data();
-        size_t nFrag = 0, capFrag = sc.frags.size();
-        const double sy = (y + dst.originY + 0.5) / dsY + dst.screenShiftY;
-        for (int i = 0; i < n; i++) {
-            const Box& b = boxes[i];
-            if (!b.hit || y < b.y0 || y > b.y1) continue;
-            const double* H = copies[i].screenToSrc;
-            const float op = (float)copies[i].opacity * inv;
-            const double sx0 = (b.x0 + dst.originX + 0.5) / dsX + dst.screenShiftX;
-            // homogeneous source position along the row: linear in x (hw = 1 / camera z)
+    Frag* frags = sc.frags.get();
+    float tileMinOpaque = 0.f;  // min of opaqueIz over the tile's pixels (0 while any pixel has none)
+    int opaquePx = 0;
+    for (int j = tl.start[tile]; j < tl.start[tile + 1]; j++) {
+        const int ci = tl.index[j];
+        if (opaquePx == pw * ph && pc.nearIz[ci] < tileMinOpaque) continue;  // behind every pixel's opaque front
+        const RasterCopy& cp = pc.copies[ci];
+        const int rank = pc.rank[ci];
+        const double* H = cp.screenToSrc;
+        const float op = (float)cp.opacity * inv;
+        bool newOpaque = false;
+        for (int yy = 0; yy < ph; yy++) {
+            const double sy = (py0 + yy + dst.originY + 0.5) / dsY + dst.screenShiftY;
+            const double sx0 = (px0 + dst.originX + 0.5) / dsX + dst.screenShiftX;
             double ha = sx0 * H[0] + sy * H[3] + H[6], hb = sx0 * H[1] + sy * H[4] + H[7], hw = sx0 * H[2] + sy * H[5] + H[8];
             const double da = H[0] * stepX, db = H[1] * stepX, dw = H[2] * stepX;
-            for (int x = b.x0; x <= b.x1; x++, ha += da, hb += db, hw += dw) {
+            for (int xx = 0; xx < pw; xx++, ha += da, hb += db, hw += dw) {
                 if (!(hw > 0)) continue;
+                const int p = yy * kTile + xx;
+                const float iz = (float)hw;
+                if (iz < sc.opaqueIz[p]) continue;  // hidden behind this pixel's opaque fragment
                 const double iw = 1.0 / hw;
                 const double bx = ha * iw * dsX - 0.5 - src.originX, by = hb * iw * dsY - 0.5 - src.originY;
                 if (!(bx > -1 && by > -1 && bx < sw && by < sh)) continue;
@@ -159,7 +163,6 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
                 const float fx = (float)(bx - ix), fy = (float)(by - iy);
                 const float ws[4] = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
                 __m128 s;
-                const char* base = (const char*)src.data;
                 if (ix >= 0 && iy >= 0 && ix + 1 < sw && iy + 1 < sh) {
                     const P* r0 = (const P*)(base + (size_t)iy * src.rowBytes) + ix;
                     const P* r1 = (const P*)(base + (size_t)(iy + 1) * src.rowBytes) + ix;
@@ -169,96 +172,103 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
                                               _mm_mul_ps(Premul(Traits<P>::Load(r1 + 1)), _mm_set1_ps(ws[3]))));
                 } else {
                     s = _mm_setzero_ps();
-                    for (int j = 0; j < 2; j++)
+                    for (int q = 0; q < 2; q++)
                         for (int i2 = 0; i2 < 2; i2++) {
-                            int qx = ix + i2, qy = iy + j;
+                            int qx = ix + i2, qy = iy + q;
                             if (qx < 0 || qy < 0 || qx >= sw || qy >= sh) continue;
-                            const P* p = (const P*)(base + (size_t)qy * src.rowBytes) + qx;
-                            s = _mm_add_ps(s, _mm_mul_ps(Premul(Traits<P>::Load(p)), _mm_set1_ps(ws[j * 2 + i2])));
+                            const P* pp = (const P*)(base + (size_t)qy * src.rowBytes) + qx;
+                            s = _mm_add_ps(s, _mm_mul_ps(Premul(Traits<P>::Load(pp)), _mm_set1_ps(ws[q * 2 + i2])));
                         }
                 }
                 s = _mm_mul_ps(s, _mm_set1_ps(op));  // premultiplied source x opacity, 0..1
                 if (_mm_movemask_ps(_mm_cmpneq_ps(s, _mm_setzero_ps())) == 0) continue;
-                if (nFrag == capFrag) {  // grow (rare): keep the contents
-                    sc.frags.resize(capFrag * 2);
-                    frags = sc.frags.data();
-                    capFrag = sc.frags.size();
+                Frag* fp = frags + p;  // this pixel's fragment k is fp[k * kTilePx]
+                int& n = sc.count[p];
+                const bool opaque = _mm_cvtss_f32(s) >= kOpaqueAlpha;
+                if (opaque || n == kMaxFrags) {
+                    // drop what is now hidden (behind an opaque fragment, this one included)
+                    const float cut = std::max(sc.opaqueIz[p], opaque ? iz : 0.f);
+                    int m = 0;
+                    for (int k = 0; k < n; k++)
+                        if (fp[(k) * kTilePx].iz >= cut) fp[(m++) * kTilePx] = fp[(k) * kTilePx];
+                    n = m;
                 }
-                Frag& fr = frags[nFrag];
-                fr.c = s;
-                fr.iz = (float)hw;
-                fr.next = head[x];
-                head[x] = (int)nFrag++;
+                if (n == kMaxFrags) {  // still full: the farthest (lowest rank on a tie) goes under the back
+                    int far = 0;
+                    for (int k = 1; k < n; k++)
+                        if (fp[(k) * kTilePx].iz < fp[(far) * kTilePx].iz || (fp[(k) * kTilePx].iz == fp[(far) * kTilePx].iz && fp[(k) * kTilePx].rank < fp[(far) * kTilePx].rank)) far = k;
+                    sc.back[p] = Over(sc.back[p], fp[(far) * kTilePx].c);
+                    fp[(far) * kTilePx] = fp[(--n) * kTilePx];
+                }
+                fp[(n) * kTilePx].c = s;
+                fp[(n) * kTilePx].iz = iz;
+                fp[(n) * kTilePx].rank = rank;
+                n++;
+                if (opaque && iz > sc.opaqueIz[p]) {
+                    if (sc.opaqueIz[p] == 0.f) opaquePx++;
+                    sc.opaqueIz[p] = iz;
+                    newOpaque = true;
+                }
             }
         }
-        // resolve the row: per pixel, far to near by the pixel's own depth
-        P* out = (P*)((char*)dst.data + (size_t)y * dst.rowBytes);
-        for (int x = 0; x < w; x++) {
-            __m128 acc = _mm_setzero_ps();
-            int f = head[x];
-            if (f >= 0 && frags[f].next < 0) {
-                acc = frags[f].c;  // one fragment: nothing to order
-            } else if (f >= 0) {
-                // the list runs near to far in registration order (copies were taken far to near):
-                // fill `order` from the back so it reads far to near
-                size_t cnt = 0;
-                for (int g = f; g >= 0; g = frags[g].next) cnt++;
-                if (sc.order.size() < cnt) sc.order.resize(cnt * 2);
-                const Frag** order = sc.order.data();
-                size_t pos = cnt;
-                for (int g = f; g >= 0; g = frags[g].next) order[--pos] = &frags[g];
-                for (size_t k = 1; k < cnt; k++) {  // stable insertion sort, usually in order already
-                    const Frag* t = order[k];
-                    size_t j = k;
-                    for (; j > 0 && order[j - 1]->iz > t->iz; j--) order[j] = order[j - 1];
-                    order[j] = t;
-                }
-                for (size_t k = 0; k < cnt; k++) {
-                    const __m128 c = order[k]->c;
-                    const __m128 keep = _mm_sub_ps(_mm_set1_ps(1.f), _mm_shuffle_ps(c, c, 0));  // 1 - alpha
-                    acc = _mm_add_ps(c, _mm_mul_ps(acc, keep));
-                }
+        if (newOpaque && opaquePx == pw * ph) {
+            tileMinOpaque = sc.opaqueIz[0];
+            for (int yy = 0; yy < ph; yy++)
+                for (int xx = 0; xx < pw; xx++) tileMinOpaque = std::min(tileMinOpaque, sc.opaqueIz[yy * kTile + xx]);
+        }
+    }
+    // resolve: per pixel, far to near (insertion sort; the lists are short)
+    for (int yy = 0; yy < ph; yy++) {
+        P* out = (P*)((char*)dst.data + (size_t)(py0 + yy) * dst.rowBytes) + px0;
+        for (int xx = 0; xx < pw; xx++) {
+            const int p = yy * kTile + xx;
+            Frag* fp = frags + p;  // this pixel's fragment k is fp[k * kTilePx]
+            int n = sc.count[p];
+            for (int k = 1; k < n; k++) {
+                Frag t = fp[(k) * kTilePx];
+                int j = k;
+                for (; j > 0 && (fp[(j - 1) * kTilePx].iz > t.iz || (fp[(j - 1) * kTilePx].iz == t.iz && fp[(j - 1) * kTilePx].rank > t.rank)); j--)
+                    fp[(j) * kTilePx] = fp[(j - 1) * kTilePx];
+                fp[(j) * kTilePx] = t;
             }
+            __m128 acc = sc.back[p];
+            const float cut = sc.opaqueIz[p];
+            for (int k = 0; k < n; k++)
+                if (fp[(k) * kTilePx].iz >= cut) acc = Over(fp[(k) * kTilePx].c, acc);
             // back to straight alpha (transparent: colour 0)
             const float al = _mm_cvtss_f32(acc);
-            const float k = al > 0.f ? 1.f / al : 0.f;
-            Traits<P>::Store(out[x], _mm_mul_ps(acc, _mm_set_ps(k, k, k, 1.f)));
+            const float kk = al > 0.f ? 1.f / al : 0.f;
+            Traits<P>::Store(out[xx], _mm_mul_ps(acc, _mm_set_ps(kk, kk, kk, 1.f)));
         }
     }
 }
 
 template <class P>
-bool Run(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY, const RasterImage& dst,
+bool Run(const RasterImage& src, const PreparedCopies& pc, double dsX, double dsY, const RasterImage& dst,
          int threads, const std::function<bool()>& abort)
 {
-    std::vector<Box> boxes((size_t)std::max(n, 1));
-    for (int i = 0; i < n; i++) {
-        Box& b = boxes[i];
-        b.hit = copies[i].opacity > 0 && CopyBox(src, copies[i], dsX, dsY, dst, &b.x0, &b.y0, &b.x1, &b.y1);
-    }
-    // Small chunks of rows handed out in order: copies often cover only part of the frame.
-    const int kRows = 8;
-    const int chunks = (dst.height + kRows - 1) / kRows;
+    const int tiles = pc.tiles.tilesX * pc.tiles.tilesY;
     std::atomic<int> next{0};
     std::atomic<bool> stop{false};
     auto worker = [&](bool caller) {
-        RowScratch sc;
-        for (int k; !stop.load(std::memory_order_relaxed) && (k = next.fetch_add(1)) < chunks;) {
+        std::unique_ptr<TileScratch> scp = TakeScratch();
+        TileScratch& sc = *scp;
+        for (int k; !stop.load(std::memory_order_relaxed) && (k = next.fetch_add(1)) < tiles;) {
             // AE's abort callback is only asked on the calling (render) thread
-            if (caller && abort && abort()) {
+            if (caller && abort && (k & 15) == 0 && abort()) {
                 stop = true;
                 break;
             }
-            DrawRows<P>(src, copies, boxes.data(), n, dsX, dsY, dst, k * kRows, std::min(dst.height, (k + 1) * kRows),
-                        sc);
+            DrawTile<P>(src, pc, k, dsX, dsY, dst, sc);
         }
+        ReturnScratch(std::move(scp));
     };
-    int t = std::max(1, std::min(threads, chunks));
+    int t = std::max(1, std::min(threads, tiles));
     std::vector<std::thread> pool;
     try {
         for (int i = 1; i < t; i++) pool.emplace_back(worker, false);
     } catch (...) {
-        // no more threads: the ones already started and this one take all the chunks
+        // no more threads: the ones already started and this one take all the tiles
     }
     worker(true);
     for (auto& th : pool) th.join();
@@ -272,12 +282,12 @@ bool RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double d
 {
     if (dst.width <= 0 || dst.height <= 0 || !dst.data) return true;
     if (!(dsX > 0) || !(dsY > 0) || src.bpc != dst.bpc || !src.data) n = 0;
-    if (n > 0)
-        std::stable_sort(copies, copies + n, [](const RasterCopy& a, const RasterCopy& b) { return a.depth > b.depth; });
+    PreparedCopies pc;
+    PrepareCopies(src, copies, n, dsX, dsY, dst, kTile, &pc);
     switch (dst.bpc) {
-    case 8: return Run<P8>(src, copies, n, dsX, dsY, dst, threads, abort);
-    case 16: return Run<P16>(src, copies, n, dsX, dsY, dst, threads, abort);
-    case 32: return Run<PF>(src, copies, n, dsX, dsY, dst, threads, abort);
+    case 8: return Run<P8>(src, pc, dsX, dsY, dst, threads, abort);
+    case 16: return Run<P16>(src, pc, dsX, dsY, dst, threads, abort);
+    case 32: return Run<PF>(src, pc, dsX, dsY, dst, threads, abort);
     default: return true;
     }
 }

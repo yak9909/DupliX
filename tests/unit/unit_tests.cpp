@@ -1,4 +1,5 @@
 // randamu unit tests (no framework). Exit code = number of failed checks.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,8 @@
 
 #include "core/fast_plane.h"
 #include "core/raster.h"
+#include "core/raster_ref.h"
+#include "core/tiles.h"
 #include "core/scatter.h"
 #include "core/world.h"
 #include "hook/flatten_site.h"
@@ -868,6 +871,163 @@ TEST(raster_speed_report)
     rnd::RasterizeCopies(s, c, 0, 1.0, 1.0, d, counts[1]);
     std::printf("raster speed: 1920x1080, 0 copies (clear only), %d threads: %.2f ms\n", counts[1],
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+// ---- tiled rasterizer (plan 2026-11-25-fast-mode-gpu Task 2)
+// Copies of a srcW x srcH layer scattered like the fast mode does (default camera, the virtual layer at the comp
+// centre), sorted far to near. Copies behind the camera are dropped as the effect does.
+static std::vector<rnd::RasterCopy> SceneCopies(int seed, int n, int srcW, int srcH, double posRange, double rotRange,
+                                                double opMin)
+{
+    rnd::CameraView cam = CamDefault();
+    rnd::ScatterParams p;
+    p.count = n;
+    p.seed = seed;
+    p.pos[0] = p.pos[1] = posRange;
+    p.pos[2] = posRange * 2;
+    p.rotDeg[0] = p.rotDeg[1] = p.rotDeg[2] = rotRange;
+    p.scaleMin = 60;
+    p.scaleMax = 140;
+    p.opacityMin = opMin;
+    p.opacityMax = 100;
+    double W[16];
+    rnd::InitialLayerToWorld(srcW / 2.0, srcH / 2.0, 1920, 1080, W);
+    const double rect[4] = {0, 0, (double)srcW, (double)srcH};
+    std::vector<rnd::RasterCopy> v;
+    for (int i = 0; i < n; i++) {
+        rnd::CopyXform x;
+        rnd::ComputeCopy(p, i, srcW / 2.0, srcH / 2.0, &x);
+        rnd::RasterCopy c;
+        if (!rnd::CopyHomography(cam, W, x.m4, rect, c.screenToSrc)) continue;
+        c.opacity = x.opacity;
+        c.depth = rnd::CopyDepth(cam, W, x.m4, srcW / 2.0, srcH / 2.0);
+        v.push_back(c);
+    }
+    std::stable_sort(v.begin(), v.end(), [](const rnd::RasterCopy& a, const rnd::RasterCopy& b) { return a.depth > b.depth; });
+    return v;
+}
+
+TEST(tiles_cover_boxes)
+{
+    std::vector<Px8> src = MakeSrc8(10, 10), dst((size_t)64 * 48);
+    rnd::RasterImage s = Img(src, 10, 10, 8), d = Img(dst, 64, 48, 8);
+    rnd::RasterCopy c[3] = {Copy(1, 3, 1, 0, 0),         // screen (0..10, 0..10): tile 0 only
+                            Copy(1, 2, 1, -40, -20),     // screen (40..50, 20..30): tile (2, 1) and (3, 1)
+                            Copy(1, 1, 1, 500, 500)};    // off screen: nowhere
+    rnd::TileLists t;
+    rnd::BuildTiles(s, c, 3, 1.0, 1.0, d, 16, &t);
+    CHECK(t.tilesX == 4 && t.tilesY == 3);
+    auto has = [&](int tx, int ty, int i) {
+        int k = ty * t.tilesX + tx;
+        for (int j = t.start[k]; j < t.start[k + 1]; j++)
+            if (t.index[j] == i) return true;
+        return false;
+    };
+    CHECK(has(0, 0, 0) && !has(1, 0, 0) && !has(0, 1, 0));
+    CHECK(has(2, 1, 1) && has(3, 1, 1) && !has(1, 1, 1));
+    int total = t.start[t.tilesX * t.tilesY];
+    int with2 = 0;
+    for (int k = 0; k < total; k++) with2 += t.index[k] == 2;
+    CHECK(with2 == 0);
+}
+
+template <class P>
+static int MaxDiff8(const std::vector<P>& a, const std::vector<P>& b, float scale)
+{
+    float m = 0;
+    for (size_t i = 0; i < a.size(); i++)
+        for (int k = 0; k < 4; k++) {
+            float x = (float)((const decltype(a[0].a)*)&a[i])[k], y = (float)((const decltype(a[0].a)*)&b[i])[k];
+            m = std::max(m, std::fabs(x - y) * scale);
+        }
+    return (int)std::ceil(m - 1e-3f);
+}
+
+TEST(raster_matches_reference)
+{
+    // 20 scenes: 1..200 copies, oblique, semi-transparent, off screen, near the camera; 8 and 32 bpc; ds 1 and 0.5
+    const int counts[5] = {1, 7, 30, 90, 200};
+    int worst = 0;
+    for (int sc = 0; sc < 20; sc++) {
+        const int n = counts[sc % 5];
+        auto copies = SceneCopies(100 + sc, n, 120, 90, 500 + 100 * (sc % 3), sc % 2 ? 80 : 20, sc % 4 ? 30 : 100);
+        const double ds = sc % 3 == 2 ? 0.5 : 1.0;
+        const int w = (int)(640 * ds), h = (int)(360 * ds), ox = (int)(640 * ds), oy = (int)(360 * ds);
+        auto s8 = MakeSrc8(120, 90);
+        if (sc % 2 == 0) {
+            std::vector<Px8> a((size_t)w * h), b((size_t)w * h);
+            rnd::RasterImage s = Img(s8, 120, 90, 8), da = Img(a, w, h, 8, ox, oy), db = Img(b, w, h, 8, ox, oy);
+            da.screenShiftX = db.screenShiftX = sc * 3.25;
+            auto c1 = copies, c2 = copies;
+            rnd::RasterizeCopies(s, c1.data(), (int)c1.size(), ds, ds, da, 4);
+            rnd::RasterizeCopiesReference(s, c2.data(), (int)c2.size(), ds, ds, db, 4);
+            worst = std::max(worst, MaxDiff8(a, b, 1.f));
+        } else {
+            std::vector<PxF> sf(s8.size()), a((size_t)w * h), b((size_t)w * h);
+            for (size_t i = 0; i < s8.size(); i++)
+                sf[i] = PxF{s8[i].a / 255.f, s8[i].r / 255.f, s8[i].g / 255.f, s8[i].b / 255.f};
+            rnd::RasterImage s = Img(sf, 120, 90, 32), da = Img(a, w, h, 32, ox, oy), db = Img(b, w, h, 32, ox, oy);
+            auto c1 = copies, c2 = copies;
+            rnd::RasterizeCopies(s, c1.data(), (int)c1.size(), ds, ds, da, 4);
+            rnd::RasterizeCopiesReference(s, c2.data(), (int)c2.size(), ds, ds, db, 4);
+            worst = std::max(worst, MaxDiff8(a, b, 255.f));
+        }
+    }
+    std::printf("  tiled vs reference: max diff %d (8 bpc units)\n", worst);
+    CHECK(worst <= 1);
+}
+
+TEST(raster_overflow_64)
+{
+    // 100 semi-transparent copies on the same pixels, depths interleaved: over the 64-fragment limit
+    std::vector<Px8> src = MakeSrc8(20, 20), a((size_t)20 * 20), b((size_t)20 * 20);
+    rnd::RasterImage s = Img(src, 20, 20, 8), da = Img(a, 20, 20, 8), db = Img(b, 20, 20, 8);
+    std::vector<rnd::RasterCopy> c;
+    for (int i = 0; i < 100; i++) {
+        rnd::RasterCopy k = Copy(0.3, 0, 1.0 + 0.001 * i, 0, 0);
+        k.screenToSrc[8] = 1.0 + 0.01 * ((i * 37) % 100);  // per-pixel depth 1 / w varies by copy
+        k.screenToSrc[0] *= k.screenToSrc[8];
+        k.screenToSrc[4] *= k.screenToSrc[8];
+        k.depth = 1000 - i;
+        c.push_back(k);
+    }
+    auto c2 = c;
+    rnd::RasterizeCopies(s, c.data(), 100, 1.0, 1.0, da, 2);
+    rnd::RasterizeCopiesReference(s, c2.data(), 100, 1.0, 1.0, db, 2);
+    CHECK(MaxDiff8(a, b, 1.f) <= 1);
+}
+
+TEST(raster_tiled_speed_report)
+{
+    // like a cut-out PNG: an opaque ellipse on a transparent background
+    std::vector<Px8> src = MakeSrc8(577, 680), dst((size_t)1920 * 1080);
+    for (int y = 0; y < 680; y++)
+        for (int x = 0; x < 577; x++) {
+            double u = (x - 288.5) / 260.0, v = (y - 340.0) / 310.0;
+            Px8& p = src[(size_t)y * 577 + x];
+            if (u * u + v * v > 1) p = Px8{0, 0, 0, 0};
+            else p.a = 255;
+        }
+    rnd::RasterImage s = Img(src, 577, 680, 8), d = Img(dst, 1920, 1080, 8);
+    const int hw = (int)std::thread::hardware_concurrency();
+    for (int n : {10, 100, 1000}) {
+        auto copies = SceneCopies(7, n, 577, 680, 1500, 60, 100);
+        double t[2];
+        for (int which = 0; which < 2; which++) {
+            double best = 1e9;
+            for (int rep = 0; rep < 2; rep++) {
+                auto c = copies;
+                auto t0 = std::chrono::steady_clock::now();
+                if (which == 0)
+                    rnd::RasterizeCopiesReference(s, c.data(), (int)c.size(), 1.0, 1.0, d, hw);
+                else
+                    rnd::RasterizeCopies(s, c.data(), (int)c.size(), 1.0, 1.0, d, hw);
+                best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            }
+            t[which] = best;
+        }
+        std::printf("raster speed: 1920x1080, %d copies of 577x680: reference %.1f ms, tiled %.1f ms\n", n, t[0], t[1]);
+    }
 }
 
 // ---- hook tests
