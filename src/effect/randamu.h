@@ -20,8 +20,20 @@
 
 #include "randamu_params.h"
 
+#include <atomic>
+
 // Writes one line to the file named by the RANDAMU_LOG environment variable (no-op if unset).
 void RLog(const char* fmt, ...);
+// The log's generation: it changes when RANDAMU_LOG names another file (tests switch logs between comps).
+int RLogGeneration();
+// "Log only the first few" counters that start again in each log generation (each test comp's log gets them).
+struct LogLimit {
+    std::atomic<int> n{0}, gen{-1};
+    // true for the first `limit` calls of this generation (and every power of two after it if powersOfTwo)
+    bool Take(int limit, bool powersOfTwo = false, int* countOut = nullptr);
+    // the count so far in this generation (without counting)
+    int Count() const { return gen.load(std::memory_order_relaxed) == RLogGeneration() ? n.load() : 0; }
+};
 
 extern "C" {
 DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[],

@@ -68,13 +68,14 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     }
     MergeSceneInput in;
     if (!ReadMergeScene(layer, layerTime, &in)) {
-        static std::atomic<int> warned{0};
-        if (++warned <= 5) RLog("merge: scene read failed (comp %d layer %d): no merging", comp, id);
+        static LogLimit warned;
+        if (warned.Take(5)) RLog("merge: scene read failed (comp %d layer %d): no merging", comp, id);
         return nullptr;
     }
     // the comp time is the camera's frame: key by comp and the scene's own hash (the comp time is in it through
     // every transform); one entry per comp keeps the latest frame
-    const unsigned long long h = HashMergeScene(in);
+    // the log generation (changes only when a test switches logs): each test render builds and logs its own plan
+    const unsigned long long h = HashMergeScene(in) ^ ((unsigned long long)RLogGeneration() * 0x9E3779B97F4A7C15ull);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
         MergePlan p = BuildMergePlan(in);
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
@@ -90,9 +91,9 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
                 RLog("merge: test: group depth forced to %.2f", z);
             }
         }
-        static std::atomic<int> logged{0};
+        static LogLimit logged;
         if (p.overBudget) RLog("merge: plan over budget (%d rounds): no merging this frame", p.rounds);
-        if (++logged <= 20) {
+        if (logged.Take(20)) {
             RLog("merge: read scene ok=1 (plan: %d rounds, %.1f ms)", p.rounds, p.ms[0] + p.ms[1] + p.ms[2] + p.ms[3]);
             LogMergeScene(in);
             for (const auto& kv : p.layers)

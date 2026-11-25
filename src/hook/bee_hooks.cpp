@@ -517,8 +517,8 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         } else {
             const MergeCluster& cl = lp->clusters[lp->subs[i].cluster];
             if (!GroupPlaneM4(plan->cam, lp->in.layerToWorld, cl.depth, rect, cl.rect, m)) {
-                static std::atomic<int> warned{0};
-                if (++warned <= 5) RLog("merge: group plane failed (depth %.2f)", cl.depth);
+                static LogLimit warned;
+                if (warned.Take(5)) RLog("merge: group plane failed (depth %.2f)", cl.depth);
                 std::memset(m, 0, sizeof(m));  // a degenerate plane draws nothing
                 m[15] = 1;
             }
@@ -616,7 +616,7 @@ typedef int (*TexFn)(void*, void*, unsigned, double*, double*, void**, double*);
 typedef int (*TexRcFn)(void*, void*, unsigned, short, double*, double*, void*, void*, void**, double*);
 TexFn g_origTex = nullptr;
 TexRcFn g_origTexRc = nullptr;
-std::atomic<int> g_texSwaps{0};
+LogLimit g_texSwaps;
 
 void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
 {
@@ -631,10 +631,10 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     if (!KeyOf(layer, &k)) return;
     const int* tm = ArtTimeOf(k);
     {
-        // (experiment) the quality hook uses the Count time: check that it is the frame the texture is drawn for
+        // the quality hook uses the Count time: log when it is not the frame the texture is drawn for
         const int* tc = CountTimeOf(k);
-        static std::atomic<int> mism{0};
-        if (tm && (!tc || (long long)tc[0] * tm[1] != (long long)tm[0] * tc[1]) && ++mism <= 20)
+        static LogLimit mism;
+        if (tm && (!tc || (long long)tc[0] * tm[1] != (long long)tm[0] * tc[1]) && mism.Take(20))
             RLog("merge: count time %d/%d differs from the art time %d/%d (texture)", tc ? tc[0] : -1, tc ? tc[1] : -1, tm[0], tm[1]);
     }
     // the parameters at that time (render thread: AEGP); the registry's snapshot may hold merge off
@@ -655,8 +655,8 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     (**(void (***)(void*, int))*world)(*world, 1);  // the layer's texture: what AEGP_DisposeTexture does
     *world = w1;
     std::memcpy(m3, out3, sizeof(out3));
-    int n = ++g_texSwaps;
-    if (n <= 5 || (n & (n - 1)) == 0) RLog("merge: texture swapped %d (%s, comp %d layer %d sub %d)", n, which, k.compItemId, k.layerId, index);
+    int n = 0;
+    if (g_texSwaps.Take(5, true, &n)) RLog("merge: texture swapped %d (%s, comp %d layer %d sub %d)", n, which, k.compItemId, k.layerId, index);
 }
 
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
@@ -673,14 +673,14 @@ int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* 
     return r;
 }
 
-// ---- merge (experiment, RANDAMU_MERGE_DRAFT=1): classic 3D (Advanced3D.aex) asks the layer's quality through
+// ---- merge: classic 3D (Advanced3D.aex) asks the layer's quality through
 // AEGP_LayerSuite::AEGP_GetLayerQuality. A group plane lies 1:1 on the screen pixels, so drawing it in draft
 // (nearest sampling) gives the same pixels without the per-pixel interpolation. Answer draft to Advanced3D only,
 // and only for a merge-on layer whose sub-layers at the last art time are all group planes.
 bool WritePtr(void** where, void* value);
 typedef A_Err (*GetLayerQualityFn)(AEGP_LayerH, AEGP_LayerQuality*);
 GetLayerQualityFn g_origGetQuality = nullptr;
-std::atomic<int> g_qCalls{0}, g_qDraft{0}, g_qNoTime{0};
+LogLimit g_qCalls, g_qDraft, g_qNoTime;
 uintptr_t g_a3dLo = 0, g_a3dHi = 0;
 
 bool AllGroups(const MergeLayerPlan& lp)
@@ -697,7 +697,8 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     if (err || !q || ra < g_a3dLo || ra >= g_a3dHi || GetCurrentThreadId() == g_mainThread) return err;
     const void* layer = (const void*)L;
     if (!IsMine(layer)) return err;
-    int n = ++g_qCalls;
+    int n = 0;
+    const bool firstCalls = g_qCalls.Take(8, false, &n);
     LayerKey k;
     ParamSnapshot s;
     if (!KeyOf(layer, &k)) return err;
@@ -705,11 +706,11 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     // starts, the opacities only after the quality)
     const int* tm = CountTimeOf(k);
     if (!tm) {
-        int m = ++g_qNoTime;
-        if (m <= 5 || (m & (m - 1)) == 0) RLog("merge: quality asked without a count time (%d of %d calls)", m, n);
+        int m = 0;
+        if (g_qNoTime.Take(5, true, &m)) RLog("merge: quality asked without a count time (%d of %d calls)", m, n);
         return err;
     }
-    if (n <= 8) {
+    if (firstCalls) {
         const int* ta = ArtTimeOf(k);
         RLog("merge: quality call %d: count time %d/%d, last art time %d/%d", n, tm[0], tm[1], ta ? ta[0] : -1, ta ? ta[1] : -1);
     }
@@ -717,16 +718,18 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     const MergeLayerPlan* lp = nullptr;
     auto plan = MergePlanOf(layer, tm, s, false, &lp);
     if (!lp || !AllGroups(*lp)) return err;
+    // diagnosis / tests: RANDAMU_MERGE_DRAFT=0 keeps the layer's own quality (read per call: test scripts in AE
+    // switch it between renders)
+    char v[8] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_MERGE_DRAFT", v, sizeof(v)) > 0 && v[0] == '0') return err;
     *q = AEGP_LayerQual_DRAFT;
-    int d = ++g_qDraft;
-    if (d <= 5 || (d & (d - 1)) == 0) RLog("merge: draft quality answered %d (calls %d, comp %d layer %d)", d, n, k.compItemId, k.layerId);
+    int d = 0;
+    if (g_qDraft.Take(5, true, &d)) RLog("merge: draft quality answered %d (calls %d, comp %d layer %d)", d, n, k.compItemId, k.layerId);
     return err;
 }
 
 void InstallQualityHook()
 {
-    char v[8] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_MERGE_DRAFT", v, sizeof(v)) <= 0 || v[0] != '1') return;
     HMODULE a3d = GetModuleHandleA("Advanced3D.aex");
     AEGP_LayerSuite9* ls = nullptr;
     // Advanced3D acquires the layer suite with version 10: patch that version's table

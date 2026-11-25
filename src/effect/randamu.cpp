@@ -78,13 +78,37 @@ const char* UiName(const char* utf8, const char* english)
 
 }  // namespace
 
+namespace {
+std::atomic<int> g_logGen{0};  // bumped when RANDAMU_LOG changes (a test switching logs between comps)
+}
+
+int RLogGeneration() { return g_logGen.load(std::memory_order_relaxed); }
+
+bool LogLimit::Take(int limit, bool powersOfTwo, int* countOut)
+{
+    int g = RLogGeneration();
+    if (gen.load(std::memory_order_relaxed) != g) {
+        gen.store(g, std::memory_order_relaxed);
+        n.store(0, std::memory_order_relaxed);
+    }
+    int k = ++n;
+    if (countOut) *countOut = k;
+    return k <= limit || (powersOfTwo && (k & (k - 1)) == 0);
+}
+
 void RLog(const char* fmt, ...)
 {
-    static char path[MAX_PATH] = {0};
-    // Decided once (thread-safe static init); when logging is off, return without taking the lock.
-    static const bool enabled = GetEnvironmentVariableA("RANDAMU_LOG", path, sizeof(path)) > 0;
+    // Logging on or off is decided once (thread-safe static init); when off, return without taking the lock.
+    static const bool enabled = GetEnvironmentVariableA("RANDAMU_LOG", nullptr, 0) > 0;
     if (!enabled) return;
     std::lock_guard<std::mutex> lk(g_logMutex);
+    // The path is read on every line: a test script running in AE ($.setenv) gives each comp its own log.
+    static char path[MAX_PATH] = {0};
+    char now[MAX_PATH] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_LOG", now, sizeof(now)) > 0 && std::strcmp(now, path)) {
+        if (path[0]) ++g_logGen;
+        std::memcpy(path, now, sizeof(path));
+    }
     FILE* fp = nullptr;
     if (fopen_s(&fp, path, "a") || !fp) return;
     SYSTEMTIME st;
@@ -550,11 +574,10 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 // value of RANDAMU_CACHE_SALT (a new salt makes AE render again instead of reading its disk cache).
 void MixBuildId(PF_InData* in_data, PF_PreRenderExtra* extra)
 {
-    static const std::string salt = [] {
-        char v[64] = {0};
-        DWORD n = GetEnvironmentVariableA("RANDAMU_CACHE_SALT", v, sizeof(v));
-        return std::string(v, n < sizeof(v) ? n : 0);
-    }();
+    // read on every call: a test script running in AE ($.setenv) changes it between renders
+    char v[64] = {0};
+    DWORD vn = GetEnvironmentVariableA("RANDAMU_CACHE_SALT", v, sizeof(v));
+    const std::string salt(v, vn < sizeof(v) ? vn : 0);
     const std::string& id = BuildId();
     extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)id.size(), id.data());
     if (!salt.empty()) extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)salt.size(), salt.data());
@@ -703,8 +726,8 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
         extra->output->result_rect = none;
         extra->output->max_result_rect = none;
     }
-    static std::atomic<int> logged{0};
-    if (++logged <= 6)
+    static LogLimit logged;
+    if (logged.Take(6))
         RLog("fast: prerender ok=%d comp %dx%d in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) t=%d/%d", (int)ok, cw, ch,
              (int)in_result.result_rect.left, (int)in_result.result_rect.top, (int)in_result.result_rect.right,
              (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
@@ -814,16 +837,16 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     if (extra->cb->GuidMixInPtr) MixBuildId(in_data, extra);
     {
         // merge (Task 2 gate, log only): AE's own camera for this effect, to compare with the one the hooks read
-        static std::atomic<int> logged{0};
+        static LogLimit logged;
         PF_ParamDef d;
         AEFX_CLR_STRUCT(d);
-        if (logged.load() < 3 && !PF_CHECKOUT_PARAM(in_data, RP_MERGE, in_data->current_time, in_data->time_step,
+        if (logged.Count() < 3 && !PF_CHECKOUT_PARAM(in_data, RP_MERGE, in_data->current_time, in_data->time_step,
                                                     in_data->time_scale, &d)) {
             const bool merge = d.u.bd.value != 0;
             PF_CHECKIN_PARAM(in_data, &d);
             FastPre f;
             int cw = 0, ch = 0;
-            if (merge && ++logged <= 3 && FastSetup(in_data, &f, &cw, &ch))
+            if (merge && logged.Take(3) && FastSetup(in_data, &f, &cw, &ch))
                 RLog("merge: effect cam dist=%.2f camPos=(%.2f,%.2f,%.2f)", f.cam.dist, f.cam.camToWorld[12],
                      f.cam.camToWorld[13], f.cam.camToWorld[14]);
         }

@@ -157,6 +157,10 @@ CHECKS = {
     # half resolution: AE filters its half-size texture differently from DupliX's bilinear (as in the fast mode)
     "group_half": lambda: compare("group_half", over2_max=0.05),
     "group_nocam": lambda: compare("group_nocam"),
+    # odd sizes / custom resolution factors (the draft quality of all-group layers must not shift the plane)
+    "group_odd": lambda: compare("group_odd"),
+    "group_res5": lambda: compare("group_res5", over2_max=0.05),
+    "group_odd_res3": lambda: compare("group_odd_res3", over2_max=0.05),
 }
 
 fails = 0

@@ -66,8 +66,8 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
     const double dsX = (texRect[2] - texRect[0]) / (full[2] - full[0]), dsY = (texRect[3] - texRect[1]) / (full[3] - full[1]);
     const long dw = std::lround((c.rect[2] - c.rect[0]) * dsX), dh = std::lround((c.rect[3] - c.rect[1]) * dsY);
     {
-        static std::atomic<int> logged{0};
-        if (++logged <= 6)
+        static LogLimit logged;
+        if (logged.Take(6))
             RLog("merge: group texture from %dx%d bpc %d m3=[%.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f] texRect=(%.1f,%.1f,%.1f,%.1f) "
                  "ds=(%.3f,%.3f) -> %ldx%ld",
                  (int)w, (int)h, bpc, texM3[0], texM3[1], texM3[2], texM3[3], texM3[4], texM3[5], texM3[6], texM3[7], texM3[8],
@@ -134,8 +134,8 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
     RasterizeCopies(src, copies.data(), (int)copies.size(), dsX, dsY, dst, hw ? (int)hw : 4);
     QueryPerformanceCounter(&q1);
     {
-        static std::atomic<int> timed{0};
-        if (++timed <= 64) {
+        static LogLimit timed;
+        if (timed.Take(64)) {
             QueryPerformanceFrequency(&qf);
             RLog("merge: group draw %ldx%ld copies %d in %.1f ms", dw, dh, (int)copies.size(),
                  (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart);

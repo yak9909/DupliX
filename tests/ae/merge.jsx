@@ -24,6 +24,11 @@
         {name: "group_scatter", params: scatter, compare: true},
         {name: "group_half", params: scatter, compare: true, half: true},
         {name: "group_nocam", params: scatter, compare: true, noCam: true},
+        // draft quality of all-group layers (nearest sampling): odd comp sizes and a resolution factor that does
+        // not divide the group rects' 24 px alignment must keep the plane on whole pixels
+        {name: "group_odd", params: scatter, compare: true, w: 401, h: 301},
+        {name: "group_res5", params: scatter, compare: true, res: [5, 5]},
+        {name: "group_odd_res3", params: scatter, compare: true, w: 401, h: 301, res: [3, 3]},
         // Task 4: a narrow opaque wall turned 60 deg between two copies (left and right, not overlapping it on
         // screen); run_merge.ps1 -ForceD puts the group plane through the wall's middle (in its transparent part)
         {name: "seam", params: {count: 2, seed: 16, pos: [150, 20, 0], scale: [40, 40]}, compare: true,
@@ -51,6 +56,7 @@
         fx.property(MERGE).setValue(merge ? 1 : 0);
     }
     function build(c, merge) {
+        var W = c.w || 400, H = c.h || 300;
         var comp = app.project.items.addComp((merge ? "mg_" : "nm_") + c.name, W, H, 1, c.frames ? c.frames / 30 : 2, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
         var walls = c.walls || [];
@@ -81,7 +87,7 @@
         return comp;
     }
     var rqLines = [];
-    function addRQ(comp, half) {
+    function addRQ(comp, half, res, file) {
         var rq = app.project.renderQueue.items.add(comp);
         var om = rq.outputModule(1);
         var ok = false;
@@ -92,13 +98,54 @@
             om.applyTemplate(tpl);
             om.saveAsTemplate("RNDM_TIFF_A");
         }
-        om.file = new File(outDir + "/r_" + comp.name + "_[#####].tif");
+        om.file = new File(file || (outDir + "/r_" + comp.name + "_[#####].tif"));
         rq.timeSpanStart = 0;
         rq.timeSpanDuration = 1 / 30;
         if (half) {
             try { rq.setSetting("Resolution", "Half"); } catch (eh) { log("setSetting Resolution failed: " + eh.message); }
         }
+        if (res) {
+            // a custom resolution factor: the comp's own factor with the render setting "current settings"
+            comp.resolutionFactor = res;
+            try { rq.setSetting("Resolution", "Current Settings"); } catch (er) { log("setSetting Resolution (current) failed: " + er.message); }
+            log("res " + comp.name + " factor " + comp.resolutionFactor.join("x"));
+        }
         rqLines.push(comp.name + "=" + app.project.renderQueue.numItems);
+    }
+
+    // RANDAMU_MERGE_PASSES ("OFF,ON,ND"; optional): render every comp in this AE, one render queue item at a time,
+    // in each pass: OFF / ON = multi-frame rendering off / on, ND = MFR off with the draft quality of all-group
+    // layers off (RANDAMU_MERGE_DRAFT=0). Each render gets its own plugin log (the plugin reads RANDAMU_LOG on every
+    // line), a fresh cache salt and purged caches; outputs <comp>_<pass>.tif and plugin_<comp>_<pass>.log.
+    // RANDAMU_MERGE_FORCE_SEAM ("x,y,z"): RANDAMU_MERGE_FORCE_DW for the seam comps only.
+    function renderPasses(targets, passes) {
+        var forceSeam = $.getenv("RANDAMU_MERGE_FORCE_SEAM") || "";
+        for (var pi = 0; pi < passes.length; pi++) {
+            var pass = passes[pi];
+            app.setMultiFrameRenderingConfig(pass === "ON", 100);
+            $.setenv("RANDAMU_MERGE_DRAFT", pass === "ND" ? "0" : "");
+            for (var ti = 0; ti < targets.length; ti++) {
+                var tg0 = targets[ti], name = tg0.comp.name;
+                var t0 = new Date().getTime();
+                $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + name + "_" + pass + ".log").replace(/\//g, "\\"));
+                $.setenv("RANDAMU_CACHE_SALT", "merge-" + pass + "-" + name + "-" + t0);
+                $.setenv("RANDAMU_MERGE_FORCE_DW", (forceSeam && /_seam$/.test(name)) ? forceSeam : "");
+                var old = new File(outDir + "/plugin_" + name + "_" + pass + ".log");
+                if (old.exists) old.remove();
+                app.purge(PurgeTarget.ALL_CACHES);
+                var before = app.project.renderQueue.numItems;
+                addRQ(tg0.comp, tg0.half, tg0.res, outDir + "/p_" + name + "_" + pass + "_[#####].tif");
+                rqLines.pop();
+                app.project.renderQueue.render();
+                var out = new File(outDir + "/p_" + name + "_" + pass + "_00000.tif");
+                var dst = new File(outDir + "/" + name + "_" + pass + ".tif");
+                if (dst.exists) dst.remove();
+                if (out.exists) out.copy(dst.fsName);
+                app.project.renderQueue.item(before + 1).remove();
+                log("rendered " + name + " " + pass + " " + (new Date().getTime() - t0) + " ms" + (out.exists ? "" : " (no output)"));
+            }
+        }
+        $.setenv("RANDAMU_LOG", "");
     }
 
     try {
@@ -106,16 +153,29 @@
         app.newProject();
         app.project.bitsPerChannel = 8;
         var only = $.getenv("RANDAMU_MERGE_ONLY") || "";
+        var targets = [];
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;
-            addRQ(build(c, true), c.half);
-            if (c.compare) addRQ(build(c, false), c.half);
+            var cm = build(c, true);
+            addRQ(cm, c.half, c.res);
+            targets.push({comp: cm, half: c.half, res: c.res});
+            if (c.compare) {
+                var cn = build(c, false);
+                addRQ(cn, c.half, c.res);
+                targets.push({comp: cn, half: c.half, res: c.res});
+            }
             log("built " + c.name);
         }
         var f = new File(outDir + "/rq.txt");
         f.encoding = "UTF-8"; f.open("w"); f.write(rqLines.join("\n")); f.close();
         app.project.save(new File(outDir + "/merge.aep"));
+        var passes = $.getenv("RANDAMU_MERGE_PASSES") || "";
+        if (passes) {
+            // the queue items made for aerender are not rendered here
+            for (var q = 1; q <= app.project.renderQueue.numItems; q++) app.project.renderQueue.item(q).render = false;
+            renderPasses(targets, passes.split(","));
+        }
         log("done");
     } catch (e) {
         log("EXCEPTION " + e.message + " (line " + e.line + ")");
