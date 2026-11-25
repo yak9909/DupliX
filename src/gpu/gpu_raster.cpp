@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <new>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "core/tiles.h"
+#include "gpu/ae_span_ptx.h"
 #include "gpu/fast_raster_ptx.h"
 
 namespace rnd {
@@ -464,6 +466,128 @@ GpuRasterStatus GpuRasterizeHost(const RasterImage& src, const RasterCopy* copie
         GpuLog("gpu raster: merge %dx%d bpc %d: upload+convert %.1f, draw %.1f, convert %.1f, download %.1f ms", dst.width,
                dst.height, dst.bpc, ms(0, 1), ms(1, 2), ms(2, 3), ms(3, 4));
     return kGpuOk;
+}
+
+// ---- AE's span drawing (classic 3D copies drawn by DupliX with AE's arithmetic)
+namespace {
+
+struct AeHost {
+    std::mutex mu;
+    bool tried = false;
+    CUcontext ctx = nullptr;
+    CUstream stream = nullptr;
+    CUmodule mod = nullptr;
+    CUfunction fn = nullptr;
+    CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0;
+    size_t texCap = 0, regionCap = 0, rowsCap = 0;
+    unsigned long long texKey = ~0ull;
+    float rcpHost[256] = {};
+    bool rcpSet = false;
+    unsigned char* stage = nullptr;  // pinned: the region on its way to and from the GPU
+    size_t stageCap = 0;
+};
+AeHost g_ae;
+
+bool GrowHost(unsigned char** p, size_t* cap, size_t need)
+{
+    if (*cap >= need && *p) return true;
+    if (*p) Cuda().memFreeHost(*p);
+    *p = nullptr, *cap = 0;
+    void* q = nullptr;
+    if (Cuda().memAllocHost(&q, need ? need : 4)) return false;
+    *p = (unsigned char*)q, *cap = need;
+    return true;
+}
+
+}  // namespace
+
+bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut)
+{
+    const Api& cu = Cuda();
+    if (!cu.ok || g_failed.load() || !cu.primaryRetain || !cu.streamCreate || !cu.dtohAsync || !cu.memAllocHost) return false;
+    if (j.nRows <= 0 || !j.target || !j.tex.data) return false;
+    LARGE_INTEGER t0;
+    QueryPerformanceCounter(&t0);
+    std::lock_guard<std::mutex> lk(g_ae.mu);
+    if (!g_ae.tried) {
+        g_ae.tried = true;
+        CUdevice dev = 0;
+        if (cu.init(0) || cu.deviceGet(&dev, 0) || cu.primaryRetain(&g_ae.ctx, dev)) {
+            g_ae.ctx = nullptr;
+        } else {
+            CtxScope scope(g_ae.ctx);
+            CUresult r = !scope.pushed ? 1 : cu.streamCreate(&g_ae.stream, 1 /* CU_STREAM_NON_BLOCKING */);
+            if (!r) r = cu.moduleLoadData(&g_ae.mod, kAeSpanPtx);
+            if (!r) r = cu.moduleGetFunction(&g_ae.fn, g_ae.mod, "AeSpanRows");
+            if (r) {
+                GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
+                g_ae.ctx = nullptr;
+            }
+        }
+    }
+    if (!g_ae.ctx) return false;
+    CtxScope scope(g_ae.ctx);
+    if (!scope.pushed) return false;
+    CUstream st = g_ae.stream;
+    // the rows' bounding box
+    int y0 = 1 << 30, y1 = -(1 << 30), x0 = 1 << 30, x1 = -(1 << 30);
+    for (int i = 0; i < j.nRows; i++) {
+        const int* r = j.rows + 3 * i;
+        if (r[2] <= r[1]) continue;
+        y0 = std::min(y0, r[0]), y1 = std::max(y1, r[0] + 1), x0 = std::min(x0, r[1]), x1 = std::max(x1, r[2]);
+    }
+    if (y1 <= y0 || x1 <= x0) return true;  // nothing to draw
+    const int pitch = (x1 - x0) * 4;
+    const size_t regionBytes = (size_t)pitch * (y1 - y0), rowsBytes = (size_t)j.nRows * 12;
+    const size_t texBytes = (size_t)j.tex.rowbytes * j.tex.height;
+    if (!GrowDev(&g_ae.region, &g_ae.regionCap, regionBytes) || !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes) ||
+        !GrowHost(&g_ae.stage, &g_ae.stageCap, regionBytes + rowsBytes)) {
+        GpuLog("gpu ae span: buffers not allocated (%zu bytes): this copy on the CPU", regionBytes);
+        return false;
+    }
+    if (g_ae.texKey != j.texKey || !g_ae.tex) {
+        if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
+            g_ae.texKey = ~0ull;
+            return false;
+        }
+        g_ae.texKey = j.texKey;
+    }
+    if (!g_ae.rcpSet || std::memcmp(g_ae.rcpHost, j.rcp, sizeof(g_ae.rcpHost))) {
+        if (!g_ae.rcp && cu.memAlloc(&g_ae.rcp, sizeof(g_ae.rcpHost))) return false;
+        if (cu.htod(g_ae.rcp, j.rcp, sizeof(g_ae.rcpHost))) return false;
+        std::memcpy(g_ae.rcpHost, j.rcp, sizeof(g_ae.rcpHost));
+        g_ae.rcpSet = true;
+    }
+    // the region and the rows into pinned memory, then one copy each way
+    for (int y = y0; y < y1; y++)
+        std::memcpy(g_ae.stage + (size_t)(y - y0) * pitch, j.target + (ptrdiff_t)y * j.targetRowbytes + 4 * (ptrdiff_t)x0, pitch);
+    std::memcpy(g_ae.stage + regionBytes, j.rows, rowsBytes);
+    if (cu.htodAsync(g_ae.region, g_ae.stage, regionBytes, st) ||
+        cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes, st))
+        return false;
+    AeSpanCore core = j.core;
+    CUdeviceptr texD = g_ae.tex, rcpD = g_ae.rcp, regD = g_ae.region, rowsD = g_ae.rows;
+    int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = j.nRows, ox = x0, oy = y0, pt = pitch;
+    void* args[] = {&core, &texD, &texRb, &texW, &texH, &rcpD, &regD, &pt, &ox, &oy, &rowsD, &n};
+    if (cu.launch(g_ae.fn, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr)) {
+        g_failed = true;
+        GpuLog("gpu ae span: launch failed: copies drawn on the CPU from now on");
+        return false;
+    }
+    if (cu.dtohAsync(g_ae.stage, g_ae.region, regionBytes, st) || cu.streamSync(st)) {
+        g_failed = true;
+        GpuLog("gpu ae span: the kernel failed: copies drawn on the CPU from now on");
+        return false;
+    }
+    for (int y = y0; y < y1; y++)
+        std::memcpy(j.target + (ptrdiff_t)y * j.targetRowbytes + 4 * (ptrdiff_t)x0, g_ae.stage + (size_t)(y - y0) * pitch, pitch);
+    if (msOut) {
+        LARGE_INTEGER t1, f;
+        QueryPerformanceCounter(&t1);
+        QueryPerformanceFrequency(&f);
+        *msOut = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+    }
+    return true;
 }
 
 namespace cu {

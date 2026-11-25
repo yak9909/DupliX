@@ -4,8 +4,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
+#include <windows.h>
 
+#include "core/ae_span.h"
 #include "core/fast_plane.h"
 #include "core/raster.h"
 #include "core/scatter.h"
@@ -153,8 +157,96 @@ static Compare Run(void* ctx, const std::vector<ARGB>& src, int sw, int sh, std:
     return r;
 }
 
+// gpu_ae_span: AE's span drawing on the GPU against captures of AE (RANDAMU_SPAN_CAP: directories separated by ';',
+// written by RANDAMU_A3D_DRAW=3): every captured pixel must be AE's.
+static std::vector<unsigned char> ReadAll(const std::string& path)
+{
+    std::vector<unsigned char> b;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "rb") || !f) return b;
+    fseek(f, 0, SEEK_END);
+    b.resize((size_t)ftell(f));
+    fseek(f, 0, SEEK_SET);
+    if (!b.empty() && fread(b.data(), 1, b.size(), f) != b.size()) b.clear();
+    fclose(f);
+    return b;
+}
+template <class T> static T At(const std::vector<unsigned char>& b, size_t off)
+{
+    T v{};
+    if (off + sizeof(T) <= b.size()) std::memcpy(&v, b.data() + off, sizeof(T));
+    return v;
+}
+static void GpuSpanCapture(const std::string& dir)
+{
+    const auto st = ReadAll(dir + "\\state.bin"), pa = ReadAll(dir + "\\params.bin"), sm = ReadAll(dir + "\\samples.bin");
+    const auto th = ReadAll(dir + "\\tex_hdr.bin"), tx = ReadAll(dir + "\\tex.bin"), rows = ReadAll(dir + "\\rows.bin");
+    CHECK(!st.empty() && !pa.empty() && sm.size() >= 72 && !tx.empty() && !rows.empty());
+    if (st.empty() || pa.empty() || sm.size() < 72 || tx.empty() || rows.empty()) return;
+    static rnd::AeRcpTable rcp;
+    rnd::AeFillRcpTable(&rcp);
+    rnd::AeSpanParams p;
+    const int si = At<int>(st, 0x30);
+    for (int k = 0; k < 9; k++) p.m[k] = At<double>(sm, 72 * (size_t)si + 8 * k);
+    p.persp = st[0x98] != 0, p.a0 = At<double>(st, 0xA0), p.quality = st[0xA8];
+    p.opacity = At<double>(pa, 0x20), p.colorMode = pa[0x5B];
+    // the captured rows into a frame (before), the expected pixels (after)
+    struct R { int y, x0, x1; size_t o; };
+    std::vector<R> rs;
+    int W = 0, H = 0;
+    for (size_t o = 0; o + 20 <= rows.size();) {
+        const int y = At<int>(rows, o + 4), x0 = At<int>(rows, o + 8), x1 = At<int>(rows, o + 12), n = At<int>(rows, o + 16);
+        o += 20;
+        if (n > 0) rs.push_back({y, x0, x0 + n / 4, o}), W = std::max(W, x0 + n / 4), H = std::max(H, y + 1);
+        o += 2 * (size_t)std::max(n, 0);
+    }
+    const int rb = W * 4;
+    std::vector<unsigned char> frame((size_t)rb * H, 0);
+    std::vector<int> tri;
+    for (const R& r : rs) {
+        std::memcpy(&frame[(size_t)r.y * rb + 4 * r.x0], &rows[r.o], 4 * (size_t)(r.x1 - r.x0));
+        tri.push_back(r.y), tri.push_back(r.x0), tri.push_back(r.x1);
+    }
+    rnd::GpuAeSpanJob j;
+    j.core = rnd::AeCoreOf(p);
+    j.tex.data = tx.data(), j.tex.rowbytes = At<int>(th, 40), j.tex.width = At<int>(th, 44), j.tex.height = At<int>(th, 48);
+    static unsigned long long key = 1;
+    j.texKey = key++;
+    j.rcp = rcp.r, j.target = frame.data(), j.targetRowbytes = rb, j.rows = tri.data(), j.nRows = (int)rs.size();
+    double ms = 0;
+    const bool ok = rnd::GpuAeSpans(j, &ms);
+    CHECK(ok);
+    long long pixels = 0, bad = 0;
+    for (const R& r : rs)
+        for (int x = r.x0; x < r.x1; x++) {
+            pixels++;
+            const unsigned char* g = &frame[(size_t)r.y * rb + 4 * x];
+            const unsigned char* a = &rows[r.o + 4 * (size_t)(r.x1 - r.x0) + 4 * (size_t)(x - r.x0)];
+            if (std::memcmp(g, a, 4)) {
+                if (bad < 5) std::printf("  gpu span (%d, %d): gpu %d %d %d %d AE %d %d %d %d\n", x, r.y, g[0], g[1], g[2], g[3], a[0], a[1], a[2], a[3]);
+                bad++;
+            }
+        }
+    std::printf("gpu_ae_span %s: %lld pixels, %lld differ, %.2f ms\n", dir.c_str(), pixels, bad, ms);
+    CHECK(pixels > 0 && bad == 0);
+}
+
 int main()
 {
+    {
+        char env[4096] = {0};
+        if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {
+            std::string all = env;
+            size_t a = 0;
+            while (a <= all.size()) {
+                const size_t b = all.find(';', a);
+                const std::string dir = all.substr(a, b == std::string::npos ? std::string::npos : b - a);
+                if (!dir.empty()) GpuSpanCapture(dir);
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+        }
+    }
     if (!rnd::GpuRasterAvailable() || !rnd::cu::Init()) {
         std::printf("FAIL no CUDA driver\n");
         return 1;

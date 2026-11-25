@@ -29,3 +29,4 @@ spike/ida/*
 # user-provided scenes (private material)
 tests/ae/user/
 src/gpu/fast_raster_ptx.h
+src/gpu/ae_span_ptx.h

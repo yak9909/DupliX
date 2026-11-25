@@ -6,7 +6,6 @@
 #include <cstring>
 #include <future>
 
-#include "core/ae_order.h"
 #include "core/merge_geom.h"
 
 namespace rnd {
@@ -280,36 +279,17 @@ MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt)
     // surface away AE's order was the depth order and merging matched). Such a frame does not merge: AE draws
     // everything as without the merge. (Copies that pierce a surface are cut by AE exactly: they are only drawn
     // one by one, below.)
-    // AE's own order of this frame (core/ae_order.h, decoded from Advanced3D 11/26): surfaces in a cycle are drawn
-    // through AE's fragment buffer, whose result depends on the order AE visits them, and that order changes with
-    // every surface merging removes or adds; overlapping level pairs are ordered arbitrarily the same way. Either in
-    // the frame as AE would draw it without merging: nothing merges (AE draws it as without the merge).
-    // opt.rule 1 (diagnostics): skip this check.
-    std::vector<AeSurface> aeFixed;
-    for (const Obstacle& ob : fixed) {
-        if (ob.box || !ob.cornersKnown || ob.unbounded || !ob.q.valid) continue;
-        AeSurface s;
-        for (int k = 0; k < 4; k++) {
-            s.sx[k] = ob.q.x[k], s.sy[k] = ob.q.y[k];
-            for (int j = 0; j < 3; j++) s.w[k][j] = ob.corners[k][j];
+    for (const Item& it : items) {
+        if (!it.q.valid) continue;
+        for (const Obstacle& ob : fixed) {
+            if (ob.box || !ob.cornersKnown || ob.unbounded || !QuadsOverlap(it.q, ob.q, opt.marginPx)) continue;
+            if (!SideOfPlane(ob.toWorld, cam, it.corners) && !SideOfPlane(it.toWorld, cam, ob.corners) &&
+                !QuadsIntersect3D(it.corners, ob.corners)) {
+                plan.ambiguous = true;
+                break;
+            }
         }
-        aeFixed.push_back(s);
-    }
-    auto copySurface = [](const Item& it) {
-        AeSurface s;
-        for (int k = 0; k < 4; k++) {
-            s.sx[k] = it.q.x[k], s.sy[k] = it.q.y[k];
-            for (int j = 0; j < 3; j++) s.w[k][j] = it.corners[k][j];
-        }
-        return s;
-    };
-    if (opt.rule != 1) {
-        std::vector<AeSurface> all = aeFixed;
-        for (const Item& it : items)
-            if (it.q.valid) all.push_back(copySurface(it));
-        const AeOrderResult ae = AeOrderGraph(in.cam, all);
-        plan.aeCycle = ae.cycleSurfaces, plan.aeTies = ae.ties;
-        if (ae.cycleSurfaces || ae.ties) plan.ambiguous = true;
+        if (plan.ambiguous) break;
     }
     if (plan.ambiguous) {
         for (Item& it : items) it.individual = true;
@@ -621,29 +601,6 @@ MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt)
         done = true;
     }
 
-    // the merged frame as AE will order it: the copies drawn one by one, the other surfaces and the group planes
-    // (their rects grown by a render's alignment, 24 px, conservatively). A group plane in a cycle or level with an
-    // overlapping surface would be drawn AE's arbitrary way: then nothing merges.
-    if (done && !groups.empty() && opt.rule != 1) {
-        std::vector<AeSurface> all = aeFixed;
-        for (const Item& it : items)
-            if (it.q.valid && it.individual) all.push_back(copySurface(it));
-        for (size_t g = 0; g < groups.size(); g++) {
-            std::vector<ScreenQuad> qs;
-            for (int c : groups[g].items) qs.push_back(items[c].q);
-            double r[4];
-            if (!AlignedRect(qs, W, H, r)) continue;
-            r[0] -= 24, r[1] -= 24, r[2] += 24, r[3] += 24;
-            all.push_back(CameraFacingSurface(in.cam, r, groups[g].d));
-        }
-        const AeOrderResult ae = AeOrderGraph(in.cam, all);
-        if (ae.cycleSurfaces || ae.ties) {
-            plan.ambiguous = true;
-            plan.aeCycle = ae.cycleSurfaces, plan.aeTies = ae.ties;
-            done = false;
-            for (Item& it : items) it.individual = true;
-        }
-    }
     for (size_t c = 0; c < items.size(); c++) {
         const Item& it = items[c];
         MergePlan::DebugCopy dc;

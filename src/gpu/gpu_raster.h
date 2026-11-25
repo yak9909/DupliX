@@ -5,6 +5,7 @@
 
 #include <functional>
 
+#include "core/ae_span_impl.h"
 #include "core/raster.h"
 
 namespace rnd {
@@ -63,6 +64,21 @@ GpuRasterStatus GpuRasterizeOnCpu(void* cuContext, void* cuStream, const GpuImag
 // RasterizeCopies instead. *msOut (optional): the whole call's time.
 GpuRasterStatus GpuRasterizeHost(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY,
                                  RasterImage& dst, double* msOut = nullptr);
+
+// AE's classic 3D drawing of one surface's row spans on the GPU (core/ae_span_impl.h, the same pixels as AE).
+// target: AE's 8 bpc ARGB buffer (drawn in place); rows: (y, x0, x1) per row; texKey: changes whenever the texture's
+// pixels may have changed (the texture is uploaded again then). False: nothing drawn (the caller draws on the CPU).
+struct GpuAeSpanJob {
+    AeSpanCore core;
+    AeTex8 tex;
+    unsigned long long texKey;
+    const float* rcp;  // 256 entries
+    unsigned char* target;
+    int targetRowbytes;
+    const int* rows;
+    int nRows;
+};
+bool GpuAeSpans(const GpuAeSpanJob& job, double* msOut = nullptr);
 
 // Where the rasterizer logs failures (printf-style; the effect passes its log).
 void GpuRasterSetLog(void (*fn)(const char*, ...));

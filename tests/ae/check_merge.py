@@ -179,6 +179,25 @@ CHECKS = {
     "group_odd_res3": lambda: compare("group_odd_res3", over2_max=0.05),
 }
 
+def exact(name):
+    """The merge on draws the copies with AE's own arithmetic on the GPU (11/26): the frame must equal merge off
+    exactly (up to AE's dithering at 16 / 32 bpc), and at 8 bpc DupliX must have drawn copies."""
+    import numpy as np
+    a, b = load("mg_" + name), load("nm_" + name)
+    if a is None or b is None:
+        return False, "no output"
+    d = int(np.abs(a - b).max())
+    text = log_of("mg_" + name)
+    ours = len(re.findall(r"a3d ours: (\d+) copies drawn by DupliX", text))
+    deep = mfr in ("C16", "G16", "C32", "G32")
+    # no log at all: AE served the frame from its cache (nothing drawn in this render)
+    ok = d <= (DITHER if deep else 0) and (deep or ours > 0 or not text.strip())
+    return ok, f"max={d} ours-lines={ours} size={a.shape[1]}x{a.shape[0]}"
+
+
+if os.environ.get("RANDAMU_MERGE_OLD") != "1":
+    CHECKS = {n: (lambda n=n: exact(n)) for n in CHECKS if not n.startswith("scene_")}
+
 fails = 0
 for name, fn in CHECKS.items():
     if only and name not in only:

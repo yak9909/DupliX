@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "core/ae_span.h"
+#include "gpu/gpu_raster.h"
 #include "core/fast_plane.h"
 #include "core/scatter.h"
 #include "core/world.h"
@@ -333,10 +335,49 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
 std::atomic<bool> g_texHooked{false};  // both texture entry points are replaced: groups can be drawn
 thread_local AEGP_DownsampleFactor t_dsf = {0, 0};  // the render's downsample as Advanced3D last asked on this thread
 
+// The merge checkbox of a layer as the opacity hook last read it (with a frame's time, from AEGP, on any render
+// thread): classic 3D asks every copy's opacity before it draws the copies. A stale value only changes who draws a
+// copy (DupliX or AE), never its pixels: both are AE's arithmetic.
+struct MergeSeen {
+    const void* layer;
+    bool merge;
+};
+std::mutex g_mergeSeenMu;
+MergeSeen g_mergeSeen[64] = {};
+int g_mergeSeenNext = 0;
+void NoteMergeSeen(const void* layer, bool merge)
+{
+    std::lock_guard<std::mutex> lk(g_mergeSeenMu);
+    for (MergeSeen& m : g_mergeSeen)
+        if (m.layer == layer) {
+            m.merge = merge;
+            return;
+        }
+    g_mergeSeen[g_mergeSeenNext] = {layer, merge};
+    g_mergeSeenNext = (g_mergeSeenNext + 1) % 64;
+}
+// 1 merge on, 0 off, -1 not seen yet
+int MergeSeenOf(const void* layer)
+{
+    std::lock_guard<std::mutex> lk(g_mergeSeenMu);
+    for (const MergeSeen& m : g_mergeSeen)
+        if (m.layer == layer) return m.merge ? 1 : 0;
+    return -1;
+}
+
+// The merge checkbox now means: the copies are drawn by DupliX on the GPU with AE's own arithmetic, one by one in
+// AE's order (HookA3dDraw, core/ae_span). The earlier group planes (merge plans) only with RANDAMU_MERGE_OLD=1.
+bool OldMerge()
+{
+    char v[4] = {0};
+    return GetEnvironmentVariableA("RANDAMU_MERGE_OLD", v, sizeof(v)) > 0 && v[0] == '1';
+}
+
 std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
                                              const MergeLayerPlan** lp)
 {
     *lp = nullptr;
+    if (!OldMerge()) return nullptr;
     if (!s.p.merge || !tm || !g_texHooked.load() || GetCurrentThreadId() == g_mainThread) return nullptr;
     const int* ti = (const int*)tm;
     A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
@@ -605,6 +646,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     int index = *(int*)(v + bee::kArtLayerToSubIndex);
     ParamSnapshot s;
     if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
+    NoteMergeSeen(layer, s.p.merge);
     int copy = index;
     if (s.p.merge) {
         LayerKey k;
@@ -686,10 +728,13 @@ void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_
     }
     RLog("a3d tex time: %s sub %d %.3f ms", which, sub, ms);
 }
+// a new texture may have been made: the GPU copy of AE's textures (core/ae_span) is uploaded again
+std::atomic<unsigned long long> g_texGen{1};
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
     const auto t0 = std::chrono::steady_clock::now();
     int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
+    g_texGen++;
     LogTexTime(trace, "tex", t0);
     if (!r) SwapGroupTexture(trace, world, m3, "tex");
     return r;
@@ -699,6 +744,7 @@ int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* 
 {
     const auto t0 = std::chrono::steady_clock::now();
     int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
+    g_texGen++;
     LogTexTime(trace, "texrc", t0);
     if (!r) SwapGroupTexture(trace, world, m3, "texrc");
     return r;
@@ -822,11 +868,192 @@ NthLayerFn g_nthLayer = nullptr;
 LogLimit g_a3dDrawLog;
 std::atomic<long> g_a3dDrawSeq{0};
 
+// ---- DupliX draws a copy's pixels with AE's own arithmetic (core/ae_span): AE's draw runs (its raster state and
+// row spans), and only the row callback of its pixel loop (sub_180016900) is ours.
+namespace a3d {
+constexpr uintptr_t kRowPolygonRva = 0x16900;
+// d (the iterate data of the polygon path): +0 ctx, +8 raster state, +16 layer params, +24 mask, +32 spans**,
+// +40 row count, +44 first y, +48 field mode, +56 target kind (a7)
+struct SpanJob {
+    uintptr_t d = 0;
+    rnd::AeSpanParams p;
+    rnd::AeTex8 tex;
+    unsigned char* tdata = nullptr;
+    int trb = 0;
+};
+}  // namespace a3d
+rnd::AeRcpTable g_rcp;
+int g_cpuFlag = -1;
+std::mutex g_jobMu;
+a3d::SpanJob g_jobs[32];
+LogLimit g_oursLog, g_oursSkip;
+std::atomic<long long> g_oursDraws{0}, g_aeDraws{0};
+
+uint16_t BitDepthOf(uintptr_t buf) { return (*(uint16_t(**)(uintptr_t))(*(uintptr_t*)buf + 8))(buf); }
+
+// whether DupliX can draw this draw's rows (the path core/ae_span reproduces), and its parameters
+bool SpanJobFor(uintptr_t d, a3d::SpanJob* j, const char** why)
+{
+    const uintptr_t ctx = *(uintptr_t*)d, st = *(uintptr_t*)(d + 8), lp = *(uintptr_t*)(d + 16), a7 = *(uintptr_t*)(d + 56);
+    if (*(int*)a7 != 1) return *why = "target kind", false;
+    const uintptr_t tgt = *(uintptr_t*)(a7 + 8), tex = *(uintptr_t*)(st + 16);
+    if (!tgt || !tex || BitDepthOf(tgt) != 8 || BitDepthOf(tex) != 8) return *why = "bit depth", false;
+    if (*(int*)(st + 40) != 1) return *why = "motion samples", false;
+    const int q = *(unsigned char*)(st + 0xA8);
+    if (q != 0 && q != 1) return *why = "quality", false;
+    const unsigned char* p = (const unsigned char*)lp;
+    if (!p || p[0x18] != 2 || p[0x8C] || p[0x8D]) return *why = "transfer / lights", false;
+    const uintptr_t b0 = *(uintptr_t*)(lp + 0xB0);
+    if (b0 && *(uintptr_t*)b0) return *why = "params +0xB0", false;
+    if (*(uintptr_t*)(d + 24)) return *why = "mask", false;
+    if (*(uintptr_t*)(*(uintptr_t*)ctx + 480)) return *why = "blending tables", false;
+    if (g_cpuFlag != 1) return *why = "cpu path", false;
+    const double* m = (const double*)(*(uintptr_t*)(st + 32) + 72 * (size_t) * (int*)(st + 48));
+    for (int k = 0; k < 9; k++) j->p.m[k] = m[k];
+    j->p.persp = *(unsigned char*)(st + 0x98) != 0;
+    j->p.a0 = *(double*)(st + 0xA0);
+    j->p.quality = q;
+    j->p.opacity = *(double*)(lp + 0x20);
+    j->p.colorMode = p[0x5B];
+    j->p.rcp = &g_rcp;
+    j->tex.data = *(const uint8_t**)(tex + 32), j->tex.rowbytes = *(int*)(tex + 40);
+    j->tex.width = *(int*)(tex + 44), j->tex.height = *(int*)(tex + 48);
+    j->tdata = *(unsigned char**)(tgt + 32), j->trb = *(int*)(tgt + 40);
+    j->d = d;
+    return true;
+}
+
+int OurRow(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
+{
+    const a3d::SpanJob* j = nullptr;
+    for (const a3d::SpanJob& s : g_jobs)
+        if (s.d == d) {
+            j = &s;
+            break;
+        }
+    if (!j) return 2;
+    const int row = (int)rowArg;
+    const int y = row + *(int*)(d + 44);
+    if (((y & 1) != 2 - *(int*)(d + 48))) {
+        const short* sp = (const short*)(**(uintptr_t**)(d + 32)) + 2 * row;
+        const int x0 = sp[0], len = sp[1] - sp[0];
+        if (len > 0) rnd::AeDrawSpan8(j->p, j->tex, x0, x0 + len, y, j->tdata + (ptrdiff_t)y * j->trb);
+        if (!(int)thread) {
+            const unsigned count = *(unsigned*)(d + 40);
+            if ((row & 3) == 0 || (unsigned)row == count) {
+                const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
+                (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)row, count);
+            }
+        }
+    }
+    return 0;
+}
+
+typedef int (*IterFnO)(uintptr_t, uintptr_t, uintptr_t);
+thread_local IterFnO t_origIter = nullptr;
+thread_local bool t_aeGpu = false;  // this draw's rows on the GPU (else on AE's threads with our row callback)
+LogLimit g_gpuLog;
+
+int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
+{
+    a3d::SpanJob job;
+    const char* why = "row path";
+    if (cb != g_a3dLo + a3d::kRowPolygonRva || !SpanJobFor(d, &job, &why)) {
+        if (g_oursSkip.Take(20)) RLog("a3d ours: AE draws this copy (%s)", why);
+        g_aeDraws++;
+        return t_origIter(n, d, cb);
+    }
+    if (t_aeGpu) {
+        // all rows on the GPU at once (sub_180016900's rows: y = row + first y, every field row, AE's spans)
+        const int count = (int)n;
+        std::vector<int> tri;
+        tri.reserve(3 * (size_t)count);
+        const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+        const int yFirst = *(int*)(d + 44), field = *(int*)(d + 48);
+        for (int row = 0; row < count; row++) {
+            const int y = row + yFirst;
+            if ((y & 1) == 2 - field) continue;
+            const int x0 = sp[2 * row], len = sp[2 * row + 1] - sp[2 * row];
+            if (len > 0) tri.push_back(y), tri.push_back(x0), tri.push_back(x0 + len);
+        }
+        rnd::GpuAeSpanJob gj;
+        gj.core = rnd::AeCoreOf(job.p);
+        gj.tex = job.tex;
+        gj.texKey = ((unsigned long long)(uintptr_t)job.tex.data * 1000003ull) ^ (g_texGen.load() << 1) ^
+                    ((unsigned long long)job.tex.width << 40) ^ (unsigned long long)job.tex.height;
+        gj.rcp = g_rcp.r, gj.target = job.tdata, gj.targetRowbytes = job.trb;
+        gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
+        double ms = 0;
+        if (gj.nRows == 0 || rnd::GpuAeSpans(gj, &ms)) {
+            g_oursDraws++;
+            // the progress AE's row callback reports (thread 0's rows)
+            const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
+            for (int row = 0; row < count; row++)
+                if ((row & 3) == 0 || row == count)
+                    (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)row, (unsigned)count);
+            if (g_gpuLog.Take(5, true)) RLog("a3d ours: GPU %d rows in %.2f ms", gj.nRows, ms);
+            return 0;
+        }
+        // the GPU could not draw it: AE draws it (its own arithmetic is faster than ours on the CPU)
+        if (g_gpuLog.Take(10)) RLog("a3d ours: GPU failed, AE draws this copy");
+        g_aeDraws++;
+        return t_origIter(n, d, cb);
+    }
+    int slot = -1;
+    {
+        std::lock_guard<std::mutex> lk(g_jobMu);
+        for (int i = 0; i < 32 && slot < 0; i++)
+            if (!g_jobs[i].d) g_jobs[i] = job, slot = i;
+    }
+    if (slot < 0) return t_origIter(n, d, cb);
+    g_oursDraws++;
+    const int e = t_origIter(n, d, (uintptr_t)&OurRow);
+    std::lock_guard<std::mutex> lk(g_jobMu);
+    g_jobs[slot].d = 0;
+    return e;
+}
+
+uintptr_t DrawCopyOurs(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
+{
+    IterFnO* slot = (IterFnO*)(ctx + 224);
+    const IterFnO saved = t_origIter;
+    t_origIter = *slot;
+    *slot = &OurIterate;
+    const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    *slot = t_origIter;
+    t_origIter = saved;
+    int n = 0;
+    if (g_oursLog.Take(3, true, &n)) RLog("a3d ours: %lld copies drawn by DupliX, %lld by AE", g_oursDraws.load(), g_aeDraws.load());
+    return r;
+}
+
 uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
 {
+    // RANDAMU_A3D_DRAW (diagnostics): 0 AE draws everything, 1 log, 2 skip copies, 3 capture, 4 no pixel loop,
+    // 5 ours on the CPU, 6 ours on the GPU. Unset: the copies of a layer with the merge on are drawn on the GPU.
     char ev[8] = {0};
-    const int mode = GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) > 0 ? atoi(ev) : 0;
+    const int mode = GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
     if (!mode) return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    if (mode < 0) {
+        const void* L = nullptr;
+        int sb = -9;
+        void* rf = nullptr;
+        void* tr = nullptr;
+        void** rcx = *(void***)(ctx + a3d::kCtxRenderContext);
+        if (g_extractRefcon && g_nthLayer && !g_extractRefcon(rcx, &rf) &&
+            !g_nthLayer(rf, *(int*)(self + a3d::kSurfLayerIndex), &tr) && tr) {
+            char* v = *(char**)((char*)tr + bee::kTraceArtLayer);
+            if (v) L = *(void**)(v + bee::kArtLayerToLayer), sb = *(int*)(v + bee::kArtLayerToSubIndex);
+        }
+        ParamSnapshot s;
+        int seen = L && sb >= 0 ? MergeSeenOf(L) : 0;
+        if (seen < 0) seen = IsMine(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
+        if (seen > 0 && !OldMerge() && IsMine(L)) {
+            t_aeGpu = true;
+            return DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
+        }
+        return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    }
     const int index = *(int*)(self + a3d::kSurfLayerIndex);
     void* refcon = nullptr;
     void* trace = nullptr;
@@ -915,6 +1142,21 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             dump("target_hdr.bin", tb, 128);
             RLog("a3d capture: sub %d into %s (kind %d)", sub, s_capDir.c_str(), *(int*)a7);
         }
+    }
+    // RANDAMU_A3D_DRAW=5: the copy's pixels drawn by DupliX with AE's arithmetic
+    if ((mode == 5 || mode == 6) && mine) {
+        t_aeGpu = mode == 6;
+        return DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
+    }
+    // RANDAMU_A3D_DRAW=4: AE's draw of a copy without its pixel loop (the setup's cost)
+    if (mode == 4 && mine) {
+        typedef int (*IterFn4)(uintptr_t, uintptr_t, uintptr_t);
+        IterFn4* slot4 = (IterFn4*)(ctx + 224);
+        const IterFn4 orig4 = *slot4;
+        *slot4 = [](uintptr_t, uintptr_t, uintptr_t) { return 0; };
+        const uintptr_t r4 = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+        *slot4 = orig4;
+        return r4;
     }
     // the draw's pixel loop: the ctx's iterate function (+224, rows on AE's threads); its time apart from the setup
     typedef int (*IterFn)(uintptr_t, uintptr_t, uintptr_t);
@@ -1057,6 +1299,11 @@ void InstallA3dDrawHook(HMODULE a3d)
     HMODULE pr = GetModuleHandleA("PR.dll"), bee = GetModuleHandleA("BEE.dll");
     g_extractRefcon = pr ? (ExtractRefconFn)GetProcAddress(pr, "?PR_ExtractRenderRefcon@@YAHPEAPEAUPR_RenderContext@@PEAPEAX@Z") : nullptr;
     g_nthLayer = bee ? (NthLayerFn)GetProcAddress(bee, "?BEE_GetArtisanNthLayerToRender@@YAHPEAXHPEAPEAVBEE_RenderTrace@@@Z") : nullptr;
+    rnd::AeFillRcpTable(&g_rcp);
+    HMODULE u = GetModuleHandleA("U.dll");
+    void* cpuP = u ? (void*)GetProcAddress(u, "U_G_CPU_DataP") : nullptr;
+    const unsigned char* cd = cpuP ? *(const unsigned char**)cpuP : nullptr;
+    g_cpuFlag = cd ? *(const int*)(cd + 8) : -1;
     g_origA3dDraw = (A3dDrawFn)vt[1];
     const bool ok = WritePtr(&vt[1], (void*)&HookA3dDraw);
     RLog("a3d draw hook: %s (refcon %p nth %p)", ok ? "installed" : "failed", (void*)g_extractRefcon, (void*)g_nthLayer);
