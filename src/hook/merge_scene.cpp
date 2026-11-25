@@ -71,7 +71,110 @@ int ActiveEffects(AEGP_EffectSuite4* es, AEGP_LayerH L)
     return active;
 }
 
+// What the whole-layer reasons need from the comp.
+struct CompFacts {
+    AEGP_CompFlags compFlags;
+    bool anyLight, anyShadowLight, dof;
+};
+
+// The whole-layer reasons not to merge of DupliX layer L (MergeBlockReasons; MB_UNREADABLE if a value could not
+// be read). layerFlags: L's AEGP layer flags.
+unsigned LayerBlock(AEGP_LayerSuite9* ls, AEGP_ItemSuite9* is, AEGP_StreamSuite6* ss, AEGP_FootageSuite5* fs,
+                    AEGP_LayerH L, AEGP_LayerFlags layerFlags, const A_Time& compT, const CompFacts& c, bool otherEffects)
+{
+    LayerFlagsForMerge f;
+    f.otherEffects = otherEffects;
+    {
+        // a solid: AE fills its copies without a texture
+        AEGP_ItemH src = nullptr;
+        AEGP_ItemType it = AEGP_ItemType_NONE;
+        AEGP_FootageH foot = nullptr;
+        AEGP_FootageSignature sig = AEGP_FootageSignature_NONE;
+        f.solid = !ls->AEGP_GetLayerSourceItem(L, &src) && src && !is->AEGP_GetItemType(src, &it) &&
+                  it == AEGP_ItemType_FOOTAGE && fs && !fs->AEGP_GetMainFootageFromItem(src, &foot) && foot &&
+                  !fs->AEGP_GetFootageSignature(foot, &sig) && sig == AEGP_FootageSignature_SOLID;
+    }
+    f.compMotionBlur = (c.compFlags & AEGP_CompFlag_ENABLE_MOTION_BLUR) != 0;
+    f.layerMotionBlur = (layerFlags & AEGP_LayerFlag_MOTION_BLUR) != 0;
+    f.dof = c.dof;
+    f.anyLight = c.anyLight;
+    f.anyShadowLight = c.anyShadowLight;
+    double accepts = 0, casts = 0, opacity = 100;
+    AEGP_LayerTransferMode tm;
+    std::memset(&tm, 0, sizeof(tm));
+    A_Boolean matte = FALSE;
+    if (!OneD(ss, L, AEGP_LayerStream_ACCEPTS_LIGHTS, compT, &accepts) ||
+        !OneD(ss, L, AEGP_LayerStream_CASTS_SHADOWS, compT, &casts) || !OneD(ss, L, AEGP_LayerStream_OPACITY, compT, &opacity) ||
+        ls->AEGP_GetLayerTransferMode(L, &tm) || ls->AEGP_DoesLayerHaveTrackMatte(L, &matte))
+        return MB_UNREADABLE;
+    f.acceptsLights = accepts != 0;
+    f.castsShadows = casts != 0;
+    f.fullOpacity = opacity >= 100 - 1e-9;
+    f.normalBlend = tm.mode == PF_Xfer_IN_FRONT;
+    f.trackMatte = matte != FALSE;
+    return MergeBlockReasons(f);
+}
+
+// Pass 1 of a comp frame: the topmost active camera (null if none) and whether any light / shadow-casting light is
+// active. False if something could not be read.
+bool ReadCompLights(AEGP_LayerSuite9* ls, AEGP_StreamSuite6* ss, AEGP_LightSuite2* lights, AEGP_CompH comp,
+                    const A_Time& compT, AEGP_LayerH* camera, bool* anyLight, bool* anyShadowLight)
+{
+    A_long n = 0;
+    if (ls->AEGP_GetCompNumLayers(comp, &n)) return false;
+    *camera = nullptr;
+    *anyLight = *anyShadowLight = false;
+    for (A_long i = 0; i < n; i++) {
+        AEGP_LayerH Li = nullptr;
+        AEGP_ObjectType type = AEGP_ObjectType_NONE;
+        A_Boolean active = FALSE;
+        if (ls->AEGP_GetCompLayerByIndex(comp, i, &Li) || !Li || ls->AEGP_GetLayerObjectType(Li, &type) ||
+            ls->AEGP_IsVideoActive(Li, AEGP_LTimeMode_CompTime, &compT, &active))
+            return false;
+        if (!active) continue;
+        if (type == AEGP_ObjectType_CAMERA && !*camera) *camera = Li;
+        if (type == AEGP_ObjectType_LIGHT) {
+            *anyLight = true;
+            AEGP_LightType lt = AEGP_LightType_NONE;
+            double shadows = 0;
+            if (lights->AEGP_GetLightType(Li, &lt) || !OneD(ss, Li, AEGP_LayerStream_CASTS_SHADOWS, compT, &shadows))
+                return false;
+            if (lt != AEGP_LightType_AMBIENT && shadows != 0) *anyShadowLight = true;
+        }
+    }
+    return true;
+}
+
 }  // namespace
+
+bool ReadMergeBlock(AEGP_LayerH L, const A_Time& compT, unsigned* block)
+{
+    S<AEGP_LayerSuite9> ls(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    S<AEGP_CompSuite12> cs(kAEGPCompSuite, kAEGPCompSuiteVersion12);
+    S<AEGP_ItemSuite9> is(kAEGPItemSuite, kAEGPItemSuiteVersion9);
+    S<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
+    S<AEGP_EffectSuite4> es(kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
+    S<AEGP_LightSuite2> lights(kAEGPLightSuite, kAEGPLightSuiteVersion2);
+    S<AEGP_FootageSuite5> fs(kAEGPFootageSuite, kAEGPFootageSuiteVersion5);
+    if (!ls || !cs || !is || !ss || !es || !lights) return false;
+    AEGP_CompH comp = nullptr;
+    AEGP_CompFlags compFlags = 0;
+    AEGP_LayerFlags flags = 0;
+    if (ls->AEGP_GetLayerParentComp(L, &comp) || !comp || cs->AEGP_GetCompFlags(comp, &compFlags) ||
+        ls->AEGP_GetLayerFlags(L, &flags))
+        return false;
+    AEGP_LayerH camera = nullptr;
+    bool anyLight = false, anyShadowLight = false, dof = false;
+    if (!ReadCompLights(ls.s, ss.s, lights.s, comp, compT, &camera, &anyLight, &anyShadowLight)) return false;
+    double d = 0;
+    if (camera && !OneD(ss.s, camera, AEGP_LayerStream_DEPTH_OF_FIELD, compT, &d)) return false;
+    dof = d != 0;
+    // this effect is one of the layer's active effects
+    const int others = ActiveEffects(es.s, L) - 1;
+    const CompFacts facts = {compFlags, anyLight, anyShadowLight, dof};
+    *block = LayerBlock(ls.s, is.s, ss.s, fs.s, L, flags, compT, facts, others > 0);
+    return true;
+}
 
 bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput* out)
 {
@@ -100,24 +203,7 @@ bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput*
     // pass 1: the camera (the topmost active one) and the lights
     AEGP_LayerH camera = nullptr;
     bool anyLight = false, anyShadowLight = false;
-    for (A_long i = 0; i < n; i++) {
-        AEGP_LayerH Li = nullptr;
-        AEGP_ObjectType type = AEGP_ObjectType_NONE;
-        A_Boolean active = FALSE;
-        if (ls->AEGP_GetCompLayerByIndex(comp, i, &Li) || !Li || ls->AEGP_GetLayerObjectType(Li, &type) ||
-            ls->AEGP_IsVideoActive(Li, AEGP_LTimeMode_CompTime, &compT, &active))
-            return false;
-        if (!active) continue;
-        if (type == AEGP_ObjectType_CAMERA && !camera) camera = Li;
-        if (type == AEGP_ObjectType_LIGHT) {
-            anyLight = true;
-            AEGP_LightType lt = AEGP_LightType_NONE;
-            double shadows = 0;
-            if (lights->AEGP_GetLightType(Li, &lt) || !OneD(ss.s, Li, AEGP_LayerStream_CASTS_SHADOWS, compT, &shadows))
-                return false;
-            if (lt != AEGP_LightType_AMBIENT && shadows != 0) anyShadowLight = true;
-        }
-    }
+    if (!ReadCompLights(ls.s, ss.s, lights.s, comp, compT, &camera, &anyLight, &anyShadowLight)) return false;
     bool dof = false;
     if (camera) {
         A_Matrix4 m;
@@ -176,40 +262,8 @@ bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput*
                 in.anchorY = snap.anchorY;
                 std::memcpy(in.layerToWorld, toWorld, sizeof(toWorld));
                 std::memcpy(in.srcRect, rect, sizeof(rect));
-                LayerFlagsForMerge f;
-                f.otherEffects = others > 0;
-                {
-                    // a solid: AE fills its copies without a texture
-                    AEGP_ItemH src = nullptr;
-                    AEGP_ItemType it = AEGP_ItemType_NONE;
-                    AEGP_FootageH foot = nullptr;
-                    AEGP_FootageSignature sig = AEGP_FootageSignature_NONE;
-                    f.solid = !ls->AEGP_GetLayerSourceItem(Li, &src) && src && !is->AEGP_GetItemType(src, &it) &&
-                              it == AEGP_ItemType_FOOTAGE && fs && !fs->AEGP_GetMainFootageFromItem(src, &foot) && foot &&
-                              !fs->AEGP_GetFootageSignature(foot, &sig) && sig == AEGP_FootageSignature_SOLID;
-                }
-                f.compMotionBlur = (compFlags & AEGP_CompFlag_ENABLE_MOTION_BLUR) != 0;
-                f.layerMotionBlur = (flags & AEGP_LayerFlag_MOTION_BLUR) != 0;
-                f.dof = dof;
-                f.anyLight = anyLight;
-                f.anyShadowLight = anyShadowLight;
-                double accepts = 0, casts = 0, opacity = 100;
-                AEGP_LayerTransferMode tm;
-                std::memset(&tm, 0, sizeof(tm));
-                A_Boolean matte = FALSE;
-                if (!OneD(ss.s, Li, AEGP_LayerStream_ACCEPTS_LIGHTS, compT, &accepts) ||
-                    !OneD(ss.s, Li, AEGP_LayerStream_CASTS_SHADOWS, compT, &casts) ||
-                    !OneD(ss.s, Li, AEGP_LayerStream_OPACITY, compT, &opacity) || ls->AEGP_GetLayerTransferMode(Li, &tm) ||
-                    ls->AEGP_DoesLayerHaveTrackMatte(Li, &matte)) {
-                    in.block = MB_UNREADABLE;
-                } else {
-                    f.acceptsLights = accepts != 0;
-                    f.castsShadows = casts != 0;
-                    f.fullOpacity = opacity >= 100 - 1e-9;
-                    f.normalBlend = tm.mode == PF_Xfer_IN_FRONT;
-                    f.trackMatte = matte != FALSE;
-                    in.block = MergeBlockReasons(f);
-                }
+                const CompFacts facts = {compFlags, anyLight, anyShadowLight, dof};
+                in.block = LayerBlock(ls.s, is.s, ss.s, fs.s, Li, flags, compT, facts, others > 0);
                 out->layers.push_back(in);
             } else {
                 // a DupliX layer that does not merge: each copy is a surface

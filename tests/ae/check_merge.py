@@ -61,6 +61,16 @@ def check_scene(name, planes, unbounded, block, boxes=0):
         if dd > 1e-3 or dp > 1e-3:
             ok = False
         msgs.append(f"camera vs AE's: dist {dd:.4f} pos {dp:.4f}")
+    # the effect's status line (Task 8): when the scene was built, the plugin logged the same whole-layer reasons
+    # for the status (plugin.log of the build, "status: comp C layer L merge block B")
+    m = re.search(r"merge:   layer (\d+)/(\d+) count=", text)
+    build = os.path.join(out_dir, "plugin.log")
+    if m and os.path.exists(build):
+        with open(build, encoding="utf-8", errors="replace") as fh:
+            st = re.findall(rf"status: comp {m.group(1)} layer {m.group(2)} merge block ([0-9a-f]+)", fh.read())
+        if not st or int(st[-1], 16) != block:
+            ok = False
+        msgs.append(f"status={st[-1] if st else 'none'}")
     return ok, " ".join(msgs)
 
 

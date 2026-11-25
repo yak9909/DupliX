@@ -13,6 +13,10 @@ namespace rnd {
 // could not be read: then nothing merges.
 bool ReadMergeScene(const void* layer, const A_Time& layerTime, MergeSceneInput* out);
 
+// The whole-layer reasons not to merge (MergeBlock bits) of DupliX layer L at comp time compT, read through AEGP on
+// any thread (the effect's status line, on AE's main thread). False if something could not be read.
+bool ReadMergeBlock(AEGP_LayerH L, const A_Time& compT, unsigned* block);
+
 // One line per layer / surface for the log (RANDAMU_LOG): the Task 2 gate reads it.
 void LogMergeScene(const MergeSceneInput& in);
 

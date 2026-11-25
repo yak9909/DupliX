@@ -16,6 +16,7 @@
 #include "hook/bee_hooks.h"
 #include "core/fast_plane.h"
 #include "core/raster.h"
+#include "hook/merge_scene.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
 #include "effect/transfer.h"
@@ -66,9 +67,9 @@ const char* UiName(const char* utf8, const char* english)
         store.emplace_back(english);
         return store.back().c_str();
     }
-    wchar_t w[256] = {0};
-    char a[256] = {0};
-    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 256) || !WideCharToMultiByte(932, 0, w, -1, a, 256, nullptr, nullptr)) {
+    wchar_t w[1024] = {0};
+    char a[1024] = {0};
+    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 1024) || !WideCharToMultiByte(932, 0, w, -1, a, 1024, nullptr, nullptr)) {
         store.emplace_back(english);
     } else {
         store.emplace_back(a);
@@ -396,9 +397,70 @@ const char* StatusText(SelfState st)
     }
 }
 
+// "Ready" with the whole-layer reasons why the merge does not work on this layer (block: MergeBlock bits, not 0).
+// One string per combination, kept for the process (AE keeps the label by pointer).
+const char* MergeBlockedText(unsigned block)
+{
+    static std::mutex m;
+    static std::map<unsigned, const char*> made;
+    std::lock_guard<std::mutex> lk(m);
+    auto it = made.find(block);
+    if (it != made.end()) return it->second;
+    struct R {
+        unsigned bit;
+        const char *ja, *en;
+    };
+    static const R reasons[] = {
+        {rnd::MB_LIGHTS, "ライトを受ける", "accepts lights"},
+        {rnd::MB_SHADOWS, "影を落とす", "casts shadows"},
+        {rnd::MB_MOTION_BLUR, "モーションブラー", "motion blur"},
+        {rnd::MB_DOF, "被写界深度", "depth of field"},
+        {rnd::MB_BLEND, "描画モードが通常でない", "blending mode"},
+        {rnd::MB_OPACITY, "不透明度が 100% 未満", "opacity below 100%"},
+        {rnd::MB_MATTE, "トラックマット", "track matte"},
+        {rnd::MB_OTHER_EFFECTS, "ほかのエフェクトがある", "other effects"},
+        {rnd::MB_SOLID, "平面レイヤー", "solid layer"},
+        {rnd::MB_UNREADABLE, "設定を読み取れない", "settings unreadable"},
+    };
+    std::string ja = "準備できています（軽量化は次の理由で効きません: ", en = "Ready (Merge does not work: ";
+    bool first = true;
+    for (const R& r : reasons)
+        if (block & r.bit) {
+            if (!first) ja += "、", en += ", ";
+            ja += r.ja, en += r.en;
+            first = false;
+        }
+    ja += "）", en += ")";
+    return made[block] = UiName(ja.c_str(), en.c_str());
+}
+
+// The merge's whole-layer reasons for the effect's layer at the current time (0 if none or unknown).
+unsigned MergeBlockNow(PF_InData* in_data)
+{
+    SPBasicSuite* sp = in_data->pica_basicP;
+    Suite<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    Suite<AEGP_LayerSuite9> ls(sp, kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    if (!pfi || !ls) return 0;
+    AEGP_LayerH L = nullptr;
+    A_Time lt = {in_data->current_time, (A_u_long)in_data->time_scale}, ct = {0, 1};
+    unsigned block = 0;
+    if (pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || !L || ls->AEGP_ConvertLayerToCompTime(L, &lt, &ct) ||
+        !rnd::ReadMergeBlock(L, ct, &block))
+        return 0;
+    return block;
+}
+
 PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
     SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
+    // normal mode with merge on: say why it cannot merge this layer (the reasons that hold for the whole layer)
+    unsigned mergeBlock = 0;
+    if (st == SelfState::Ready && !params[RP_FAST]->u.bd.value && params[RP_MERGE] && params[RP_MERGE]->u.bd.value) {
+        mergeBlock = MergeBlockNow(in_data);
+        static LogLimit logged;  // read by tests/ae/check_merge.py (scene_light)
+        if (logged.Take(50))
+            RLog("status: comp %d layer %d merge block %x", g_lastKey.compItemId, g_lastKey.layerId, mergeBlock);
+    }
     if ((st == SelfState::Ready || st == SelfState::Need2D) && params[RP_FAST]->u.bd.value) {
         std::lock_guard<std::mutex> lk(g_noteMutex);
         auto it = g_transferNote.find(NoteKey(g_lastKey.compItemId, g_lastKey.layerId));
@@ -409,7 +471,7 @@ PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* par
     }
     PF_ParamDef copy = *params[RP_STATUS];
     copy.ui_flags |= PF_PUI_DISABLED;
-    copy.u.bd.u.nameptr = StatusText(st);
+    copy.u.bd.u.nameptr = mergeBlock ? MergeBlockedText(mergeBlock) : StatusText(st);
     PF_ParamUtilsSuite3* pu = nullptr;
     if (in_data->pica_basicP->AcquireSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3, (const void**)&pu) ==
             kSPNoError &&
