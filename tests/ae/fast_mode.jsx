@@ -76,7 +76,6 @@
         // the initial state: anchor at the centre (default), position = comp centre, 100%, no rotation
         T.threeDLayer = !fast;
         tg(T).property("ADBE Position").setValue(fast ? [W / 2, H / 2] : [W / 2, H / 2, 0]);
-        if (fast && c.move2d) tg(T).property("ADBE Position").setValue([W / 2 + c.move2d[0], H / 2 + c.move2d[1]]);
         if (c.anim) T.startTime = -0.4;  // layer time != comp time
         if (cam && c.anim) {
             var cp = tg(cam).property("ADBE Position");
@@ -92,6 +91,8 @@
         if (noFx) return comp;
         var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
         setParams(fx, c.params, c.world, fast);
+        // after switching fast mode on (switching on moves the layer's transform into the World Transform)
+        if (fast && c.move2d) tg(T).property("ADBE Position").setValue([W / 2 + c.move2d[0], H / 2 + c.move2d[1]]);
         if (c.anim) {
             // the World Transform animates (script key times are comp times)
             var wp = fx.property(WPOS), wr = fx.property(WROT + 1), wz = fx.property(WPOS + 2);

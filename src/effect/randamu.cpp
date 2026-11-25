@@ -17,7 +17,9 @@
 #include "core/raster.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
+#include "effect/transfer.h"
 
+#include <map>
 #include <cmath>
 #include <thread>
 #include <vector>
@@ -141,7 +143,12 @@ struct SeqDataV2 {
 static_assert(sizeof(rnd::WorldXform) == 72, "WorldXform layout is saved in projects");
 static_assert(sizeof(SeqDataV2) == 192, "SeqDataV2 layout is saved in projects");
 
-enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, Need2D };
+enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, Need2D, FastAnimDropped, TransferFailed };
+
+// What the last switch to fast mode left to tell (per layer), shown while fast mode stays on.
+std::mutex g_noteMutex;
+std::map<long long, SelfState> g_transferNote;
+long long NoteKey(int comp, int layer) { return ((long long)comp << 32) | (unsigned)layer; }
 
 rnd::ScatterParams DefaultParams()
 {
@@ -211,6 +218,7 @@ enum class ParamSource {
 // Registers this effect's layer (key + parameter snapshot) for the hooks.
 // writeSeq: store key and parameters in sequence data (only in commands that may write it).
 thread_local int g_lastCompId = 0;  // comp of this thread's last registration (per-frame timing only)
+thread_local rnd::LayerKey g_lastKey = {0, 0};  // this thread's last registration
 
 SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src, PF_ParamDef* params[], bool writeSeq)
 {
@@ -232,6 +240,7 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
         return SelfState::Unknown;
     rnd::LayerKey key = {(int)itemId, (int)layerId};
     g_lastCompId = key.compItemId;
+    g_lastKey = key;
     // Fast path for render commands (PreRender comes ~2x per copy per frame): an existing valid
     // registration is enough. The hooks read the parameters at each query's time on render threads,
     // and check the 3D switch and the effect's presence/switch themselves (LayerIsLive).
@@ -334,7 +343,12 @@ const char* StatusText(SelfState st)
     static const char* off = UiName("エフェクトがオフです", "Effect is off");
     static const char* unknown = UiName("状態を確認できません", "Unknown");
     static const char* need2d = UiName("高速モードでは 2D レイヤーにしてください", "Fast Mode: make the layer 2D");
+    static const char* dropped = UiName("準備できています（レイヤーのアニメーションは写していません。取り消しで戻せます）",
+                                        "Ready (the layer's animation was not moved; Undo restores it)");
+    static const char* failed = UiName("レイヤーの変形をワールド変形に写せませんでした", "Could not move the layer transform");
     switch (st) {
+    case SelfState::FastAnimDropped: return dropped;
+    case SelfState::TransferFailed: return failed;
     case SelfState::Need2D: return need2d;
     case SelfState::Ready: return ready;
     case SelfState::NoHooks: return noHooks;
@@ -347,6 +361,11 @@ const char* StatusText(SelfState st)
 PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
     SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
+    if (st == SelfState::Ready && params[RP_FAST]->u.bd.value) {
+        std::lock_guard<std::mutex> lk(g_noteMutex);
+        auto it = g_transferNote.find(NoteKey(g_lastKey.compItemId, g_lastKey.layerId));
+        if (it != g_transferNote.end()) st = it->second;
+    }
     PF_ParamDef copy = *params[RP_STATUS];
     copy.ui_flags |= PF_PUI_DISABLED;
     copy.u.bd.u.nameptr = StatusText(st);
@@ -358,6 +377,43 @@ PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* par
         in_data->pica_basicP->ReleaseSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
     }
     return PF_Err_NONE;
+}
+
+// The user switched fast mode (spec 12.13). On: the layer's transform at this frame goes into the World
+// Transform and the layer to its initial 2D state. Off: the layer becomes 3D again; nothing is moved back.
+void FastToggled(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
+{
+    const bool on = params[RP_FAST]->u.bd.value != 0;
+    SelfState note = SelfState::Ready;
+    if (on) {
+        rnd::WorldXform w;
+        TransferResult r = TransferLayerToWorld(in_data, g_pluginId, WorldFromArray(params), &w);
+        if (r != TransferResult::Failed) {
+            for (int k = 0; k < 3; k++) {
+                params[RP_WORLD_POS_X + k]->u.fs_d.value = w.pos[k];
+                params[RP_WORLD_ROT_X + k]->u.ad.value = FLOAT2FIX(w.rotDeg[k]);
+                params[RP_WORLD_SCALE_X + k]->u.fs_d.value = w.scale[k];
+                params[RP_WORLD_POS_X + k]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+                params[RP_WORLD_ROT_X + k]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+                params[RP_WORLD_SCALE_X + k]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+            }
+        }
+        note = r == TransferResult::Failed               ? SelfState::TransferFailed
+               : r == TransferResult::DoneAnimationDropped ? SelfState::FastAnimDropped
+                                                           : SelfState::Ready;
+    } else {
+        SetLayer3D(in_data, true);
+    }
+    RegisterSelf(in_data, out_data, ParamSource::Array, params, false);  // sets g_lastKey
+    {
+        std::lock_guard<std::mutex> lk(g_noteMutex);
+        long long k = NoteKey(g_lastKey.compItemId, g_lastKey.layerId);
+        if (note == SelfState::Ready)
+            g_transferNote.erase(k);
+        else
+            g_transferNote[k] = note;
+    }
+    out_data->out_flags |= PF_OutFlag_REFRESH_UI;
 }
 
 PF_Err SequenceSetdown(PF_InData* in_data, PF_OutData* out_data)
@@ -826,7 +882,11 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, ParamSource::SeqData, nullptr, true);
             break;
         case PF_Cmd_USER_CHANGED_PARAM:
-            if (rnd::IsMainThread()) RegisterSelf(in_data, out_data, ParamSource::Array, params, true);
+            if (rnd::IsMainThread()) {
+                if (((PF_UserChangedParamExtra*)extra)->param_index == RP_FAST)
+                    FastToggled(in_data, out_data, params);
+                RegisterSelf(in_data, out_data, ParamSource::Array, params, true);
+            }
             break;
         case PF_Cmd_SEQUENCE_SETDOWN:
             err = SequenceSetdown(in_data, out_data);
