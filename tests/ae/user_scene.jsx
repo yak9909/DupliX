@@ -31,6 +31,12 @@
         app.open(new File($.getenv("RANDAMU_USER_AEP")));
         var P = app.project;
         log("bpc=" + P.bitsPerChannel + " gpu=" + P.gpuAccelType + " items=" + P.numItems);
+        // RANDAMU_USER_GPU (optional): override the project's GPU acceleration (SOFTWARE, CUDA, ...)
+        var gpuOverride = $.getenv("RANDAMU_USER_GPU");
+        if (gpuOverride) {
+            P.gpuAccelType = GpuAccelType[gpuOverride];
+            log("gpu set: " + P.gpuAccelType);
+        }
         var main = null;
         for (var i = 1; i <= P.numItems; i++) {
             var it = P.item(i);

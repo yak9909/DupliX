@@ -1,4 +1,14 @@
-# 引き継ぎメモ（最新: 2026-11-25 朝。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-25 正午。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-25 正午、高速モードの GPU 化の途中で利用者の指示により中断）
+
+- **計画 `docs/superpowers/plans/2026-11-25-fast-mode-gpu.md`（設計書 `docs/superpowers/specs/2026-11-25-fast-mode-gpu-design.md`、承認済み）の Task 1〜4 は完了・push 済み（最後の実装の commit 5e44c6e）。Task 5 は途中**: 計測は済み、手引き（`docs/randamu-quickstart.md` の高速モードの節に速さの表）と開発記録（`docs/experiments/2026-11-25-dev-log.md` の 5 節）を更新して commit 済み。
+- **残り: (1) 最終レビュー**（executing-plans の手順: `review-package` で差分一式を作り、別のレビュー役に見せる。範囲は計画の commit 6a82c29 から HEAD）→ 指摘の修正 → **(2) 利用者に AE で試してもらう**（今の `dev_plugins\randamu.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。
+- 進み具合と判断（Ruling）の台帳: `.superpowers/sdd/2026-11-25-fast-mode-gpu/progress.md`（git 管理外。最終レビューのあと、判断を開発記録に移して消す）。
+- 中身: CPU 版は区画（16×16）ごとに、手前の点の近い順に処理し、不透明なかけらの奥は計算しない（結果は旧版と差 0）。GPU 版は CUDA のカーネル（`src/gpu/fast_raster.cu`）を CUDA 12.2 の `nvcc -ptx` で PTX にして埋め込み、`nvcuda.dll` から実行（`src/gpu/gpu_raster.*`）。AE の GPU 設定が CUDA のときだけ GPU、ほかは CPU。Furikake は実は CPU（Z バッファ）で描いていた。
+- 速さ（利用者のシーン、書き出し、1 フレーム）: 通常 10 枚 183 ms。高速 CUDA 10/100/1000 枚 = 約 50/50/117 ms、高速 CPU = 約 100/133/333 ms（対応前 117/570/10 秒以上）。利用者のプロジェクトの GPU 設定はもともと CUDA。
+- 確かめた試験: 単体 ALL PASS、`build/gpu/gpu_test.exe` GPU ALL PASS、`run_fast_mode.ps1`（CPU）と `-Gpu CUDA`（GPU の経路を使ったこと、CPU との一致）、`run_ref.ps1`（既定と `-Gpu CUDA`）、`run_ui.ps1`、`run_transfer.ps1`、fx_remove。
+- ビルド: `pwsh tools/build.ps1`（エフェクト。先に PTX を作る）、`-Target gpu`（GPU の単体試験）。生成物 `src/gpu/fast_raster_ptx.h` は git 管理外。
 
 ## 再開の手順（2026-11-25 昼前、高速モードの作り直しの実装後）
 
