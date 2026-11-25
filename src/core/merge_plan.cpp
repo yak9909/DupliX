@@ -272,6 +272,29 @@ MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt)
         fixed.push_back(o);
     }
 
+    // A copy and another surface that overlap on screen and each straddle the other's plane without meeting in 3D
+    // cannot be put in one depth order without cutting one of them. AE's classic 3D (which cuts only surfaces that
+    // really intersect) then orders its surfaces its own way, and that order changes with the set of surfaces it
+    // draws (a user scene, 11/25: two copies AE drew itself swapped when other copies were merged; with the other
+    // surface away AE's order was the depth order and merging matched). Such a frame does not merge: AE draws
+    // everything as without the merge. (Copies that pierce a surface are cut by AE exactly: they are only drawn
+    // one by one, below.)
+    for (const Item& it : items) {
+        if (!it.q.valid) continue;
+        for (const Obstacle& ob : fixed) {
+            if (ob.box || !ob.cornersKnown || ob.unbounded || !QuadsOverlap(it.q, ob.q, opt.marginPx)) continue;
+            if (!SideOfPlane(ob.toWorld, cam, it.corners) && !SideOfPlane(it.toWorld, cam, ob.corners) &&
+                !QuadsIntersect3D(it.corners, ob.corners)) {
+                plan.ambiguous = true;
+                break;
+            }
+        }
+        if (plan.ambiguous) break;
+    }
+    if (plan.ambiguous) {
+        for (Item& it : items) it.individual = true;
+    }
+
     // Once: every copy against the fixed obstacles, and the order of every overlapping pair of copies (copies that
     // become individual are obstacles for the others: their orders come from these pairs). Obstacle index o:
     // o < F a fixed obstacle, o >= F the individual copy o - F.

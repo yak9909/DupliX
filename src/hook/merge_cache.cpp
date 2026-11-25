@@ -128,6 +128,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         DumpPlan(in, p);
         static LogLimit logged;
         if (p.overBudget) RLog("merge: plan over budget (%d rounds): no merging this frame", p.rounds);
+        if (p.ambiguous) RLog("merge: a copy and another surface straddle each other's planes: no merging this frame");
         if (logged.Take(20)) {
             RLog("merge: read scene ok=1 (plan: %d rounds, %.1f ms)", p.rounds, p.ms[0] + p.ms[1] + p.ms[2] + p.ms[3]);
             LogMergeScene(in);

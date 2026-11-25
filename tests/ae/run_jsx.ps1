@@ -27,11 +27,32 @@ $p = Start-AeHidden -Exe (Join-Path $sf "AfterFX.exe") -Arguments "-r $tmp"
 $jsxLog = Join-Path $outDir "jsx.log"
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $finished = $false
+$dialog = $false
+$seen = @{}
 while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
     if ((Test-Path $jsxLog) -and (Select-String -Path $jsxLog -Pattern "^done|EXCEPTION" -Quiet)) { $finished = $true; break }
+    # a message box (a C runtime assertion, Windows Error Reporting, ...) blocks AE: report it at once and stop.
+    # AE's own titled windows (progress, alerts drawn by AE) are listed once for the record.
+    $all = @(Get-AeHiddenDialogs)
+    foreach ($d in $all | Where-Object { -not $_.Blocking }) {
+        $key = "$($d.Pid)|$($d.Title)"
+        if (-not $seen.ContainsKey($key)) { $seen[$key] = 1; Write-Host ("(window from {0}: '{1}')" -f $d.Process, $d.Title) }
+    }
+    if ($all | Where-Object Blocking) {
+        Start-Sleep -Seconds 1  # let it finish drawing its text
+        $k = 0
+        foreach ($d in @(Get-AeHiddenDialogs | Where-Object Blocking)) {
+            Write-Host ("DIALOG from {0} (pid {1}): '{2}': {3}" -f $d.Process, $d.Pid, $d.Title, $d.Text)
+            foreach ($w in Get-AeHiddenWindows -ProcessId $d.Pid | Where-Object { $_.Visible -and $_.Class -eq "#32770" }) {
+                $null = Save-AeWindowImage -Hwnd $w.Hwnd -Path (Join-Path $outDir "dialog_$k.png"); $k++
+            }
+        }
+        $dialog = $true
+        break
+    }
     Start-Sleep -Seconds 2
 }
-if (-not $finished -and -not $p.HasExited) {
+if (-not $finished -and -not $p.HasExited -and -not $dialog) {
     Write-Host "TIMEOUT after $TimeoutSec s (AE hung or script did not finish)"
     # Diagnostics: AE's own visible windows (a modal dialog blocks the script); dialogs are saved as PNG.
     $k = 0
@@ -45,6 +66,7 @@ if (-not $p.HasExited) {
 }
 Remove-Item env:RANDAMU_LOG -ErrorAction SilentlyContinue
 if (Test-Path $jsxLog) { Get-Content $jsxLog } else { "no jsx.log (AE exited=$($p.HasExited))" }
+if ($dialog) { Write-Host "FAILED: a dialog appeared (see DIALOG above and dialog_*.png)"; exit 1 }
 if ($Expect) {
     if (-not ((Test-Path $jsxLog) -and (Select-String -Path $jsxLog -Pattern $Expect -Quiet))) { Write-Host "EXPECT FAILED: $Expect"; exit 1 }
     Write-Host "EXPECT OK: $Expect"

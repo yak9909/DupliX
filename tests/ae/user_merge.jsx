@@ -59,6 +59,18 @@
             for (var m = 0; m < modes.length; m++) {
                 var cc = src0.duplicate();
                 cc.name = "um_" + modes[m];
+                // experiments: RANDAMU_UM_DISABLE (a layer name: turned off), RANDAMU_UM_MOVEZ ("name:dz": moved in z)
+                var dis = $.getenv("RANDAMU_UM_DISABLE") || "", mv = $.getenv("RANDAMU_UM_MOVEZ") || "";
+                for (var j3 = 1; j3 <= cc.numLayers; j3++) {
+                    var L3 = cc.layer(j3);
+                    if (dis && L3.name === dis) { L3.enabled = false; log("disabled " + dis); }
+                    if (mv && L3.name === mv.split(":")[0]) {
+                        var pp = L3.property("ADBE Transform Group").property("ADBE Position");
+                        var v = pp.value;
+                        pp.setValue([v[0], v[1], v[2] + parseFloat(mv.split(":")[1])]);
+                        log("moved " + L3.name + " z by " + mv.split(":")[1]);
+                    }
+                }
                 for (var j2 = 1; j2 <= cc.numLayers; j2++) {
                     var d2 = dupli(cc.layer(j2));
                     if (d2) d2.property(MERGE).setValue(modes[m] === "on" ? 1 : 0);

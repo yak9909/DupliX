@@ -24,6 +24,9 @@ int SideOfPlane(const double planeToWorld[16], const double camPos[3], const dou
 // The world corners of rect under toWorld.
 void RectCorners(const double toWorld[16], const double rect[4], double out[4][3]);
 
+// Two planar convex quads (world corners, in order) meet in 3D (touching counts).
+bool QuadsIntersect3D(const double a[4][3], const double b[4][3]);
+
 // Camera-space z where the ray through comp px (sx, sy) meets the plane of planeToWorld (layer z = 0); false if it
 // does not (parallel, or behind the camera).
 bool PlaneDepthAt(const CameraView& cam, const double planeToWorld[16], double sx, double sy, double* z);

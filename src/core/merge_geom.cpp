@@ -64,6 +64,52 @@ void RectCorners(const double toWorld[16], const double rect[4], double out[4][3
 }
 
 namespace {
+// The part of quad q on the plane of quad p, as an interval of the parameter t along direction dir (from origin o).
+// False if q does not reach that plane.
+bool SpanOnPlane(const double q[4][3], const double p[4][3], const double o[3], const double dir[3], double* t0, double* t1)
+{
+    double u[3], v[3], n[3];
+    for (int j = 0; j < 3; j++) u[j] = p[1][j] - p[0][j], v[j] = p[3][j] - p[0][j];
+    n[0] = u[1] * v[2] - u[2] * v[1], n[1] = u[2] * v[0] - u[0] * v[2], n[2] = u[0] * v[1] - u[1] * v[0];
+    double s[4];
+    for (int k = 0; k < 4; k++) s[k] = n[0] * (q[k][0] - p[0][0]) + n[1] * (q[k][1] - p[0][1]) + n[2] * (q[k][2] - p[0][2]);
+    *t0 = 1e300, *t1 = -1e300;
+    bool any = false;
+    for (int k = 0; k < 4; k++) {
+        const int m = (k + 1) & 3;
+        double pt[3];
+        if (s[k] == 0) {
+            for (int j = 0; j < 3; j++) pt[j] = q[k][j];
+        } else if ((s[k] > 0) != (s[m] > 0) && s[m] != 0) {
+            const double f = s[k] / (s[k] - s[m]);
+            for (int j = 0; j < 3; j++) pt[j] = q[k][j] + f * (q[m][j] - q[k][j]);
+        } else {
+            continue;
+        }
+        const double t = (pt[0] - o[0]) * dir[0] + (pt[1] - o[1]) * dir[1] + (pt[2] - o[2]) * dir[2];
+        *t0 = std::min(*t0, t), *t1 = std::max(*t1, t);
+        any = true;
+    }
+    return any;
+}
+}  // namespace
+
+bool QuadsIntersect3D(const double a[4][3], const double b[4][3])
+{
+    // both quads meet the other's plane along the planes' common line; they intersect where those spans overlap
+    double ua[3], va[3], ub[3], vb[3], na[3], nb[3], dir[3];
+    for (int j = 0; j < 3; j++)
+        ua[j] = a[1][j] - a[0][j], va[j] = a[3][j] - a[0][j], ub[j] = b[1][j] - b[0][j], vb[j] = b[3][j] - b[0][j];
+    na[0] = ua[1] * va[2] - ua[2] * va[1], na[1] = ua[2] * va[0] - ua[0] * va[2], na[2] = ua[0] * va[1] - ua[1] * va[0];
+    nb[0] = ub[1] * vb[2] - ub[2] * vb[1], nb[1] = ub[2] * vb[0] - ub[0] * vb[2], nb[2] = ub[0] * vb[1] - ub[1] * vb[0];
+    dir[0] = na[1] * nb[2] - na[2] * nb[1], dir[1] = na[2] * nb[0] - na[0] * nb[2], dir[2] = na[0] * nb[1] - na[1] * nb[0];
+    if (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2] == 0) return false;  // parallel planes
+    double sa0, sa1, sb0, sb1;
+    if (!SpanOnPlane(a, b, a[0], dir, &sa0, &sa1) || !SpanOnPlane(b, a, a[0], dir, &sb0, &sb1)) return false;
+    return sa0 <= sb1 && sb0 <= sa1;
+}
+
+namespace {
 void PlaneOf(const double m[16], double n[3], double p0[3])
 {
     n[0] = m[1] * m[6] - m[2] * m[5];

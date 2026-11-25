@@ -106,6 +106,7 @@ struct MergeLayerPlan {
 struct MergePlan {
     int rounds = 0;  // BuildMergePlan's rounds (diagnostics)
     bool overBudget = false;  // the budget ran out: nothing merges this frame
+    bool ambiguous = false;   // a copy and another surface straddle each other's planes: nothing merges this frame
     double ms[4] = {0, 0, 0, 0};  // diagnostics: time in sides / neighbours / grouping / depths
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)

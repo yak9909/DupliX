@@ -1,6 +1,14 @@
 // randamu unit tests (no framework). Exit code = number of failed checks.
+#define NOMINMAX
+#include <windows.h>
+#undef near  // windows.h's old pointer keywords; the tests use these names
+#undef far
+
+#include <crtdbg.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -1226,6 +1234,39 @@ TEST(merge_tilted_wall_sides)
     CHECK(lp.clusters[GroupOf(lp, 0)].depth < lp.clusters[GroupOf(lp, 5)].depth);
 }
 
+TEST(quads_intersect_3d)
+{
+    const double a[4][3] = {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}, {0, 10, 0}};
+    const double cross[4][3] = {{5, 2, -5}, {5, 2, 5}, {5, 8, 5}, {5, 8, -5}};      // pierces a
+    const double beside[4][3] = {{5, 20, -5}, {5, 20, 5}, {5, 30, 5}, {5, 30, -5}};  // its plane, not a
+    const double parallel[4][3] = {{0, 0, 3}, {10, 0, 3}, {10, 10, 3}, {0, 10, 3}};
+    CHECK(rnd::QuadsIntersect3D(a, cross) && rnd::QuadsIntersect3D(cross, a));
+    CHECK(!rnd::QuadsIntersect3D(a, beside) && !rnd::QuadsIntersect3D(beside, a));
+    CHECK(!rnd::QuadsIntersect3D(a, parallel));
+}
+
+// A copy that straddles a wall's plane (and the wall its plane) beside the wall, overlapping it on screen without
+// meeting it (the user's house scene, 11/25): AE orders such surfaces its own way, so nothing merges this frame.
+TEST(merge_ambiguous_no_merge)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 100, 100, 0));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 5; i++) cs.push_back({60.0 + i * 10, 60, 100, 30, 0});  // would merge on their own
+    cs.push_back({200, 232, 500, 60, 72});                                      // just below the wall, turned
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(p.ambiguous);
+    CHECK(lp.clusters.empty() && Individuals(lp) == 6);
+    // the same copy moved up into the wall pierces it: AE cuts it exactly, the others merge
+    in.layers[0] = PlanLayer(7, {cs[0], cs[1], cs[2], cs[3], cs[4], {200, 170, 500, 60, 72}});
+    rnd::MergePlan q = rnd::BuildMergePlan(in);
+    const auto& lq = q.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(!q.ambiguous && lq.clusters.size() == 1 && GroupOf(lq, 5) < 0);
+}
+
 TEST(merge_side_free)
 {
     // a narrow wall at the screen's centre; copies at the same depth in the free space left and right of it
@@ -1638,8 +1679,29 @@ TEST(vec_reserve_small_and_aligned)
 
 int main()
 {
+    // never a dialog (it waits for a click nobody sees, and the run looks hung): a C runtime assertion or error
+    // goes to stderr and ends the run; a crash prints its code
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* e) -> LONG {
+        std::fprintf(stderr, "CRASH in test %s: exception 0x%08lx\n", g_test ? g_test : "?",
+                     e && e->ExceptionRecord ? e->ExceptionRecord->ExceptionCode : 0ul);
+        std::fflush(stderr);
+        return EXCEPTION_EXECUTE_HANDLER;
+    });
+    if (std::getenv("UNIT_ASSERT_PROBE")) {  // checks the above: a debug assertion must print and end the run
+        std::vector<int> v(1);
+        volatile size_t i = 5;
+        std::printf("probe %d\n", v[i]);
+    }
+    const bool verbose = std::getenv("UNIT_VERBOSE") != nullptr;  // each test's name before it runs (finding a hang)
     for (int t = 0; t < g_numTests; t++) {
         g_test = g_tests[t].name;
+        if (verbose) std::printf("[%s]\n", g_test), std::fflush(stdout);
         g_tests[t].fn();
     }
     if (g_failed == 0)

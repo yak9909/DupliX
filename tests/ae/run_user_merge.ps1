@@ -1,7 +1,9 @@
 # A user's scene with the merge on and off (tests/ae/user_merge.jsx in one hidden AE on a COPY of the scene), then
 # compares each frame (cmp_merge_frames.py: statistics and a difference image per frame).
 #   pwsh tests/ae/run_user_merge.ps1 -Aep "tests/ae/user/DupliX Test A.aep" [-Frames 8] [-At "0,12,40"]
-param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 8, [string]$At = "")
+param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 8, [string]$At = "", [string]$Disable = "", [string]$MoveZ = "")
+$env:RANDAMU_UM_DISABLE = $Disable
+$env:RANDAMU_UM_MOVEZ = $MoveZ
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\user_merge"

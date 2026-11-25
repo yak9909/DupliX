@@ -62,6 +62,29 @@ public class AeBg {
     EnumDesktopWindows(Desktop(), (h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) list.Add(h); return true; }, IntPtr.Zero);
     return list;
   }
+  // every visible titled #32770 window on the hidden desktop, of any process: "pid|title|blocking|text of its
+  // controls". blocking = it has a standard Win32 button (a message box: a C runtime assertion, Windows Error
+  // Reporting, a MessageBox), which waits for a click nobody sees. AE's own panels and progress windows are
+  // #32770 windows drawn by AE (OS_ViewContainer, no Win32 buttons): not blocking.
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr l);
+  public static List<string> Dialogs() {
+    var list = new List<string>();
+    EnumDesktopWindows(Desktop(), (h, l) => {
+      if (IsWindowVisible(h) && ClassOf(h) == "#32770" && TitleOf(h).Length > 0) {
+        uint p; GetWindowThreadProcessId(h, out p);
+        var text = new StringBuilder();
+        bool button = false;
+        EnumChildWindows(h, (c, l2) => {
+          if (ClassOf(c) == "Button") button = true;
+          var t = TitleOf(c); if (t.Length > 0) text.Append(t.Replace("\r", " ").Replace("\n", " ")).Append(" / ");
+          return true;
+        }, IntPtr.Zero);
+        list.Add(p + "|" + TitleOf(h) + "|" + (button ? "1" : "0") + "|" + text.ToString());
+      }
+      return true;
+    }, IntPtr.Zero);
+    return list;
+  }
 }
 "@
 }
@@ -69,6 +92,16 @@ public class AeBg {
 function Start-AeHidden([string]$Exe, [string]$Arguments) {
     $id = [AeBg]::Start($Exe, $Arguments, (Split-Path $Exe))
     Get-Process -Id $id
+}
+
+# Visible dialogs on the hidden desktop (any process): objects with Pid, Process, Title, Text. A test that waits on
+# AE checks this regularly: a dialog blocks AE forever, and nobody sees it on the hidden desktop.
+function Get-AeHiddenDialogs {
+    foreach ($d in [AeBg]::Dialogs()) {
+        $f = $d -split "\|", 4
+        $name = (Get-Process -Id ([int]$f[0]) -ErrorAction SilentlyContinue).ProcessName
+        [pscustomobject]@{ Pid = [int]$f[0]; Process = $name; Title = $f[1]; Blocking = $f[2] -eq "1"; Text = $f[3] }
+    }
 }
 
 function Get-AeHiddenWindows([int]$ProcessId) {
