@@ -14,7 +14,10 @@
 #include "effect/randamu.h"
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
+#include "core/merge_geom.h"
+#include "hook/merge_cache.h"
 #include "hook/merge_scene.h"
+#include "hook/merge_texture.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
 
@@ -321,6 +324,34 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
     return out->valid;
 }
 
+// ---- merge: the plan of `layer` at hook time `tm` (render threads only; s: its parameters). *lp: the layer's part
+// when it has a group (otherwise null: the layer is drawn as before). The returned pointer keeps *lp alive.
+std::atomic<bool> g_texHooked{false};  // both texture entry points are replaced: groups can be drawn
+
+std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
+                                             const MergeLayerPlan** lp)
+{
+    *lp = nullptr;
+    if (!s.p.merge || !tm || !g_texHooked.load() || GetCurrentThreadId() == g_mainThread) return nullptr;
+    const int* ti = (const int*)tm;
+    A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
+    if (t.scale == 0) t.scale = 1;
+    auto plan = MergePlanFor(layer, t, reread);
+    LayerKey k;
+    if (!plan || !KeyOf(layer, &k)) return nullptr;
+    *lp = MergeLayerOf(*plan, k.compItemId, k.layerId);
+    if (*lp && (*lp)->subs.empty()) *lp = nullptr;
+    return plan;
+}
+
+// The time the opacity hook last saw for a layer on this thread: the texture hook (no time argument) is called
+// by the same Artisan render right after it.
+struct LastArtTime {
+    LayerKey k{-1, -1};
+    int t[2] = {0, 1};
+};
+thread_local LastArtTime t_lastArt;
+
 // ---- per-frame timing (RANDAMU_TIMING): an event for `layer` at hook time `tm` that started at t0
 void MarkTiming(const void* layer, const void* tm, TimingKind kind, long long t0)
 {
@@ -378,19 +409,11 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     if (!emptyCache && IsMine((const void*)a)) {
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) {
-            if (s.p.merge && GetCurrentThreadId() != g_mainThread) {  // merge (Task 2 gate): the frame as read
-                static std::atomic<int> logged{0};
-                if (++logged <= 3) {
-                    const int* ti = (const int*)b;
-                    A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
-                    if (t.scale == 0) t.scale = 1;
-                    MergeSceneInput in;
-                    bool ok = ReadMergeScene((const void*)a, t, &in);
-                    RLog("merge: read scene ok=%d", (int)ok);
-                    if (ok) LogMergeScene(in);
-                }
-            }
             MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
+            // merge: the plan is read (and rebuilt if the comp changed) here, once per frame and layer
+            const MergeLayerPlan* lp = nullptr;
+            auto plan = MergePlanOf((const void*)a, (const void*)b, s, true, &lp);
+            if (lp) return (uintptr_t)lp->subs.size();
             return (uintptr_t)(unsigned)s.p.count;
         }
         uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
@@ -429,7 +452,10 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     auto* v3 = (bee::RawVec*)f;
     auto* v4 = (bee::RawVec*)g;
     for (int k = 0; k < 4; k++) ret[k] = rect[k];
-    size_t n = (size_t)s.p.count;
+    // merge: individual copies and group planes (the same plan the Count hook answered with)
+    const MergeLayerPlan* lp = nullptr;
+    auto plan = MergePlanOf((const void*)a, (const void*)c, s, false, &lp);
+    size_t n = lp ? lp->subs.size() : (size_t)s.p.count;
     if (!bee::VecReserve(vR, bee::kRectBytes, n) || !bee::VecReserve(v3, bee::kM3Bytes, n) ||
         !bee::VecReserve(v4, bee::kM4Bytes, n))
         return b;
@@ -440,10 +466,21 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         vR->last += bee::kRectBytes;
         g_m3Identity(v3->last);
         v3->last += bee::kM3Bytes;
-        CopyXform x;
-        ComputeCopy(s.p, (int)i, s.anchorX, s.anchorY, &x);
         double m[16];
-        Mul4(x.m4, G, m);
+        const int copy = lp ? lp->subs[i].copy : (int)i;
+        if (copy >= 0) {
+            CopyXform x;
+            ComputeCopy(s.p, copy, s.anchorX, s.anchorY, &x);
+            Mul4(x.m4, G, m);
+        } else {
+            const MergeCluster& cl = lp->clusters[lp->subs[i].cluster];
+            if (!GroupPlaneM4(plan->cam, lp->in.layerToWorld, cl.depth, rect, cl.rect, m)) {
+                static std::atomic<int> warned{0};
+                if (++warned <= 5) RLog("merge: group plane failed (depth %.2f)", cl.depth);
+                std::memset(m, 0, sizeof(m));  // a degenerate plane draws nothing
+                m[15] = 1;
+            }
+        }
         std::memcpy(v4->last, m, bee::kM4Bytes);
         v4->last += bee::kM4Bytes;
     }
@@ -514,10 +551,78 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     int index = *(int*)(v + bee::kArtLayerToSubIndex);
     ParamSnapshot s;
     if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
+    int copy = index;
+    if (s.p.merge) {
+        LayerKey k;
+        if (t && KeyOf(layer, &k)) {  // for the texture hook of this sub-layer (it has no time)
+            t_lastArt.k = k;
+            t_lastArt.t[0] = ((const int*)t)[0];
+            t_lastArt.t[1] = ((const int*)t)[1];
+        }
+        const MergeLayerPlan* lp = nullptr;
+        auto plan = MergePlanOf(layer, t, s, false, &lp);
+        if (lp && index < (int)lp->subs.size()) {
+            copy = lp->subs[index].copy;
+            if (copy < 0) return op;  // a group plane: the copies' opacities are in its texture
+        }
+    }
     CopyXform x;
-    ComputeCopy(s.p, index, s.anchorX, s.anchorY, &x);
+    ComputeCopy(s.p, copy, s.anchorX, s.anchorY, &x);
     MarkTiming(layer, t, TK_COPY, t0);
     return op * x.opacity;
+}
+
+// ---- merge: the texture AE gets for each sub-layer (AEGPDriver's AEGP_RenderTexture -> BEE). A group plane gets
+// DupliX's drawing of its copies instead of the layer's texture.
+typedef int (*TexFn)(void*, void*, unsigned, double*, double*, void**, double*);
+typedef int (*TexRcFn)(void*, void*, unsigned, short, double*, double*, void*, void*, void**, double*);
+TexFn g_origTex = nullptr;
+TexRcFn g_origTexRc = nullptr;
+std::atomic<int> g_texSwaps{0};
+
+void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
+{
+    if (!trace || !world || !*world || !m3) return;
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    if (!v) return;
+    const void* layer = *(void**)(v + bee::kArtLayerToLayer);
+    const int index = *(int*)(v + bee::kArtLayerToSubIndex);
+    if (index < 0 || !IsMine(layer)) return;
+    LayerKey k;
+    ParamSnapshot s;
+    if (!KeyOf(layer, &k) || !ParamsFor(layer, nullptr, &s) || !s.p.merge) return;
+    if (t_lastArt.k.compItemId != k.compItemId || t_lastArt.k.layerId != k.layerId) {
+        RLog("merge: texture failed (%s): no time for comp %d layer %d sub %d", which, k.compItemId, k.layerId, index);
+        return;
+    }
+    const MergeLayerPlan* lp = nullptr;
+    auto plan = MergePlanOf(layer, t_lastArt.t, s, false, &lp);
+    if (!lp || index >= (int)lp->subs.size() || lp->subs[index].cluster < 0) return;
+    double out3[9];
+    AEGP_WorldH w1 = RenderGroupTexture((AEGP_WorldH)*world, m3, *plan, *lp, lp->clusters[lp->subs[index].cluster], out3);
+    if (!w1) {
+        RLog("merge: texture failed (%s): drawing the group (comp %d layer %d sub %d)", which, k.compItemId, k.layerId, index);
+        return;
+    }
+    (**(void (***)(void*, int))*world)(*world, 1);  // the layer's texture: what AEGP_DisposeTexture does
+    *world = w1;
+    std::memcpy(m3, out3, sizeof(out3));
+    int n = ++g_texSwaps;
+    if (n <= 5 || (n & (n - 1)) == 0) RLog("merge: texture swapped %d (%s, comp %d layer %d sub %d)", n, which, k.compItemId, k.layerId, index);
+}
+
+int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
+{
+    int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
+    if (!r) SwapGroupTexture(trace, world, m3, "tex");
+    return r;
+}
+int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* rect, void* opts, void* mrect, void** world,
+              double* m3)
+{
+    int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
+    if (!r) SwapGroupTexture(trace, world, m3, "texrc");
+    return r;
 }
 
 // ---- installation
@@ -643,6 +748,17 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
               (!(mask & 4) || WritePtr(&vt[sRc], (void*)&HookRects)) &&
               (!(mask & 8) || WritePtr(&vt[sIs], (void*)&HookIsLayerType)) &&
               (!(mask & 16) || WritePtr(iat, (void*)&HookArtOpacity));
+    if (ok) {
+        // merge: both texture entry points, or none (then nothing merges)
+        void** t1 = FindImportSlot(drv, "BEE.dll", bee::kRenderTextureForArtisan);
+        void** t2 = FindImportSlot(drv, "BEE.dll", bee::kRenderTextureForArtisanWithReceipt);
+        if (t1 && t2) {
+            g_origTex = (TexFn)*t1;
+            g_origTexRc = (TexRcFn)*t2;
+            g_texHooked = WritePtr(t1, (void*)&HookTex) && WritePtr(t2, (void*)&HookTexRc);
+        }
+        RLog("hooks: texture entry points %p %p -> merge %s", (void*)t1, (void*)t2, g_texHooked ? "available" : "off");
+    }
     g_status = ok ? HookStatus::Installed : HookStatus::MissingSymbols;
     RLog("hooks: %s (main thread %lu)", ok ? "installed" : "VirtualProtect failed", g_mainThread);
     return g_status;

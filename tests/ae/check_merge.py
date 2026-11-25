@@ -61,10 +61,46 @@ def check_scene(name, planes, unbounded, block, boxes=0):
     return ok, " ".join(msgs)
 
 
+def load(comp):
+    import numpy as np
+    from PIL import Image
+    p = os.path.join(out_dir, f"{comp}_{mfr}.tif")
+    if not os.path.exists(p):
+        return None
+    return np.asarray(Image.open(p).convert("RGBA")).astype(int)
+
+
+def compare(name, min_groups=1, mean_max=0.5, over2_max=0.03, over32_max=0.003):
+    """merge on vs off: the merged copies are drawn by DupliX's bilinear filter, not AE's: small differences at the
+    texture's sharp edges (like the fast mode); a wrong front/back order would differ by much more over large areas."""
+    import numpy as np
+    a, b = load("mg_" + name), load("nm_" + name)
+    if a is None or b is None:
+        return False, "missing output"
+    if a.shape != b.shape:
+        return False, f"size {a.shape} vs {b.shape}"
+    d = np.abs(a - b).max(axis=2)
+    mean, f2, f32 = float(np.abs(a - b).mean()), float((d > 2).mean()), float((d > 32).mean())
+    text, off = log_of("mg_" + name), log_of("nm_" + name)
+    groups = [int(g) for g in re.findall(r"merge:   group copies=(\d+)", text)]
+    swaps = len(re.findall(r"merge: texture swapped", text))
+    fails = len(re.findall(r"merge: texture failed", text)) + len(re.findall(r"merge: texture failed", off))
+    off_swaps = len(re.findall(r"merge: texture swapped", off))
+    ok = (len(groups) >= min_groups and all(g >= 2 for g in groups) and swaps > 0 and fails == 0 and off_swaps == 0 and
+          mean <= mean_max and f2 <= over2_max and f32 <= over32_max)
+    return ok, (f"max={int(d.max())} mean={mean:.3f} >2={100 * f2:.2f}% >32={100 * f32:.3f}% groups={groups} "
+                f"swaps={swaps} failed={fails} off-swaps={off_swaps} size={a.shape[1]}x{a.shape[0]}")
+
+
 CHECKS = {
     "scene_basic": lambda: check_scene("scene_basic", 2, [0, 1], 0),
     "scene_light": lambda: check_scene("scene_light", 1, [0], 4),
     "scene_nocam": lambda: check_scene("scene_nocam", 1, [0], 0),
+    "group_pair": lambda: compare("group_pair"),
+    "group_scatter": lambda: compare("group_scatter"),
+    # half resolution: AE filters its half-size texture differently from DupliX's bilinear (as in the fast mode)
+    "group_half": lambda: compare("group_half", over2_max=0.05),
+    "group_nocam": lambda: compare("group_nocam"),
 }
 
 fails = 0

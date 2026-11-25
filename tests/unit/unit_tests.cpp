@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/fast_plane.h"
+#include "core/merge_geom.h"
 #include "core/merge_plan.h"
 #include "effect/randamu_params.h"
 #include "core/raster.h"
@@ -967,6 +968,136 @@ TEST(merge_default_camera)
     CHECK(rnd::PlaneM4(cam, I, 2666.67, M));
     for (int k = 0; k < 16; k++) CHECK(std::fabs(M[k] - I[k]) < 1e-6);
     CHECK(cam.compW == 1920 && cam.compH == 1080 && cam.dist == 2666.67);
+}
+
+// A camera looking at the comp from the front-left, slightly rotated (a two-node camera's look).
+static rnd::CameraView MergeTestCamera()
+{
+    rnd::CameraView cam;
+    double R[16], T[16];
+    const double a = 12 * 3.14159265358979 / 180;  // yaw
+    const double Ry[16] = {std::cos(a), 0, -std::sin(a), 0, 0, 1, 0, 0, std::sin(a), 0, std::cos(a), 0, 0, 0, 0, 1};
+    std::memcpy(R, Ry, sizeof(R));
+    const double Tt[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 120, 140, -700, 1};
+    std::memcpy(T, Tt, sizeof(T));
+    rnd::Mul4(R, T, cam.camToWorld);
+    cam.dist = 800;
+    cam.compW = 400;
+    cam.compH = 300;
+    return cam;
+}
+static rnd::MergeLayerInput MergeTestLayer(int count, unsigned block = 0)
+{
+    rnd::MergeLayerInput l;
+    l.compItemId = 5;
+    l.layerId = 7;
+    l.p.count = count;
+    l.p.seed = 3;
+    l.p.pos[0] = 140, l.p.pos[1] = 90, l.p.pos[2] = 250;
+    l.p.rotDeg[2] = 90;
+    l.p.merge = true;
+    l.anchorX = 60, l.anchorY = 50;
+    rnd::InitialLayerToWorld(60, 50, 400, 300, l.layerToWorld);
+    const double r[4] = {0, 0, 120, 100};
+    std::memcpy(l.srcRect, r, sizeof(r));
+    l.block = block;
+    return l;
+}
+static void ProjectWorld(const rnd::CameraView& cam, const double p[3], double* sx, double* sy)
+{
+    double inv[16];
+    rnd::Invert4(cam.camToWorld, inv);
+    double c[3];
+    for (int k = 0; k < 3; k++) c[k] = p[0] * inv[k] + p[1] * inv[4 + k] + p[2] * inv[8 + k] + inv[12 + k];
+    *sx = c[0] * cam.dist / c[2] + cam.compW / 2;
+    *sy = c[1] * cam.dist / c[2] + cam.compH / 2;
+}
+
+// The group plane shows the texture rect exactly over the screen rect (any depth, any layer transform).
+TEST(group_plane_maps_rect)
+{
+    rnd::CameraView cam = MergeTestCamera();
+    rnd::MergeLayerInput l = MergeTestLayer(1);
+    const double tex[4] = {0, 0, 120, 100}, rect[4] = {48, 24, 312, 216};
+    for (double d : {300.0, 900.0, 2000.0}) {
+        double M[16], toW[16];
+        CHECK(rnd::GroupPlaneM4(cam, l.layerToWorld, d, tex, rect, M));
+        rnd::Mul4(M, l.layerToWorld, toW);
+        const double cx[4] = {tex[0], tex[2], tex[2], tex[0]}, cy[4] = {tex[1], tex[1], tex[3], tex[3]};
+        const double ex[4] = {rect[0], rect[2], rect[2], rect[0]}, ey[4] = {rect[1], rect[1], rect[3], rect[3]};
+        for (int k = 0; k < 4; k++) {
+            double w[3];
+            for (int j = 0; j < 3; j++) w[j] = cx[k] * toW[j] + cy[k] * toW[4 + j] + toW[12 + j];
+            double sx, sy;
+            ProjectWorld(cam, w, &sx, &sy);
+            CHECK(std::fabs(sx - ex[k]) < 1e-6 && std::fabs(sy - ey[k]) < 1e-6);
+        }
+        // and at camera-space depth d
+        rnd::ScreenQuad q = rnd::ProjectRect(cam, toW, tex);
+        CHECK(q.valid && std::fabs(q.zMin - d) < 1e-6 && std::fabs(q.zMax - d) < 1e-6);
+    }
+}
+
+TEST(group_texture_m3)
+{
+    const double tex[4] = {-10, 5, 110, 105};
+    double m3[9], r[4];
+    rnd::GroupTextureM3(tex, 240, 200, m3);
+    rnd::TextureLayerRect(m3, 240, 200, r);
+    for (int k = 0; k < 4; k++) CHECK(std::fabs(r[k] - tex[k]) < 1e-9);
+}
+
+// Many render threads asking for the same frame: the plan is built once and shared; new inputs rebuild it.
+TEST(plan_cache_one_build)
+{
+    rnd::MergePlanCache cache;
+    std::atomic<int> builds{0};
+    auto build = [&] {
+        builds++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        return rnd::MergePlan();
+    };
+    std::vector<std::shared_ptr<const rnd::MergePlan>> got(8);
+    std::vector<std::thread> th;
+    for (int i = 0; i < 8; i++) th.emplace_back([&, i] { got[i] = cache.Get(42, 1, build); });
+    for (auto& t : th) t.join();
+    CHECK(builds == 1);
+    for (int i = 1; i < 8; i++) CHECK(got[i] && got[i] == got[0]);
+    CHECK(cache.Latest(42) == got[0]);
+    auto again = cache.Get(42, 2, build);
+    CHECK(builds == 2 && again && again != got[0] && cache.Latest(42) == again);
+    CHECK(!cache.Latest(43));
+}
+
+TEST(single_group_plan)
+{
+    rnd::MergeSceneInput in;
+    in.cam = MergeTestCamera();
+    in.layers.push_back(MergeTestLayer(6));
+    rnd::MergePlan p = rnd::BuildSingleGroupPlan(in);
+    const rnd::MergeLayerPlan& lp = p.layers.at(rnd::MergeLayerKey(5, 7));
+    CHECK(lp.subs.size() == 1 && lp.clusters.size() == 1 && lp.subs[0].cluster == 0 && lp.subs[0].copy < 0);
+    CHECK(lp.clusters[0].copies.size() == 6);
+    double zMin = 1e300;
+    for (int i = 0; i < 6; i++) {
+        double toW[16], op;
+        rnd::CopyToWorld(lp.in, i, toW, &op);
+        rnd::ScreenQuad q = rnd::ProjectRect(in.cam, toW, lp.in.srcRect);
+        zMin = std::min(zMin, q.zMin);
+        for (int k = 0; k < 4; k++) {  // every copy's visible part inside the group's rect (clipped to the comp)
+            const double x = std::min(std::max(q.x[k], 0.0), 400.0), y = std::min(std::max(q.y[k], 0.0), 300.0);
+            CHECK(x >= lp.clusters[0].rect[0] && x <= lp.clusters[0].rect[2] && y >= lp.clusters[0].rect[1] &&
+                  y <= lp.clusters[0].rect[3]);
+        }
+    }
+    CHECK(std::fabs(lp.clusters[0].depth - zMin) < 1e-6);
+    for (int k = 0; k < 4; k++) CHECK(std::fmod(lp.clusters[0].rect[k], rnd::kMergeAlign) == 0);
+    // a blocked layer: every copy on its own, in order
+    in.layers[0] = MergeTestLayer(6, rnd::MB_LIGHTS);
+    p = rnd::BuildSingleGroupPlan(in);
+    const rnd::MergeLayerPlan& lb = p.layers.at(rnd::MergeLayerKey(5, 7));
+    CHECK(lb.subs.size() == 6 && lb.clusters.empty());
+    for (int i = 0; i < 6; i++) CHECK(lb.subs[i].copy == i && lb.subs[i].cluster < 0);
 }
 
 // The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in

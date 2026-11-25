@@ -24,6 +24,14 @@ constexpr const char* kGetSubLayerRects =
 constexpr const char* kAEGPDriverModule = "AEGPDriver.aex";
 constexpr const char* kGetArtisanLayerOpacity =
     "?BEE_GetArtisanLayerOpacity@@YANPEAXPEAVBEE_RenderTrace@@PEBUT_Time@@PEBVTDB_ParamBag@@@Z";
+// The texture of each sub-layer (AEGPDriver's AEGP_RenderTexture; dev log 2026-11-25 5b). Returns 0 and a world
+// (deleted by AEGP_DisposeTexture through its virtual destructor) with its matrix texture px -> layer px.
+constexpr const char* kRenderTextureForArtisan =
+    "?BEE_RenderTextureForArtisan@@YAHPEAXPEAVBEE_RenderTrace@@IPEAV?$M_Vector2T@N@@PEAUM_FloatRect@@PEAPEAVPF_World@@"
+    "PEAVM_Matrix3@@@Z";
+constexpr const char* kRenderTextureForArtisanWithReceipt =
+    "?BEE_RenderTextureForArtisanWithReceipt@@YAHPEAXPEAVBEE_RenderTrace@@IFPEAV?$M_Vector2T@N@@PEAUM_FloatRect@@"
+    "PEAVBEE_LayerRenderOptions@@PEAUM_Rect@@PEAPEAVPF_World@@PEAVM_Matrix3@@@Z";
 // BEE_RenderTrace -> artisan layer record: v = *(char**)(trace + 16); layer = *(void**)(v - 48); index = *(int*)(v - 40)
 constexpr ptrdiff_t kTraceArtLayer = 16;
 constexpr ptrdiff_t kArtLayerToLayer = -48;

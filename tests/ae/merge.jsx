@@ -18,7 +18,12 @@
         // Task 2: what the hooks read (log only)
         {name: "scene_basic", params: scatter, walls: [{pos: [200, 150, 300]}, {pos: [260, 150, 600], rotY: 40, fx: true}]},
         {name: "scene_light", params: scatter, walls: [{pos: [200, 150, 300]}], light: true},
-        {name: "scene_nocam", params: scatter, walls: [{pos: [200, 150, 300]}], noCam: true}
+        {name: "scene_nocam", params: scatter, walls: [{pos: [200, 150, 300]}], noCam: true},
+        // Task 3: one group of every copy, compared with merge off (no other surfaces)
+        {name: "group_pair", params: {count: 2, seed: 5, pos: [150, 60, 100]}, compare: true},
+        {name: "group_scatter", params: scatter, compare: true},
+        {name: "group_half", params: scatter, compare: true, half: true},
+        {name: "group_nocam", params: scatter, compare: true, noCam: true}
     ];
 
     function setParams(fx, p, merge) {
@@ -54,7 +59,7 @@
         return comp;
     }
     var rqLines = [];
-    function addRQ(comp) {
+    function addRQ(comp, half) {
         var rq = app.project.renderQueue.items.add(comp);
         var om = rq.outputModule(1);
         var ok = false;
@@ -68,6 +73,9 @@
         om.file = new File(outDir + "/r_" + comp.name + "_[#####].tif");
         rq.timeSpanStart = 0;
         rq.timeSpanDuration = 1 / 30;
+        if (half) {
+            try { rq.setSetting("Resolution", "Half"); } catch (eh) { log("setSetting Resolution failed: " + eh.message); }
+        }
         rqLines.push(comp.name + "=" + app.project.renderQueue.numItems);
     }
 
@@ -79,8 +87,8 @@
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;
-            addRQ(build(c, true));
-            if (c.compare) addRQ(build(c, false));
+            addRQ(build(c, true), c.half);
+            if (c.compare) addRQ(build(c, false), c.half);
             log("built " + c.name);
         }
         var f = new File(outDir + "/rq.txt");

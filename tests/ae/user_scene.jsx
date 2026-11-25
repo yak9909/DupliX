@@ -109,6 +109,12 @@
         variant("v_fast10", function (c, T, f) { f.property(2).setValue(10); f.property(15).setValue(1); });
         variant("v_fast100", function (c, T, f) { f.property(2).setValue(100); f.property(15).setValue(1); });
         variant("v_fast1000", function (c, T, f) { f.property(2).setValue(1000); f.property(15).setValue(1); });
+        // normal mode with and without merging (the merge checkbox: disk ID RD_MERGE = 27)
+        var MERGE = "RANDAMU Scatter-0027";
+        variant("v_norm100", function (c, T, f) { f.property(2).setValue(100); });
+        variant("v_merge10", function (c, T, f) { f.property(MERGE).setValue(1); });
+        variant("v_merge100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); });
+        variant("v_merge1000", function (c, T, f) { f.property(2).setValue(1000); f.property(MERGE).setValue(1); });
         app.project.save(new File(outDir + "/variants.aep"));
         log("done");
     } catch (ex) {
