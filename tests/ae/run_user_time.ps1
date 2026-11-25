@@ -1,6 +1,9 @@
 # Times a user's scene per variant (tests/ae/user_time.jsx in one hidden AE on a COPY of the scene, MFR off).
 #   pwsh tests/ae/run_user_time.ps1 -Aep "tests/ae/user/DupliX Test A.aep" [-Frames 30] [-Start 0] [-Variants asis,on,off,none]
-param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 30, [int]$Start = 0, [string]$Variants = "asis,on,off,none")
+#   -Count n: the copy count of every enabled DupliX layer
+param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 30, [int]$Start = 0, [string]$Variants = "asis,on,off,none",
+      [string]$Count = "")
+$env:RANDAMU_UT_COUNT = $Count
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\user_time"

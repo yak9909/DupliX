@@ -37,6 +37,8 @@
                     var L = cc.layer(j2), d = dupli(L);
                     if (!d) continue;
                     if (vn === "on" || vn === "off") d.property(MERGE).setValue(vn === "on" ? 1 : 0);
+                    var cnt = $.getenv("RANDAMU_UT_COUNT") || "";
+                    if (cnt && L.enabled) d.property(2).setValue(parseInt(cnt, 10));
                     if (vn === "none") L.enabled = false;
                     desc.push(L.name + (L.enabled ? "" : "(off)") + " count=" + d.property(2).value + " merge=" + d.property(MERGE).value);
                 }
