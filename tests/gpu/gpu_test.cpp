@@ -117,7 +117,7 @@ static Compare Run(void* ctx, const std::vector<ARGB>& src, int sw, int sh, std:
     rnd::GpuImage gs = {dsrc, sw, sh, (long)(sw * sizeof(BGRA)), 0, 0};
     rnd::GpuImage gd = {ddst, dw, dh, (long)(dw * sizeof(BGRA)), ox, oy, shift, 0};
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), ds, ds);
+    bool ok = rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), ds, ds) == rnd::kGpuOk;
     if (gpuMs) *gpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     CHECK(ok);
     CHECK(rnd::cu::Download(out.data(), ddst, out.size() * sizeof(BGRA)));
@@ -196,6 +196,78 @@ int main()
                         "mean %.4f >2: %.4f%% drawn px %zu\n", n, best, c.maxDiff, c.Mean(), 100 * c.Frac(), c.drawn);
             CHECK(c.Mean() <= 0.1f && c.Frac() <= 0.001f);
         }
+    }
+    // gpu_fallback_cpu: the kernel fails (forced) -> kGpuFailed, the GPU is marked unusable for later frames, and
+    // the CPU fallback on the same device buffers draws exactly what the CPU rasterizer draws.
+    {
+        auto copies = Scene(11, 40, sw, sh, 600, 40, 30);
+        const int dw = 640, dh = 360;
+        std::vector<ARGB> cpu((size_t)dw * dh);
+        rnd::RasterImage s = {(void*)src.data(), sw, sh, (long)(sw * sizeof(ARGB)), 32, 0, 0};
+        rnd::RasterImage d = {cpu.data(), dw, dh, (long)(dw * sizeof(ARGB)), 32, -20, 10};
+        auto c1 = copies;
+        rnd::RasterizeCopies(s, c1.data(), (int)c1.size(), 1.0, 1.0, d, 4);
+        std::vector<BGRA> sb(src.size()), out((size_t)dw * dh);
+        for (size_t i = 0; i < src.size(); i++) sb[i] = {src[i].b, src[i].g, src[i].r, src[i].a};
+        void* dsrc = rnd::cu::Alloc(sb.size() * sizeof(BGRA));
+        void* ddst = rnd::cu::Alloc(out.size() * sizeof(BGRA));
+        CHECK(dsrc && ddst && rnd::cu::Upload(dsrc, sb.data(), sb.size() * sizeof(BGRA)));
+        rnd::GpuImage gs = {dsrc, sw, sh, (long)(sw * sizeof(BGRA)), 0, 0};
+        rnd::GpuImage gd = {ddst, dw, dh, (long)(dw * sizeof(BGRA)), -20, 10};
+        CHECK(rnd::GpuRasterUsable());
+        rnd::GpuRasterTestFail(true);
+        CHECK(rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), 1.0, 1.0) == rnd::kGpuFailed);
+        rnd::GpuRasterTestFail(false);
+        CHECK(!rnd::GpuRasterUsable());
+        CHECK(rnd::GpuRasterizeOnCpu(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), 1.0, 1.0) == rnd::kGpuOk);
+        CHECK(rnd::cu::Download(out.data(), ddst, out.size() * sizeof(BGRA)));
+        float m = 0;
+        size_t drawn = 0;
+        for (size_t i = 0; i < out.size(); i++) {
+            m = std::max({m, std::fabs(out[i].a - cpu[i].a), std::fabs(out[i].r - cpu[i].r), std::fabs(out[i].g - cpu[i].g),
+                          std::fabs(out[i].b - cpu[i].b)});
+            drawn += cpu[i].a > 0;
+        }
+        std::printf("gpu_fallback_cpu: max diff %g, drawn px %zu\n", m, drawn);
+        CHECK(drawn > 0 && m == 0.f);
+        rnd::GpuRasterTestReset();
+        CHECK(rnd::GpuRasterUsable());
+        rnd::cu::Free(dsrc);
+        rnd::cu::Free(ddst);
+    }
+    // gpu_bands_abort: a 1920x1080 frame is drawn in several launches (one short launch each, no driver timeout),
+    // and the abort callback asked between them stops the drawing.
+    {
+        auto big = Source(577, 680);
+        auto copies = Scene(7, 200, 577, 680, 1500, 60, 100);
+        std::vector<BGRA> sb(big.size());
+        for (size_t i = 0; i < big.size(); i++) sb[i] = {big[i].b, big[i].g, big[i].r, big[i].a};
+        void* dsrc = rnd::cu::Alloc(sb.size() * sizeof(BGRA));
+        void* ddst = rnd::cu::Alloc((size_t)1920 * 1080 * sizeof(BGRA));
+        CHECK(dsrc && ddst && rnd::cu::Upload(dsrc, sb.data(), sb.size() * sizeof(BGRA)));
+        rnd::GpuImage gs = {dsrc, 577, 680, (long)(577 * sizeof(BGRA)), 0, 0};
+        rnd::GpuImage gd = {ddst, 1920, 1080, (long)(1920 * sizeof(BGRA)), 0, 0};
+        int asked = 0;
+        CHECK(rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), 1.0, 1.0, [&] {
+                  asked++;
+                  return false;
+              }) == rnd::kGpuOk);
+        std::printf("gpu_bands_abort: launches %d, abort asked %d\n", rnd::GpuRasterLastLaunches(), asked);
+        CHECK(rnd::GpuRasterLastLaunches() > 1 && asked >= 1);
+        CHECK(rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), 1.0, 1.0, [] { return true; }) ==
+              rnd::kGpuAborted);
+        CHECK(rnd::GpuRasterUsable());  // an abort is not a failure
+        rnd::cu::Free(dsrc);
+        rnd::cu::Free(ddst);
+    }
+    // gpu_prepare_forget: the module is loaded at device setup and dropped at device setdown (AE may destroy the
+    // context and a new one may reuse its handle: a cached kernel of the old one must not be used).
+    {
+        CHECK(rnd::GpuRasterPrepare(ctx));
+        CHECK(rnd::GpuRasterCachedContexts() == 1);
+        rnd::GpuRasterForget(ctx);
+        CHECK(rnd::GpuRasterCachedContexts() == 0);
+        CHECK(rnd::GpuRasterPrepare(ctx));
     }
     rnd::cu::DestroyContext(ctx);
     std::printf(g_failed ? "GPU FAILURES: %d\n" : "GPU ALL PASS\n", g_failed);

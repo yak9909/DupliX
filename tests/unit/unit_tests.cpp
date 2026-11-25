@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <chrono>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -929,6 +930,32 @@ TEST(tiles_cover_boxes)
     int with2 = 0;
     for (int k = 0; k < total; k++) with2 += t.index[k] == 2;
     CHECK(with2 == 0);
+}
+
+// 20000 copies that each cover a whole 8K buffer (a corner behind the camera) make 2.6e9 tile entries: more than an
+// int can count. BuildTiles must refuse with bad_alloc at once (AE reports it as out of memory), never wrap around
+// (a wrapped positive total would write past the list's end).
+TEST(tiles_entry_limit)
+{
+    rnd::RasterImage s = {nullptr, 100, 100, 400, 8, 0, 0}, d = {nullptr, 7680, 4320, 7680 * 4, 8, 0, 0};
+    std::vector<rnd::RasterCopy> c(20000);
+    for (auto& x : c) {
+        std::memset(x.screenToSrc, 0, sizeof(x.screenToSrc));  // not invertible: covers everything
+        x.opacity = 1;
+        x.depth = 1;
+    }
+    rnd::TileLists t;
+    bool badAlloc = false;
+    auto t0 = std::chrono::steady_clock::now();
+    try {
+        rnd::BuildTiles(s, c.data(), (int)c.size(), 1.0, 1.0, d, 16, &t);
+    } catch (const std::bad_alloc&) {
+        badAlloc = true;
+    } catch (...) {
+    }
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(badAlloc);
+    CHECK(ms < 200);  // refused before counting tile by tile
 }
 
 template <class P>

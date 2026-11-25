@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <new>
 #include <numeric>
 
 #include "core/fast_plane.h"
@@ -53,9 +54,17 @@ void BuildTiles(const RasterImage& src, const RasterCopy* copies, int n, double 
     const int nt = out->tilesX * out->tilesY;
     std::vector<int> x0(n), y0(n), x1(n), y1(n);
     std::vector<char> hit(n);
-    std::vector<int> count((size_t)nt + 1, 0);
+    // The total in 64 bits before any per-tile counting: past the limit the lists cannot be built (an int index,
+    // and memory): refuse like a failed allocation instead of wrapping around.
+    long long total = 0;
     for (int i = 0; i < n; i++) {
         hit[i] = copies[i].opacity > 0 && CopyBox(src, copies[i], dsX, dsY, dst, &x0[i], &y0[i], &x1[i], &y1[i]);
+        if (!hit[i]) continue;
+        total += (long long)(x1[i] / tileSize - x0[i] / tileSize + 1) * (y1[i] / tileSize - y0[i] / tileSize + 1);
+        if (total > kMaxTileEntries) throw std::bad_alloc();
+    }
+    std::vector<int> count((size_t)nt + 1, 0);
+    for (int i = 0; i < n; i++) {
         if (!hit[i]) continue;
         for (int ty = y0[i] / tileSize; ty <= y1[i] / tileSize; ty++)
             for (int tx = x0[i] / tileSize; tx <= x1[i] / tileSize; tx++) count[(size_t)ty * out->tilesX + tx]++;

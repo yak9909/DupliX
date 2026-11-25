@@ -456,6 +456,9 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
                            PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING |
                            PF_OutFlag2_SUPPORTS_GPU_RENDER_F32 | PF_OutFlag2_SUPPORTS_DIRECTX_RENDERING;
     RLog("GlobalSetup: %s, host %d.%d", BuildId().c_str(), in_data->version.major, in_data->version.minor);
+    rnd::GpuRasterSetLog(&RLog);
+    // test only (tests/ae/run_fast_mode.ps1 -GpuFail): every fast-mode GPU launch fails, the CPU fallback draws
+    if (GetEnvironmentVariableA("RANDAMU_GPU_FAIL", nullptr, 0) > 0) rnd::GpuRasterTestFail(true);
     Suite<AEGP_UtilitySuite6> util(in_data->pica_basicP, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     if (util && !util->AEGP_RegisterWithAEGP(nullptr, "randamu", &g_pluginId))
         rnd::InstallHooks(in_data->pica_basicP, g_pluginId);
@@ -670,7 +673,7 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
         extra->output->max_result_rect = full;
         extra->output->pre_render_data = f;
         extra->output->delete_pre_render_data_func = DeleteFastPre;
-        if (extra->input->what_gpu == PF_GPU_Framework_CUDA && rnd::GpuRasterAvailable())
+        if (extra->input->what_gpu == PF_GPU_Framework_CUDA && rnd::GpuRasterUsable())
             extra->output->flags |= PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
     } else {
         // Nothing to show (camera or comp unreadable): an empty output.
@@ -809,15 +812,27 @@ PF_Err GpuDeviceSetup(PF_InData* in_data, PF_OutData* out_data, PF_GPUDeviceSetu
     if (!gs || gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info)) return PF_Err_NONE;
     void* data = nullptr;
     bool ok = rnd::GpuDeviceSetup(extra->input->what_gpu, info, &data);
+    bool fastGpu = false;
+    if (extra->input->what_gpu == PF_GPU_Framework_CUDA) {
+        // The fast mode's kernel is loaded now: a driver that cannot run it is known before the first frame
+        // (the fast mode then stays on the CPU; the normal mode's copy needs no kernel). gpu_data = the context,
+        // so setdown can drop its cached kernel.
+        fastGpu = rnd::GpuRasterPrepare(info.contextPV);
+        data = info.contextPV;
+    }
     extra->output->gpu_data = data;
     if (ok) out_data->out_flags2 = PF_OutFlag2_SUPPORTS_GPU_RENDER_F32;
-    RLog("gpu: device %u framework %d -> %s", (unsigned)extra->input->device_index, (int)extra->input->what_gpu,
-         ok ? "supported" : "not supported (CPU)");
+    RLog("gpu: device %u framework %d -> %s, fast-mode kernel %s", (unsigned)extra->input->device_index,
+         (int)extra->input->what_gpu, ok ? "supported" : "not supported (CPU)", fastGpu ? "loaded" : "not loaded");
     return PF_Err_NONE;
 }
 
 PF_Err GpuDeviceSetdown(PF_GPUDeviceSetdownExtra* extra)
 {
+    if (extra->input->what_gpu == PF_GPU_Framework_CUDA) {
+        rnd::GpuRasterForget(extra->input->gpu_data);
+        return PF_Err_NONE;
+    }
     rnd::GpuDeviceSetdown(extra->input->what_gpu, extra->input->gpu_data);
     return PF_Err_NONE;
 }
@@ -858,14 +873,25 @@ PF_Err FastSmartRenderGpu(PF_InData* in_data, PF_SmartRenderExtra* extra, PF_Eff
         gout.screenShiftY = f->cam.compH / 2 - f->anchorY;
         copies = BuildFastCopies(*f, gin.width, gin.height);
     }
-    bool ok = rnd::GpuRasterize(info.contextPV, info.command_queuePV, gin, gout, copies.data(), (int)copies.size(),
-                                f ? f->dsX : 1.0, f ? f->dsY : 1.0);
+    auto aborted = [in_data]() { return in_data->inter.abort && PF_ABORT(in_data) != PF_Err_NONE; };
+    const double dsX = f ? f->dsX : 1.0, dsY = f ? f->dsY : 1.0;
+    rnd::GpuRasterStatus st = rnd::GpuRasterize(info.contextPV, info.command_queuePV, gin, gout, copies.data(),
+                                                (int)copies.size(), dsX, dsY, aborted);
+    bool viaCpu = false;
+    if (st == rnd::kGpuFailed) {
+        // the GPU could not draw this frame (logged by gpu_raster): the CPU rasterizer draws it into AE's buffers
+        viaCpu = true;
+        st = rnd::GpuRasterizeOnCpu(info.contextPV, info.command_queuePV, gin, gout, copies.data(), (int)copies.size(),
+                                    dsX, dsY, aborted);
+    }
     static std::atomic<int> logged{0};
-    if (++logged <= 3 || !ok)
-        RLog("fast: gpu render ok=%d in %dx%d rowbytes %d origin(%d,%d) out %dx%d rowbytes %d origin(%d,%d) copies %zu",
-             (int)ok, gin.width, gin.height, (int)gin.rowBytes, gin.originX, gin.originY, gout.width, gout.height,
-             (int)gout.rowBytes, gout.originX, gout.originY, copies.size());
-    return ok ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
+    if (++logged <= 3 || st != rnd::kGpuOk || viaCpu)
+        RLog("fast: gpu render ok=%d status %d via cpu %d in %dx%d rowbytes %d origin(%d,%d) out %dx%d rowbytes %d "
+             "origin(%d,%d) copies %zu",
+             (int)(st == rnd::kGpuOk), (int)st, (int)viaCpu, gin.width, gin.height, (int)gin.rowBytes, gin.originX,
+             gin.originY, gout.width, gout.height, (int)gout.rowBytes, gout.originX, gout.originY, copies.size());
+    if (st == rnd::kGpuAborted) return PF_Interrupt_CANCEL;
+    return st == rnd::kGpuOk ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
 }
 
 PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extra)
@@ -976,6 +1002,8 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
         default:
             break;
         }
+    } catch (const std::bad_alloc&) {
+        err = PF_Err_OUT_OF_MEMORY;  // e.g. the fast mode's tile lists past kMaxTileEntries
     } catch (...) {
         err = PF_Err_INTERNAL_STRUCT_DAMAGED;
     }

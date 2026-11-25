@@ -20,6 +20,10 @@ struct TileLists {
 bool CopyBox(const RasterImage& src, const RasterCopy& c, double dsX, double dsY, const RasterImage& dst, int* x0,
              int* y0, int* x1, int* y1, double* nearIz = nullptr);
 
+// The most (copy, tile) entries the lists may hold (1 GB of indices). BuildTiles / PrepareCopies throw
+// std::bad_alloc past it (e.g. 100000 copies each covering a whole 8K frame).
+constexpr long long kMaxTileEntries = 1LL << 28;
+
 void BuildTiles(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY,
                 const RasterImage& dst, int tileSize, TileLists* out);
 

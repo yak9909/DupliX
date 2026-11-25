@@ -3,7 +3,7 @@
 // (DrawTile): copies nearest first, per pixel at most MAX_FRAGS fragments, those behind an opaque fragment
 // dropped, past the limit the farthest goes under a back accumulator, then far to near by the depth at the
 // pixel (equal depths by rank), bilinear sampling, straight alpha in and out.
-// One block = one 16x16 tile, one thread = one pixel.
+// One block = one 16x16 tile, one thread = one pixel; one launch = a band of tile rows.
 
 #define MAX_FRAGS 64
 #define OPAQUE_ALPHA (1.f - 1.f / 1024.f)
@@ -29,10 +29,12 @@ __device__ __forceinline__ float4 Over(float4 f, float4 b)
 extern "C" __global__ void FastRaster(const float4* __restrict__ src, int srcPitch, int srcW, int srcH,
                                       float4* __restrict__ dst, int dstPitch, int dstW, int dstH,
                                       const GCopy* __restrict__ copies, const int* __restrict__ tileStart,
-                                      const int* __restrict__ tileIndex, int tilesX)
+                                      const int* __restrict__ tileIndex, int tilesX, int tileY0)
 {
-    const int tile = blockIdx.y * tilesX + blockIdx.x;
-    const int x = blockIdx.x * 16 + threadIdx.x, y = blockIdx.y * 16 + threadIdx.y;
+    // one launch draws a band of tile rows starting at tileY0
+    const int ty = blockIdx.y + tileY0;
+    const int tile = ty * tilesX + blockIdx.x;
+    const int x = blockIdx.x * 16 + threadIdx.x, y = ty * 16 + threadIdx.y;
     if (x >= dstW || y >= dstH) return;
     float4 fc[MAX_FRAGS];
     float fz[MAX_FRAGS];
