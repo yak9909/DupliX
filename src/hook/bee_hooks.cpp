@@ -307,6 +307,11 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
         }
         static std::atomic<int> dbg{0};
         int d = ++dbg;
+        static LogLimit missLog;
+        if (missLog.Take(60))
+            RLog("dbg: ParamsFor miss tid %lu used %d gen %u/%u key %d/%d vs %d/%d time %d/%u vs %d/%u", GetCurrentThreadId(),
+                 (int)cache.used, cache.gen, gen, cache.k.compItemId, cache.k.layerId, k.compItemId, k.layerId, (int)cache.tv,
+                 (unsigned)cache.ts, (int)t.value, (unsigned)t.scale);
         if (d <= 40) RLog("dbg: ParamsFor AEGP enter comp %d layer %d", k.compItemId, k.layerId);
         bool r;
         {
@@ -674,6 +679,8 @@ LogLimit g_texSwaps;
 
 void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
 {
+    // only the earlier group planes swap textures; reading the parameters here cost ~0.9 ms per copy (AEGP)
+    if (!OldMerge()) return;
     if (!trace || !world || !*world || !m3) return;
     char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
     if (!v) return;
@@ -719,7 +726,8 @@ LogLimit g_texTimeLog;
 void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_point t0)
 {
     char ev[8] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) <= 0 || !g_texTimeLog.Take(4000)) return;
+    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
+    if ((!s_time && GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) <= 0) || !g_texTimeLog.Take(4000)) return;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     int sub = -9;
     if (trace) {
@@ -952,10 +960,24 @@ int OurRow(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
 typedef int (*IterFnO)(uintptr_t, uintptr_t, uintptr_t);
 thread_local IterFnO t_origIter = nullptr;
 thread_local bool t_aeGpu = false;  // this draw's rows on the GPU (else on AE's threads with our row callback)
+// RANDAMU_A3D_TIME=1 (diagnostics): the last GPU draw's times on this thread, logged per copy by HookA3dDraw
+thread_local rnd::GpuAeSpanTimes t_gt;
+thread_local double t_gtAll = 0;
+thread_local int t_gtRows = 0;
+thread_local std::chrono::steady_clock::time_point t_iterIn, t_iterOut;
+std::atomic<DWORD> g_profTid{0};    // see ProfLoop
+int g_profMode = 0;                 // RANDAMU_A3D_PROF: 1 a copy's setup, 2 the drawing thread all the time
+thread_local double t_helperMs[4];  // see HookNewMatching etc.
+thread_local int t_helperN[4];
 LogLimit g_gpuLog;
 
 int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
+    t_iterIn = std::chrono::steady_clock::now();
+    if (g_profMode == 1) g_profTid = 0;
+    struct Out {
+        ~Out() { t_iterOut = std::chrono::steady_clock::now(); }
+    } out;
     a3d::SpanJob job;
     const char* why = "row path";
     if (cb != g_a3dLo + a3d::kRowPolygonRva || !SpanJobFor(d, &job, &why)) {
@@ -984,7 +1006,10 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         gj.rcp = g_rcp.r, gj.target = job.tdata, gj.targetRowbytes = job.trb;
         gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
         double ms = 0;
-        if (gj.nRows == 0 || rnd::GpuAeSpans(gj, &ms)) {
+        t_gt = rnd::GpuAeSpanTimes();
+        t_gtRows = gj.nRows;
+        if (gj.nRows == 0 || rnd::GpuAeSpans(gj, &ms, &t_gt)) {
+            t_gtAll = ms;
             g_oursDraws++;
             // the progress AE's row callback reports (thread 0's rows)
             const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
@@ -1035,6 +1060,13 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     const int mode = GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
     if (!mode) return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     if (mode < 0) {
+        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
+        static const bool s_prof = GetEnvironmentVariableA("RANDAMU_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1';
+        if (g_profMode == 2) g_profTid = GetCurrentThreadId();
+        const auto tA = std::chrono::steady_clock::now();
+        auto since = [](std::chrono::steady_clock::time_point t) {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+        };
         const void* L = nullptr;
         int sb = -9;
         void* rf = nullptr;
@@ -1048,11 +1080,32 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         ParamSnapshot s;
         int seen = L && sb >= 0 ? MergeSeenOf(L) : 0;
         if (seen < 0) seen = IsMine(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
+        const double lookMs = s_time ? since(tA) : 0;
         if (seen > 0 && !OldMerge() && IsMine(L)) {
             t_aeGpu = true;
-            return DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
+            t_gt = rnd::GpuAeSpanTimes(), t_gtAll = -1, t_gtRows = 0;
+            const auto tB = std::chrono::steady_clock::now();
+            t_iterIn = t_iterOut = tB;
+            for (int k = 0; k < 4; k++) t_helperMs[k] = 0, t_helperN[k] = 0;
+            if (s_prof) g_profTid = GetCurrentThreadId();
+            const uintptr_t r = DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
+            if (g_profMode == 1) g_profTid = 0;
+            if (s_time) {
+                auto d = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+                    return std::chrono::duration<double, std::milli>(b - a).count();
+                };
+                RLog("a3d time: ours sub %d kind %d look %.3f draw %.3f setup %.3f iter %.3f after %.3f gpu-call %.3f (tex %.3f "
+                     "stage %.3f gpu %.3f) rows %d px %lld helpers new %.3f/%d copy %.3f/%d itergen %.3f/%d purge %.3f/%d",
+                     sb, *(int*)a7, lookMs, since(tB), d(tB, t_iterIn), d(t_iterIn, t_iterOut), since(t_iterOut), t_gtAll,
+                     t_gt.texMs, t_gt.stageMs, t_gt.gpuMs, t_gtRows, t_gt.regionPx, t_helperMs[0], t_helperN[0], t_helperMs[1],
+                     t_helperN[1], t_helperMs[2], t_helperN[2], t_helperMs[3], t_helperN[3]);
+            }
+            return r;
         }
-        return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+        const auto tB = std::chrono::steady_clock::now();
+        const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+        if (s_time) RLog("a3d time: ae sub %d kind %d look %.3f draw %.3f", sb, *(int*)a7, lookMs, since(tB));
+        return r;
     }
     const int index = *(int*)(self + a3d::kSurfLayerIndex);
     void* refcon = nullptr;
@@ -1289,8 +1342,195 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     return r;
 }
 
+// RANDAMU_A3D_TIME=1 (diagnostics): the time of each summed area table AE builds for a surface's texture
+typedef void* (*SatCtorFn)(void*, const void*, bool);
+SatCtorFn g_origSatCtor = nullptr;
+LogLimit g_satLog;
+void* HookSatCtor(void* self, const void* world, bool b)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    void* r = g_origSatCtor(self, world, b);
+    if (g_satLog.Take(4000)) {
+        // the buffer (notes: +44 width, +48 height)
+        RLog("a3d sat time: %.3f ms (%dx%d)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+             world ? *(const int*)((const char*)world + 44) : -1, world ? *(const int*)((const char*)world + 48) : -1);
+    }
+    return r;
+}
+void** FindImportSlot(HMODULE mod, const char* dll, const char* name);
+
+// RANDAMU_A3D_PROF=1 (diagnostics): samples the instruction pointer of the thread inside a copy's draw (between
+// the draw's start and its pixel loop: AE's setup) and logs the most frequent module+offset every 4000 samples
+}  // namespace
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+namespace {
+std::mutex g_profMu;
+std::map<std::string, int> g_profHits;
+int g_profTotal = 0;
+// ras: the innermost return address in Advanced3D, the innermost and the outermost (below it) in randamu
+void ProfUnwind(CONTEXT u, uintptr_t* ras, uintptr_t* frames, int* nFrames)
+{
+    *nFrames = 0;
+    __try {
+        for (int f = 0; f < 48 && u.Rip; f++) {
+            frames[(*nFrames)++] = u.Rip;
+            if (u.Rip >= g_a3dLo && u.Rip < g_a3dHi && g_profMode == 1) {
+                ras[0] = u.Rip - g_a3dLo;
+                return;
+            }
+            if (u.Rip >= g_a3dLo && u.Rip < g_a3dHi && !ras[0]) ras[0] = u.Rip - g_a3dLo;
+            if (u.Rip >= (uintptr_t)&__ImageBase && u.Rip < (uintptr_t)&__ImageBase + 0x400000) {
+                if (!ras[1]) ras[1] = u.Rip - (uintptr_t)&__ImageBase;
+                ras[2] = u.Rip - (uintptr_t)&__ImageBase;
+            }
+            DWORD64 ib = 0;
+            PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(u.Rip, &ib, nullptr);
+            if (!rf) {
+                u.Rip = *(DWORD64*)u.Rsp;
+                u.Rsp += 8;
+            } else {
+                void* hd = nullptr;
+                DWORD64 ef = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, ib, u.Rip, rf, &u, &hd, &ef, nullptr);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+void ProfLoop()
+{
+    for (;;) {
+        const DWORD tid = g_profTid.load();
+        if (!tid) {
+            Sleep(1);
+            continue;
+        }
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+        if (!h) continue;
+        if (SuspendThread(h) != (DWORD)-1) {
+            CONTEXT c = {};
+            c.ContextFlags = CONTEXT_FULL;
+            const bool ok = g_profTid.load() == tid && GetThreadContext(h, &c);
+            // resumed before the unwinding (taking a lock while the thread is suspended can deadlock); the stack may
+            // change meanwhile, which only spoils a sample now and then
+            ResumeThread(h);
+            // the innermost return address inside Advanced3D and inside randamu
+            uintptr_t ras[3] = {0, 0, 0}, frames[48];
+            int nf = 0;
+            if (ok) ProfUnwind(c, ras, frames, &nf);
+            const uintptr_t a3dRa = ras[0], ourRa = ras[1], ourOuter = ras[2];
+            if (ok) {
+                // the chain of modules from the leaf outwards (consecutive frames of one module once), up to 7
+                std::string chain;
+                HMODULE last = (HMODULE)1;
+                int nm = 0;
+                for (int f = 0; f < nf && nm < 7; f++) {
+                    HMODULE m = nullptr;
+                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCSTR)frames[f], &m);
+                    if (m == last) continue;
+                    last = m;
+                    char name[MAX_PATH] = "?";
+                    if (m) GetModuleFileNameA(m, name, MAX_PATH);
+                    const char* bn = strrchr(name, '\\');
+                    std::string s = bn ? bn + 1 : name;
+                    if (s.size() > 4 && s[s.size() - 4] == '.') s.resize(s.size() - 4);
+                    chain += (nm ? "<" : "") + s;
+                    nm++;
+                }
+                char key[1024];
+                snprintf(key, sizeof(key), "a3d+%llx our+%llx outer+%llx %s", (unsigned long long)a3dRa, (unsigned long long)ourRa,
+                         (unsigned long long)ourOuter, chain.c_str());
+                std::lock_guard<std::mutex> lk(g_profMu);
+                g_profHits[key]++;
+                if (++g_profTotal % 1000 == 0) {
+                    std::vector<std::pair<int, std::string>> v;
+                    for (auto& kv : g_profHits) v.push_back({kv.second, kv.first});
+                    std::sort(v.rbegin(), v.rend());
+                    RLog("a3d prof: %d samples", g_profTotal);
+                    for (size_t i = 0; i < v.size() && i < 40; i++) RLog("a3d prof:   %6d %s", v[i].first, v[i].second.c_str());
+                }
+            }
+        }
+        CloseHandle(h);
+        // ~50 us between samples
+        LARGE_INTEGER f, a, b;
+        QueryPerformanceFrequency(&f);
+        QueryPerformanceCounter(&a);
+        do QueryPerformanceCounter(&b);
+        while ((b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart < 50);
+    }
+}
+
+// RANDAMU_A3D_TIME=1: time in AE's helpers during one copy's draw (this thread): 0 NewMatchingWorld, 1 CopyWorld,
+// 2 PF_IterateGeneric, 3 U_PurgeLoop
+typedef void* (*NewMatchingFn)(const void*, int);
+typedef void (*CopyWorldFn)(void*, const void*);
+typedef int (*IterGenFn)(int, void*, void*);
+typedef int (*PurgeLoopFn)(size_t, void*, void*, int);
+NewMatchingFn g_origNewMatching = nullptr;
+CopyWorldFn g_origCopyWorld = nullptr;
+IterGenFn g_origIterGen = nullptr;
+PurgeLoopFn g_origPurgeLoop = nullptr;
+struct HelperTimer {
+    int k;
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    ~HelperTimer()
+    {
+        t_helperMs[k] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        t_helperN[k]++;
+    }
+};
+void* HookNewMatching(const void* w, int f)
+{
+    HelperTimer t{0};
+    return g_origNewMatching(w, f);
+}
+void HookCopyWorld(void* self, const void* w)
+{
+    HelperTimer t{1};
+    g_origCopyWorld(self, w);
+}
+int HookIterGen(int n, void* r, void* fn)
+{
+    HelperTimer t{2};
+    return g_origIterGen(n, r, fn);
+}
+int HookPurgeLoop(size_t n, void* fn, void* r, int f)
+{
+    HelperTimer t{3};
+    return g_origPurgeLoop(n, fn, r, f);
+}
+
 void InstallA3dDrawHook(HMODULE a3d)
 {
+    {
+        char ev[8] = {0};
+        if (GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1') {
+            void** s = FindImportSlot(a3d, "PF.dll", "??0PF_SummedAreaTable@@QEAA@PEBVPF_World@@_N@Z");
+            if (s) g_origSatCtor = (SatCtorFn)*s, WritePtr(s, (void*)&HookSatCtor);
+            RLog("a3d sat hook: %s", s ? "installed" : "not found");
+            struct H {
+                const char* dll;
+                const char* name;
+                void** orig;
+                void* fn;
+            } hs[] = {{"PF.dll", "?NewMatchingWorld@PF_World@@SAPEAV1@PEBV1@H@Z", (void**)&g_origNewMatching, (void*)&HookNewMatching},
+                      {"PF.dll", "?CopyWorld@PF_World@@QEAAXPEBV1@@Z", (void**)&g_origCopyWorld, (void*)&HookCopyWorld},
+                      {"PF.dll", "PF_IterateGeneric", (void**)&g_origIterGen, (void*)&HookIterGen},
+                      {"U.dll", "U_PurgeLoop", (void**)&g_origPurgeLoop, (void*)&HookPurgeLoop}};
+            for (H& h : hs) {
+                void** sl = FindImportSlot(a3d, h.dll, h.name);
+                if (sl) *h.orig = *sl, WritePtr(sl, h.fn);
+                RLog("a3d helper hook %s: %s", h.name, sl ? "installed" : "not found");
+            }
+        }
+        if (GetEnvironmentVariableA("RANDAMU_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1') {
+            g_profMode = ev[0] - '0';
+            std::thread(ProfLoop).detach();
+            RLog("a3d prof: sampler started");
+        }
+    }
     void** vt = (void**)((uintptr_t)a3d + a3d::kTRLayerVtRva);
     if (vt[0] != (void*)((uintptr_t)a3d + a3d::kTRLayerSlot0Rva) || vt[1] != (void*)((uintptr_t)a3d + a3d::kTRLayerDrawRva)) {
         RLog("a3d draw hook: not installed (SY_TRLayer vtable %p does not match: %p %p)", (void*)vt, vt[0], vt[1]);

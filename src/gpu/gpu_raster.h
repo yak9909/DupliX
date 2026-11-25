@@ -78,7 +78,13 @@ struct GpuAeSpanJob {
     const int* rows;
     int nRows;
 };
-bool GpuAeSpans(const GpuAeSpanJob& job, double* msOut = nullptr);
+// times of one call (diagnostics): texture upload (0 when the texture was on the GPU already), copying the region
+// into and out of pinned memory on the CPU, the GPU part (upload, kernel, download), region size in pixels
+struct GpuAeSpanTimes {
+    double texMs = 0, stageMs = 0, gpuMs = 0;
+    long long regionPx = 0;
+};
+bool GpuAeSpans(const GpuAeSpanJob& job, double* msOut = nullptr, GpuAeSpanTimes* times = nullptr);
 
 // Where the rasterizer logs failures (printf-style; the effect passes its log).
 void GpuRasterSetLog(void (*fn)(const char*, ...));

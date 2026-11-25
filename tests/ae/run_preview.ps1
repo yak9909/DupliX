@@ -5,7 +5,8 @@
 # `AfterFX.exe -r` reach the running instance once its startup has finished).
 #   pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test.aep" [-Frames 40] [-IntervalMs 600]
 param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 40, [int]$IntervalMs = 600,
-      [string]$Variants = "pv_asis,pv_one,pv_real10")
+      [string]$Variants = "pv_asis,pv_one,pv_real10", [string]$Layer = "")
+$env:RANDAMU_PV_LAYER = $Layer
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $out = Join-Path $root "build\test\preview"

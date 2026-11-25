@@ -24,11 +24,16 @@
             for (var j = 1; j <= it.numLayers; j++) if (fxOf(it.layer(j))) { src = it; break; }
         }
         if (!src) throw new Error("no comp with randamu");
+        var names = [];
+        for (var k = 1; k <= src.numLayers; k++) if (fxOf(src.layer(k))) names.push(src.layer(k).name + " enabled=" + src.layer(k).enabled + " count=" + fxOf(src.layer(k)).property(2).value);
+        write("layers.txt", src.name + "\n" + names.join("\n") + "\n");
         function variant(name, fn) {
             var c = src.duplicate();
             c.name = name;
             var T = null;
             for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a))) T = c.layer(a);
+            var lname = $.getenv("RANDAMU_PV_LAYER") || "";
+            if (lname) for (var a2 = 1; a2 <= c.numLayers; a2++) if (c.layer(a2).name === lname && fxOf(c.layer(a2))) T = c.layer(a2);
             fn(c, T, fxOf(T));
             // every frame different (AE reuses identical frames), footage caches kept: move the camera a bit
             for (var b = 1; b <= c.numLayers; b++) {
@@ -61,6 +66,14 @@
             }
             T.enabled = false;
         });
+        // merge on / off with a copy count on the layer named RANDAMU_PV_LAYER (else the last DupliX layer):
+        // pv_on20, pv_off100, ..., pv_none (that layer off: the scene without its copies)
+        var counts = [20, 100, 380];
+        for (var ci = 0; ci < counts.length; ci++) (function (n) {
+            variant("pv_on" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(1); });
+            variant("pv_off" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(0); });
+        })(counts[ci]);
+        variant("pv_none", function (c, T, f) { T.enabled = false; });
         write("variants.txt", lines.join("\n") + "\n");
     } catch (e) {
         write("variants.txt", "EXCEPTION " + e.message + " (line " + e.line + ")\n");

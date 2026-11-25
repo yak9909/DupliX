@@ -501,8 +501,15 @@ bool GrowHost(unsigned char** p, size_t* cap, size_t need)
 
 }  // namespace
 
-bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut)
+bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut, GpuAeSpanTimes* times)
 {
+    LARGE_INTEGER qf;
+    QueryPerformanceFrequency(&qf);
+    auto nowMs = [&]() {
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        return (double)t.QuadPart * 1000.0 / (double)qf.QuadPart;
+    };
     const Api& cu = Cuda();
     if (!cu.ok || g_failed.load() || !cu.primaryRetain || !cu.streamCreate || !cu.dtohAsync || !cu.memAllocHost) return false;
     if (j.nRows <= 0 || !j.target || !j.tex.data) return false;
@@ -545,12 +552,15 @@ bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut)
         GpuLog("gpu ae span: buffers not allocated (%zu bytes): this copy on the CPU", regionBytes);
         return false;
     }
+    if (times) times->regionPx = (long long)(x1 - x0) * (y1 - y0);
     if (g_ae.texKey != j.texKey || !g_ae.tex) {
+        const double ta = nowMs();
         if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
             g_ae.texKey = ~0ull;
             return false;
         }
         g_ae.texKey = j.texKey;
+        if (times) times->texMs = nowMs() - ta;
     }
     if (!g_ae.rcpSet || std::memcmp(g_ae.rcpHost, j.rcp, sizeof(g_ae.rcpHost))) {
         if (!g_ae.rcp && cu.memAlloc(&g_ae.rcp, sizeof(g_ae.rcpHost))) return false;
@@ -559,9 +569,11 @@ bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut)
         g_ae.rcpSet = true;
     }
     // the region and the rows into pinned memory, then one copy each way
+    const double tsA = nowMs();
     for (int y = y0; y < y1; y++)
         std::memcpy(g_ae.stage + (size_t)(y - y0) * pitch, j.target + (ptrdiff_t)y * j.targetRowbytes + 4 * (ptrdiff_t)x0, pitch);
     std::memcpy(g_ae.stage + regionBytes, j.rows, rowsBytes);
+    const double tg = nowMs();
     if (cu.htodAsync(g_ae.region, g_ae.stage, regionBytes, st) ||
         cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes, st))
         return false;
@@ -579,8 +591,10 @@ bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut)
         GpuLog("gpu ae span: the kernel failed: copies drawn on the CPU from now on");
         return false;
     }
+    const double tsB = nowMs();
     for (int y = y0; y < y1; y++)
         std::memcpy(j.target + (ptrdiff_t)y * j.targetRowbytes + 4 * (ptrdiff_t)x0, g_ae.stage + (size_t)(y - y0) * pitch, pitch);
+    if (times) times->gpuMs = tsB - tg, times->stageMs = (tg - tsA) + (nowMs() - tsB);
     if (msOut) {
         LARGE_INTEGER t1, f;
         QueryPerformanceCounter(&t1);
