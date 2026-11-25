@@ -1,5 +1,12 @@
 # 引き継ぎメモ（最新: 2026-11-25 午後。再開はこの冒頭の「再開の手順」から）
 
+## 再開の手順（2026-11-26 朝、新しい軽量化を実装済み・利用者の試用待ち）
+
+- **新しい軽量化（commit e90c6cb、push 済み）: 「軽量化」がオンのレイヤーのコピーは、AE の描画（面の順番・準備・行の範囲）はそのままに、画素の計算だけを DupliX が GPU で AE と同じ計算で行う。** 解読の全記録は `docs/experiments/2026-11-26-a3d-span-notes.md`。計算の本体 `src/core/ae_span_impl.h`（CPU と CUDA で共通）、CPU 版 `src/core/ae_span.{h,cpp}`、GPU `src/gpu/ae_span.cu`（`--fmad=false`、`tools/build_ptx.ps1` が `ae_span_ptx.h` を生成）と `GpuAeSpans`（`gpu_raster.cpp`、コピー 1 枚ずつ、写る範囲だけ転送、テクスチャは `g_texGen`（HookTex で増える）で再転送）、フック `bee_hooks.cpp` の `HookA3dDraw` → `DrawCopyOurs` → `OurIterate`（対応外: 描き込み先の種類が 1 以外＝循環の塊など、8 bit 以外、動きのぼかしの標本 2 以上、画質 2、合成 2 以外、ライト、マスク、合成の表、CPU の旗 0、GPU の失敗 → AE が描く）。チェックの値はコピーの不透明度のフックで読んだ値（`NoteMergeSeen`、全スレッド共通）。以前の群れの方式は `RANDAMU_MERGE_OLD=1` のときだけ。作りかけの順序グラフの規則（0225fd9）は戻した（`ae_order.*` は使われないまま残っている）。診断 `RANDAMU_A3D_DRAW`: 0 AE だけ、1 記録、2 コピーを飛ばす、3 捕獲（`RANDAMU_A3D_CAPSUB`=番号の並び、`RANDAMU_A3D_CAPW`=幅、`RANDAMU_A3D_CAPDIR`）、4 画素の計算なし、5 我々の CPU、6 我々の GPU。
+- **確かめた試験:** 単体 ALL PASS（74、捕獲との照合は `RANDAMU_SPAN_CAP=<dir;dir>` のとき）、`build/gpu/gpu_test.exe` GPU ALL PASS（捕獲 14 枚＝`build/test/cap1`・`capT/s*`・`capA/s*` を GPU で描いて AE とビット一致）、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（オンとオフが全部の回で完全一致、`check_merge.py` を新方式の判定に変更）、`run_ref.ps1` REF ALL PASS、`run_ui.ps1` UI ALL PASS。利用者のシーン（`run_user_time.ps1`、`RANDAMU_A3D_DRAW=6` で）: Test.aep 100 枚 30 フレーム完全一致・花の分 157→16 ms、Test A 30 フレーム完全一致・花の分 43→20 ms。
+- **未解決: 利用者の「レイヤーのレンダリング時間」（画面）は Test A の 380 枚で約 900 ms だが、レンダーキューでは花の分が 15〜30 ms しかなく（ぶれ ±20 ms）、利用者の測り方を再現できていない。** 画面では別の重さ（コピーごとの何か）がある可能性。→ 利用者に新しい版で同じ表示を見てもらう（20・100・380 枚、オン・オフ）。重いままなら `run_preview.ps1`（画面の経路）で内訳を調べる。
+- 次の候補: 画面の重さの調査、16/32 bit・画質 2（バイキュービック）への対応、群れの方式のコード（merge_plan など）の整理、手引き `docs/randamu-quickstart.md` の「軽量化」の節の書き直し。
+
 ## 再開の手順（2026-11-26 午後、規則の方針を利用者に相談中）
 
 - **単体テストの 9 件の FAIL の原因（診断の表示を `unit_tests.cpp` に追加して確認）:** (b) `merge_tilted_wall_sides` は手前の 5 枚が同じ z=100 のカメラ正面で重なる → ties 8（循環 0）。(c) `merge_ambiguous_no_merge` は回した 1 枚が壁と画面で重ならない（y≥202、壁は 200 まで）ので AE の規則では辺がなく循環 0（ties 7 は同じ z の 5 枚）。試験の配置が家の例を再現していない（`aegraph.py` の家の連鎖のような、橋渡しの面がいる）。field 1000 枚は循環 9 枚、free 5000 枚は全部が 1 つの塊（回したコピー同士が本当に交わる）。stress は時間切れ。
