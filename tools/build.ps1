@@ -5,7 +5,7 @@
 #   pwsh tools/build.ps1 -Target gpu     # tests\gpu -> build\gpu\gpu_test.exe (runs on an NVIDIA GPU)
 #   pwsh tools/build.ps1 -Target all
 param([ValidateSet("effect", "unit", "dump", "gpu", "all")][string]$Target = "effect",
-      [string]$Configuration = "Debug")
+      [string]$Configuration = "Release")  # the user's AE loads dev_plugins\randamu.aex: Release unless debugging
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 

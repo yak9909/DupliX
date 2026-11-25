@@ -738,12 +738,151 @@ void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_
 }
 // a new texture may have been made: the GPU copy of AE's textures (core/ae_span) is uploaded again
 std::atomic<unsigned long long> g_texGen{1};
+// RANDAMU_A3D_TIME=1: what each texture request asked and got (are the copies' textures the same?)
+LogLimit g_texArgLog;
+void LogTexArgs(void* trace, unsigned u, const double* v2, const double* rect, void** world, const double* m3)
+{
+    static const bool on = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    if (!on || !world || !*world || *(int*)((uintptr_t)*world + 44) < 64 || !g_texArgLog.Take(3000)) return;
+    int sub = -9;
+    const void* layer = nullptr;
+    if (trace) {
+        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+        if (v) sub = *(int*)(v + bee::kArtLayerToSubIndex), layer = *(void**)(v + bee::kArtLayerToLayer);
+    }
+    const uintptr_t w = world ? (uintptr_t)*world : 0;
+    const unsigned char* data = w ? *(const unsigned char**)(w + 32) : nullptr;
+    const int rb = w ? *(int*)(w + 40) : 0, ww = w ? *(int*)(w + 44) : 0, hh = w ? *(int*)(w + 48) : 0;
+    uint64_t h = 1469598103934665603ull;
+    if (data)
+        for (int y = 0; y < hh; y++)
+            for (int x = 0; x < 4 * ww; x += 4) h = (h ^ *(const uint32_t*)(data + (size_t)y * rb + x)) * 1099511628211ull;
+    RLog("a3d tex args: layer %p sub %d u %u v2 %g %g rect %g %g %g %g -> %dx%d rb %d hash %016llx m3 %g %g %g %g %g %g %g %g %g",
+         layer, sub, u, v2 ? v2[0] : -1, v2 ? v2[1] : -1, rect ? rect[0] : -1, rect ? rect[1] : -1, rect ? rect[2] : -1,
+         rect ? rect[3] : -1, ww, hh, rb, (unsigned long long)h, m3 ? m3[0] : 0, m3 ? m3[1] : 0, m3 ? m3[2] : 0, m3 ? m3[3] : 0,
+         m3 ? m3[4] : 0, m3 ? m3[5] : 0, m3 ? m3[6] : 0, m3 ? m3[7] : 0, m3 ? m3[8] : 0);
+}
+// ---- the merge checkbox: one texture per layer and frame. Classic 3D asks AEGP for each sub-layer's texture while it
+// draws it (SY_TTextureFetcher, keyed by the sub-layer), and each request runs the layer's render (the effects'
+// pre-render and the caches, ~1 ms in the viewer). Every copy is the same layer at the same time, so within one
+// frame's drawing (HookA3dDraw, one thread) a request equal to an earlier one (same layer, hints, scale, rect) gets a
+// copy of the first texture (AE disposes it like its own: AEGP_New, as the earlier group planes did).
+struct SharedTex {
+    const void* rc;  // the render context
+    const void* layer;
+    unsigned u;
+    double v2[2], rect[4];
+    bool hasV2, hasRect;
+    AEGP_WorldH master;  // ours (a copy of AE's first texture)
+    double m3[9];
+};
+thread_local std::vector<SharedTex> t_shared;
+thread_local int t_inA3dDraw = 0;           // inside HookA3dDraw on this thread
+thread_local bool t_shareOn = false;        // the drawn surface's layer has the merge on
+thread_local uintptr_t t_shareCtx = 0;      // the drawing context the shared textures belong to
+std::atomic<long long> g_texShared{0}, g_texFetched{0};
+LogLimit g_texShareLog;
+
+AEGP_WorldSuite3* WorldSuite()
+{
+    static AEGP_WorldSuite3* ws = nullptr;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        SPBasicSuite* sp = HookPica();
+        if (sp && sp->AcquireSuite(kAEGPWorldSuite, kAEGPWorldSuiteVersion3, (const void**)&ws)) ws = nullptr;
+    });
+    return ws;
+}
+// a new world with src's pixels (null on failure)
+AEGP_WorldH CopyOfWorld(AEGP_WorldH src)
+{
+    AEGP_WorldSuite3* ws = WorldSuite();
+    if (!ws || !src) return nullptr;
+    AEGP_WorldType type = AEGP_WorldType_NONE;
+    A_long w = 0, h = 0;
+    A_u_long rb = 0, orb = 0;
+    if (ws->AEGP_GetType(src, &type) || ws->AEGP_GetSize(src, &w, &h) || ws->AEGP_GetRowBytes(src, &rb) || w <= 0 || h <= 0)
+        return nullptr;
+    const int bpp = type == AEGP_WorldType_8 ? 4 : type == AEGP_WorldType_16 ? 8 : type == AEGP_WorldType_32 ? 16 : 0;
+    if (!bpp) return nullptr;
+    AEGP_WorldH out = nullptr;
+    if (ws->AEGP_New(HookPluginId(), type, w, h, &out) || !out) return nullptr;
+    auto base = [&](AEGP_WorldH wh) -> unsigned char* {
+        if (type == AEGP_WorldType_8) {
+            PF_Pixel8* p = nullptr;
+            return ws->AEGP_GetBaseAddr8(wh, &p) ? nullptr : (unsigned char*)p;
+        }
+        if (type == AEGP_WorldType_16) {
+            PF_Pixel16* p = nullptr;
+            return ws->AEGP_GetBaseAddr16(wh, &p) ? nullptr : (unsigned char*)p;
+        }
+        PF_PixelFloat* p = nullptr;
+        return ws->AEGP_GetBaseAddr32(wh, &p) ? nullptr : (unsigned char*)p;
+    };
+    const unsigned char* s = base(src);
+    unsigned char* d = base(out);
+    if (!s || !d || ws->AEGP_GetRowBytes(out, &orb)) {
+        ws->AEGP_Dispose(out);
+        return nullptr;
+    }
+    for (A_long y = 0; y < h; y++) std::memcpy(d + (size_t)y * orb, s + (size_t)y * rb, (size_t)w * bpp);
+    return out;
+}
+void DropSharedTextures()
+{
+    AEGP_WorldSuite3* ws = WorldSuite();
+    for (SharedTex& s : t_shared)
+        if (ws && s.master) ws->AEGP_Dispose(s.master);
+    t_shared.clear();
+}
+bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned u, const double* v2, const double* rect)
+{
+    if (s.rc != rc || s.layer != layer || s.u != u || s.hasV2 != (v2 != nullptr) || s.hasRect != (rect != nullptr)) return false;
+    if (v2 && (s.v2[0] != v2[0] || s.v2[1] != v2[1])) return false;
+    if (rect)
+        for (int k = 0; k < 4; k++)
+            if (s.rect[k] != rect[k]) return false;
+    return true;
+}
+
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
     const auto t0 = std::chrono::steady_clock::now();
+    const void* shareLayer = nullptr;
+    if (t_inA3dDraw && t_shareOn && trace && world && m3) {
+        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+        const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
+        if (layer && *(int*)(v + bee::kArtLayerToSubIndex) >= 0 && IsMine(layer)) {
+            shareLayer = layer;
+            for (const SharedTex& s : t_shared)
+                if (SameRequest(s, ctx, layer, u, v2, rect)) {
+                    AEGP_WorldH c = CopyOfWorld(s.master);
+                    if (!c) break;
+                    *world = (void*)c;
+                    std::memcpy(m3, s.m3, sizeof(s.m3));
+                    g_texGen++;  // a new world (maybe at a freed one's address): the GPU copy is uploaded again
+                    int n = 0;
+                    if (g_texShareLog.Take(3, true, &n))
+                        RLog("merge: texture shared %lld (fetched %lld)", ++g_texShared, g_texFetched.load());
+                    else
+                        ++g_texShared;
+                    return 0;
+                }
+        }
+    }
     int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
+    if (shareLayer && !r && *world && t_shared.size() < 16) {
+        SharedTex s = {};
+        s.rc = ctx, s.layer = shareLayer, s.u = u, s.hasV2 = v2 != nullptr, s.hasRect = rect != nullptr;
+        if (v2) s.v2[0] = v2[0], s.v2[1] = v2[1];
+        if (rect) std::memcpy(s.rect, rect, sizeof(s.rect));
+        std::memcpy(s.m3, m3, sizeof(s.m3));
+        s.master = CopyOfWorld((AEGP_WorldH)*world);
+        if (s.master) t_shared.push_back(s), ++g_texFetched;
+    }
     g_texGen++;
     LogTexTime(trace, "tex", t0);
+    if (!r) LogTexArgs(trace, u, v2, rect, world, m3);
     if (!r) SwapGroupTexture(trace, world, m3, "tex");
     return r;
 }
@@ -1081,7 +1220,23 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         int seen = L && sb >= 0 ? MergeSeenOf(L) : 0;
         if (seen < 0) seen = IsMine(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
         const double lookMs = s_time ? since(tA) : 0;
-        if (seen > 0 && !OldMerge() && IsMine(L)) {
+        const bool ours = seen > 0 && !OldMerge() && IsMine(L);
+        // the shared textures (HookTex) live for one frame's drawing on this thread: sub_180012B30 counts the
+        // surfaces drawn so far at ctx+kCtxProgressCount (0 at a frame's first surface) out of ctx+kCtxProgressTotal
+        if (ctx != t_shareCtx || *(int*)(ctx + a3d::kCtxProgressCount) == 0) DropSharedTextures(), t_shareCtx = ctx;
+        struct InDraw {
+            uintptr_t ctx;
+            bool prev;
+            InDraw(uintptr_t c, bool on) : ctx(c), prev(t_shareOn) { ++t_inA3dDraw, t_shareOn = on; }
+            ~InDraw()
+            {
+                --t_inA3dDraw, t_shareOn = prev;
+                if (*(int*)(ctx + a3d::kCtxProgressCount) >= *(int*)(ctx + a3d::kCtxProgressTotal)) DropSharedTextures();
+            }
+        } inDraw(ctx, ours);
+        // RANDAMU_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels
+        static const bool s_aePix = GetEnvironmentVariableA("RANDAMU_A3D_AEPIX", ev, sizeof(ev)) > 0 && ev[0] == '1';
+        if (ours && !s_aePix) {
             t_aeGpu = true;
             t_gt = rnd::GpuAeSpanTimes(), t_gtAll = -1, t_gtRows = 0;
             const auto tB = std::chrono::steady_clock::now();

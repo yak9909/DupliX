@@ -5,7 +5,9 @@
 # `AfterFX.exe -r` reach the running instance once its startup has finished).
 #   pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test.aep" [-Frames 40] [-IntervalMs 600]
 param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 40, [int]$IntervalMs = 600,
-      [string]$Variants = "pv_asis,pv_one,pv_real10", [string]$Layer = "")
+      [string]$Variants = "pv_asis,pv_one,pv_real10", [string]$Layer = "", [int]$Edit = -1)
+# -Edit <frame>: instead of timing, preview_edit.jsx edits DupliX's parameters on the variants at that frame and
+# check_preview_edit.py compares each edited frame with a fresh duplicate's
 $env:RANDAMU_PV_LAYER = $Layer
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -21,7 +23,7 @@ $exe = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files\AfterFX.ex
 # AfterFX.exe cannot take paths with spaces: everything goes through %TEMP%. Never open the user's file.
 $scene = Join-Path $env:TEMP "randamu_preview.aep"
 Copy-Item (Resolve-Path $Aep).Path $scene -Force
-foreach ($s in "preview_setup", "preview_step") { Copy-Item (Join-Path $PSScriptRoot "$s.jsx") (Join-Path $env:TEMP "randamu_$s.jsx") -Force }
+foreach ($s in "preview_setup", "preview_step", "preview_edit") { Copy-Item (Join-Path $PSScriptRoot "$s.jsx") (Join-Path $env:TEMP "randamu_$s.jsx") -Force }
 
 $env:RANDAMU_TEST_DIR = $out -replace '\\', '/'
 $env:RANDAMU_LOG = Join-Path $out "plugin.log"
@@ -52,7 +54,14 @@ try {
         if ($l -like "EXCEPTION*") { throw $l }
         $p = $l -split " "; $vars[$p[0]] = [int]$p[1]
     }
-    foreach ($v in $Variants -split ",") {
+    if ($Edit -ge 0) {
+        Set-Content -Encoding utf8NoBOM (Join-Path $out "step_cmd.txt") "$Variants $Edit"
+        Send-Script "preview_edit"
+        if (-not (Wait-File (Join-Path $out "step_done.txt") 900)) { Write-Host "TIMEOUT edit" }
+        Get-Content (Join-Path $out "step_done.txt") -ErrorAction SilentlyContinue
+        $Variants = ""
+    }
+    foreach ($v in $Variants -split "," | Where-Object { $_ }) {
         Remove-Item (Join-Path $out "step_done.txt") -ErrorAction SilentlyContinue
         Set-Content -Encoding utf8NoBOM (Join-Path $out "step_cmd.txt") "$v $Frames $IntervalMs"
         Send-Script "preview_step"
@@ -63,6 +72,7 @@ try {
     if (-not $ae.HasExited) { $null = Stop-AeHidden -Process $ae -TimeoutSec 20 }
     $null = Repair-AeCrashState
 }
+if ($Edit -ge 0) { & (Join-Path $root "spike\.venv\Scripts\python.exe") (Join-Path $PSScriptRoot "check_preview_edit.py") $out; exit $LASTEXITCODE }
 
 # Summary: "timing:" lines with drawn copies, per comp (first frame of each variant dropped: it includes
 # setup work). Lines without copies are AE's pre-render passes over the whole comp, not drawn frames.

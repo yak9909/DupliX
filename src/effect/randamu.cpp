@@ -239,6 +239,54 @@ int EffectIndexOnLayer(AEGP_EffectSuite4* es, AEGP_LayerH L, AEGP_EffectRefH eff
     return -1;
 }
 
+// Whether the values the hooks read for this layer at this render's time may differ from what they read before:
+// a fingerprint of every parameter (PF_CHECKOUT_PARAM: the values AE evaluated for this render) and of the layer's
+// anchor point, compared with the last one seen for the same layer and time. AE pre-renders the effect once or
+// twice per copy and frame with the same values; advancing the hooks' cache generation on each of them made the
+// hooks read the parameters through AEGP for every copy (~0.5 ms each). An edit (keyframe, expression, script,
+// effect controls) shows up as a new fingerprint at that time. Unknown (or evicted) time: changed.
+bool ParamsChangedAt(PF_InData* in_data, AEGP_LayerH L, rnd::LayerKey key)
+{
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* p, size_t n) {
+        for (size_t i = 0; i < n; i++) h = (h ^ ((const unsigned char*)p)[i]) * 1099511628211ull;
+    };
+    for (int i = RP_COUNT; i < RP_NUM_PARAMS; i++) {
+        PF_ParamDef d;
+        AEFX_CLR_STRUCT(d);
+        if (PF_CHECKOUT_PARAM(in_data, i, in_data->current_time, in_data->time_step, in_data->time_scale, &d))
+            return true;
+        mix(&d.param_type, sizeof(d.param_type));
+        mix(&d.u, sizeof(d.u));
+        PF_CHECKIN_PARAM(in_data, &d);
+    }
+    A_Time t = {in_data->current_time, (A_u_long)in_data->time_scale};
+    if (t.scale == 0) t.scale = 1;
+    double ax = 0, ay = 0;
+    if (!rnd::ReadLayerAnchor(L, t, &ax, &ay)) return true;
+    mix(&ax, sizeof(ax)), mix(&ay, sizeof(ay));
+    struct Seen {
+        rnd::LayerKey k;
+        A_long tv;
+        A_u_long ts;
+        uint64_t h;
+        bool used;
+    };
+    static std::mutex mu;
+    static Seen seen[256] = {};
+    static int next = 0;
+    std::lock_guard<std::mutex> lk(mu);
+    for (Seen& s : seen)
+        if (s.used && s.k.compItemId == key.compItemId && s.k.layerId == key.layerId && s.tv == t.value && s.ts == t.scale) {
+            const bool changed = s.h != h;
+            s.h = h;
+            return changed;
+        }
+    seen[next] = {key, t.value, t.scale, h, true};
+    next = (next + 1) % 256;
+    return true;
+}
+
 // Where RegisterSelf takes the parameter values from.
 enum class ParamSource {
     Array,      // the params[] AE passed with the command
@@ -279,7 +327,8 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     if (src == ParamSource::Aegp && rnd::EffectTypeKeyKnown()) {
         rnd::ParamSnapshot cur;
         if (rnd::RegLookup(key, &cur) && cur.valid) {
-            rnd::RegTouch();  // new render: values cached by the hooks may be stale (keyframes edited)
+            // values cached by the hooks may be stale (an edit at this time): only then a new generation
+            if (ParamsChangedAt(in_data, L, key)) rnd::RegTouch();
             return SelfState::Ready;
         }
     }
@@ -1098,6 +1147,13 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
     static std::atomic<int> dbg{0};
     int d = ++dbg;
     if (d <= 200) RLog("dbg: cmd %d enter", (int)cmd);
+    {
+        // RANDAMU_CMDLOG=1 (diagnostics): every command with its thread and time
+        static const bool s_cmdLog = GetEnvironmentVariableA("RANDAMU_CMDLOG", nullptr, 0) > 0;
+        if (s_cmdLog && in_data)
+            RLog("cmd: %d main %d time %d/%u", (int)cmd, (int)rnd::IsMainThread(), (int)in_data->current_time,
+                 (unsigned)in_data->time_scale);
+    }
     try {
         switch (cmd) {
         case PF_Cmd_GLOBAL_SETUP:
