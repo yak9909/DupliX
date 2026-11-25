@@ -57,8 +57,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="*.cpp" />
-    <ClCompile Include="..\..\src\core\*.cpp" Exclude="..\..\src\core\raster.cpp;..\..\src\core\raster_ref.cpp;..\..\src\core\tiles.cpp;..\..\src\core\merge_plan.cpp;..\..\src\core\merge_geom.cpp" />
-    <ClCompile Include="..\..\src\core\raster.cpp;..\..\src\core\raster_ref.cpp;..\..\src\core\tiles.cpp;..\..\src\core\merge_plan.cpp;..\..\src\core\merge_geom.cpp">
+    <ClCompile Include="..\..\src\core\*.cpp" Exclude="..\..\src\core\raster.cpp;..\..\src\core\raster_ref.cpp;..\..\src\core\tiles.cpp;..\..\src\core\merge_plan.cpp;..\..\src\core\merge_geom.cpp;..\..\src\core\ae_order.cpp" />
+    <ClCompile Include="..\..\src\core\raster.cpp;..\..\src\core\raster_ref.cpp;..\..\src\core\tiles.cpp;..\..\src\core\merge_plan.cpp;..\..\src\core\merge_geom.cpp;..\..\src\core\ae_order.cpp">
       <Optimization>MaxSpeed</Optimization>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
     </ClCompile>

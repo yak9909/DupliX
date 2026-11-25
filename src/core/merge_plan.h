@@ -106,7 +106,8 @@ struct MergeLayerPlan {
 struct MergePlan {
     int rounds = 0;  // BuildMergePlan's rounds (diagnostics)
     bool overBudget = false;  // the budget ran out: nothing merges this frame
-    bool ambiguous = false;   // a copy and another surface straddle each other's planes: nothing merges this frame
+    bool ambiguous = false;   // AE would order part of this frame its arbitrary way (core/ae_order.h): no merging
+    int aeCycle = 0, aeTies = 0;  // diagnostics: surfaces in AE's cycles, level overlapping pairs
     double ms[4] = {0, 0, 0, 0};  // diagnostics: time in sides / neighbours / grouping / depths
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
@@ -132,6 +133,7 @@ struct MergeOptions {
     // by one costs far more (about 14 ms a copy in the user's scene), and a frame that merges only sometimes would
     // flicker by the 1-2 levels merged copies differ.
     double budgetMs = 200;
+    int rule = 0;  // diagnostics: 0 normal, 1 without the AE order check (core/ae_order.h)
 };
 // The plan (spec 5.5, 5.9; Task 4: orders are judged where the copies' own quads are). Every group: copies of one
 // layer that, against every surface overlapping them on screen (other 3D layers, individual copies, copies of

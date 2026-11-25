@@ -111,7 +111,10 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     // the log generation (changes only when a test switches logs): each test render builds and logs its own plan
     const unsigned long long h = HashMergeScene(in) ^ ((unsigned long long)RLogGeneration() * 0x9E3779B97F4A7C15ull);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
-        MergePlan p = BuildMergePlan(in);
+        MergeOptions opt;
+        char rv[8] = {0};  // diagnostics: RANDAMU_MERGE_RULE=1 / 2 (MergeOptions::rule)
+        if (GetEnvironmentVariableA("RANDAMU_MERGE_RULE", rv, sizeof(rv)) > 0) opt.rule = atoi(rv);
+        MergePlan p = BuildMergePlan(in, opt);
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
         char fv[96] = {0};
         double wp[3];

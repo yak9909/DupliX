@@ -7,8 +7,11 @@ import numpy as np
 
 sys.setrecursionlimit(100000)
 plan = sys.argv[1]
-watch = [int(v) for v in sys.argv[2:]]
+merged = "--merged" in sys.argv  # the merged scene: grouped copies replaced by their group planes
+grow = 24.0  # (merged) a group plane's rect grown by this much (render-time alignment, conservative)
+watch = [int(v) for v in sys.argv[2:] if v != "--merged"]
 nodes = []  # (name, screen quad 4x2, world corners 4x3)
+clusters = []
 for line in open(plan):
     t = line.split()
     if t[0] == "cam":
@@ -21,9 +24,13 @@ for line in open(plan):
         w = np.array([[x * m[0, j] + y * m[1, j] + m[3, j] for j in range(3)] for x, y in pts])
         nodes.append(("plane", None, w))
     elif t[0] == "copy":
+        if merged and int(t[4]) >= 0:
+            continue
         q = np.array([float(v) for v in t[9:17]]).reshape(4, 2)
         w = np.array([float(v) for v in t[18:30]]).reshape(4, 3)
         nodes.append((f"copy{t[2]}", q, w))
+    elif t[0] == "cluster":
+        clusters.append((float(t[2]), [float(v) for v in t[4:8]]))
 # camera: world -> camera space (rows of M are scaled axes)
 R = M[:3, :3].copy()
 sc = np.linalg.norm(R, axis=1)
@@ -35,6 +42,15 @@ def to_screen(p):
 for i, (n, q, w) in enumerate(nodes):
     if q is None:
         nodes[i] = (n, np.array([to_screen(p)[0] for p in w]), w)
+if merged:
+    # a group plane: its screen rect facing the camera at the plan's depth d (the plan's camera space is scaled
+    # like the camera's matrix rows)
+    for k, (d, r) in enumerate(clusters):
+        dz = d * sc[2]
+        r = [r[0] - grow, r[1] - grow, r[2] + grow, r[3] + grow]
+        sq = np.array([(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])], float)
+        w = np.array([o + Rn.T @ np.array([(x - W / 2) * dz / dist, (y - H / 2) * dz / dist, dz]) for x, y in sq])
+        nodes.append((f"group{k}", sq, w))
 def depth_at(w, x, y):
     # camera z where the ray through screen (x, y) meets the plane of w
     d = np.array([x - W / 2, y - H / 2, dist])
@@ -109,4 +125,6 @@ print(f"nodes {n}, components {len(comps)}, multi-node {len(big)}: sizes {sorted
 for c in big:
     names = [nodes[k][0] for k in c]
     hit = [w for w in watch if f"copy{w}" in names]
-    print(f"  size {len(c)} plane={'plane' in names} watched={hit}")
+    groups = [x for x in names if x.startswith("group")]
+    print(f"  size {len(c)} plane={'plane' in names} groups={groups} watched={hit}")
+    print("    members:", " ".join(sorted(names)))

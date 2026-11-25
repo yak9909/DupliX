@@ -1223,15 +1223,21 @@ TEST(merge_tilted_wall_sides)
     std::vector<PlanCopy> cs;
     for (int i = 0; i < 5; i++) cs.push_back({170.0 + i * 15, 150, 100, 30, 0});  // 0..4 in front
     for (int i = 0; i < 5; i++) cs.push_back({170.0 + i * 15, 150, 1000, 30, 0});  // 5..9 behind
-    for (int i = 0; i < 3; i++) cs.push_back({185.0 + i * 15, 120 + i * 30.0, 500, 60, 0});  // 10..12 pierce it
     in.layers.push_back(PlanLayer(7, cs));
     rnd::MergePlan p = rnd::BuildMergePlan(in);
     const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
-    CHECK(lp.clusters.size() == 2 && Individuals(lp) == 3);
-    for (int i = 10; i < 13; i++) CHECK(GroupOf(lp, i) < 0);
-    CHECK(GroupOf(lp, 0) >= 0 && GroupOf(lp, 0) == GroupOf(lp, 4) && GroupOf(lp, 5) == GroupOf(lp, 9) &&
-          GroupOf(lp, 0) != GroupOf(lp, 5));
-    CHECK(lp.clusters[GroupOf(lp, 0)].depth < lp.clusters[GroupOf(lp, 5)].depth);
+    CHECK(!p.ambiguous && lp.clusters.size() == 2 && Individuals(lp) == 0);
+    const int gf = GroupOf(lp, 0), gb = GroupOf(lp, 5);
+    CHECK(gf >= 0 && gf == GroupOf(lp, 4) && gb >= 0 && gb == GroupOf(lp, 9) && gf != gb);
+    if (gf >= 0 && gb >= 0 && gf < (int)lp.clusters.size() && gb < (int)lp.clusters.size())
+        CHECK(lp.clusters[gf].depth < lp.clusters[gb].depth);
+    // copies that pierce the wall form cycles with it in AE's order (drawn through its fragment buffer): the frame
+    // does not merge
+    for (int i = 0; i < 3; i++) cs.push_back({185.0 + i * 15, 120 + i * 30.0, 500, 60, 0});  // 10..12 pierce it
+    in.layers[0] = PlanLayer(7, cs);
+    rnd::MergePlan q = rnd::BuildMergePlan(in);
+    const auto& lq = q.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(q.ambiguous && q.aeCycle > 0 && lq.clusters.empty() && Individuals(lq) == 13);
 }
 
 TEST(quads_intersect_3d)
@@ -1258,13 +1264,13 @@ TEST(merge_ambiguous_no_merge)
     in.layers.push_back(PlanLayer(7, cs));
     rnd::MergePlan p = rnd::BuildMergePlan(in);
     const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
-    CHECK(p.ambiguous);
+    CHECK(p.ambiguous && p.aeCycle > 0);
     CHECK(lp.clusters.empty() && Individuals(lp) == 6);
-    // the same copy moved up into the wall pierces it: AE cuts it exactly, the others merge
-    in.layers[0] = PlanLayer(7, {cs[0], cs[1], cs[2], cs[3], cs[4], {200, 170, 500, 60, 72}});
+    // without the turned copy the others merge
+    in.layers[0] = PlanLayer(7, {cs[0], cs[1], cs[2], cs[3], cs[4]});
     rnd::MergePlan q = rnd::BuildMergePlan(in);
     const auto& lq = q.layers.at(rnd::MergeLayerKey(1, 7));
-    CHECK(!q.ambiguous && lq.clusters.size() == 1 && GroupOf(lq, 5) < 0);
+    CHECK(!q.ambiguous && lq.clusters.size() == 1);
 }
 
 TEST(merge_side_free)
