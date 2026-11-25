@@ -1100,6 +1100,237 @@ TEST(single_group_plan)
     for (int i = 0; i < 6; i++) CHECK(lb.subs[i].copy == i && lb.subs[i].cluster < 0);
 }
 
+// ---- BuildMergePlan (Task 5). World = comp px; the default camera of a 400x300 comp at distance 800 sits at
+// (200, 150, -800) looking down +z: world z w is camera-space z w + 800.
+static rnd::CameraView PlanCam()
+{
+    rnd::CameraView c;
+    rnd::DefaultCamera(400, 300, 800, &c);
+    return c;
+}
+// layer px (0..120, 0..100) -> a w x h rectangle centred at (cx, cy, z), turned rotY degrees about its vertical axis
+static void RectToWorld(double cx, double cy, double z, double w, double h, double rotY, double out[16])
+{
+    const double a = rotY * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a);
+    const double S[16] = {w / 120, 0, 0, 0, 0, h / 100, 0, 0, 0, 0, 1, 0, -w / 2, -h / 2, 0, 1};
+    const double R[16] = {c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, cx, cy, z, 1};
+    rnd::Mul4(S, R, out);
+}
+struct PlanCopy {
+    double cx, cy, z, size, rotY;
+};
+static rnd::MergeLayerInput PlanLayer(int layerId, const std::vector<PlanCopy>& copies, unsigned block = 0)
+{
+    rnd::MergeLayerInput l;
+    l.compItemId = 1;
+    l.layerId = layerId;
+    l.p.count = (int)copies.size();
+    l.p.merge = true;
+    const double r[4] = {0, 0, 120, 100}, I[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::memcpy(l.srcRect, r, sizeof(r));
+    std::memcpy(l.layerToWorld, I, sizeof(I));
+    for (const PlanCopy& c : copies) {
+        double m[16];
+        RectToWorld(c.cx, c.cy, c.z, c.size, c.size, c.rotY, m);
+        l.explicitCopies.insert(l.explicitCopies.end(), m, m + 16);
+    }
+    l.block = block;
+    return l;
+}
+static rnd::ScenePlane PlanWall(double cx, double cy, double z, double w, double h, double rotY, bool unbounded = false)
+{
+    rnd::ScenePlane p;
+    RectToWorld(cx, cy, z, w, h, rotY, p.toWorld);
+    const double r[4] = {0, 0, 120, 100};
+    std::memcpy(p.rect, r, sizeof(r));
+    p.unbounded = unbounded;
+    return p;
+}
+static int Individuals(const rnd::MergeLayerPlan& lp)
+{
+    int n = 0;
+    for (auto& s : lp.subs) n += s.copy >= 0;
+    return n;
+}
+static int GroupOf(const rnd::MergeLayerPlan& lp, int copy)
+{
+    for (size_t g = 0; g < lp.clusters.size(); g++)
+        for (int c : lp.clusters[g].copies)
+            if (c == copy) return (int)g;
+    return -1;
+}
+
+TEST(merge_free_one_group)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 50; i++) cs.push_back({60.0 + (i * 37) % 280, 40.0 + (i * 53) % 220, 200.0 + (i * 71) % 600, 40, (double)(i * 13 % 70)});
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(lp.clusters.size() == 1 && lp.subs.size() == 1 && lp.clusters[0].copies.size() == 50);
+}
+
+TEST(merge_wall_splits)
+{
+    // a wall covering the screen at world z 500 (camera z 1300); 20 copies in front, 20 behind
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 2000, 2000, 0));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 40; i++) cs.push_back({80.0 + (i * 37) % 240, 60.0 + (i * 53) % 180, i < 20 ? 300.0 + i * 5 : 550.0 + i * 3, 40, 0});
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(lp.clusters.size() == 2 && Individuals(lp) == 0);
+    const int gf = GroupOf(lp, 0), gb = GroupOf(lp, 39);
+    CHECK(gf >= 0 && gb >= 0 && gf != gb);
+    for (int i = 0; i < 40; i++) CHECK(GroupOf(lp, i) == (i < 20 ? gf : gb));
+    CHECK(lp.clusters[gf].depth < 1300 && lp.clusters[gb].depth > 1300);
+}
+
+TEST(merge_tilted_wall_sides)
+{
+    // a 300 x 300 wall turned 60 degrees through (200, 150, 500): copies clearly in front, clearly behind, and three
+    // that pierce it
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 300, 300, 60));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 5; i++) cs.push_back({170.0 + i * 15, 150, 100, 30, 0});  // 0..4 in front
+    for (int i = 0; i < 5; i++) cs.push_back({170.0 + i * 15, 150, 1000, 30, 0});  // 5..9 behind
+    for (int i = 0; i < 3; i++) cs.push_back({185.0 + i * 15, 120 + i * 30.0, 500, 60, 0});  // 10..12 pierce it
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(lp.clusters.size() == 2 && Individuals(lp) == 3);
+    for (int i = 10; i < 13; i++) CHECK(GroupOf(lp, i) < 0);
+    CHECK(GroupOf(lp, 0) >= 0 && GroupOf(lp, 0) == GroupOf(lp, 4) && GroupOf(lp, 5) == GroupOf(lp, 9) &&
+          GroupOf(lp, 0) != GroupOf(lp, 5));
+    CHECK(lp.clusters[GroupOf(lp, 0)].depth < lp.clusters[GroupOf(lp, 5)].depth);
+}
+
+TEST(merge_side_free)
+{
+    // a narrow wall at the screen's centre; copies at the same depth in the free space left and right of it
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 40, 300, 0));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 10; i++) cs.push_back({i < 5 ? 60.0 + i * 5 : 330.0 + i * 5, 60.0 + i * 18, 480.0 + i * 4, 30, 0});
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(lp.clusters.size() == 1 && lp.subs.size() == 1);
+}
+
+TEST(merge_near_plane_individual)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 6; i++) cs.push_back({100.0 + i * 40, 150, 300, 40, 0});
+    cs.push_back({260, 150, -790, 300, 80});  // crosses the camera's plane (z -800), beside the camera
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(GroupOf(lp, 6) < 0 && Individuals(lp) >= 1);
+    CHECK(GroupOf(lp, 0) >= 0 && GroupOf(lp, 0) == GroupOf(lp, 5));
+}
+
+TEST(merge_blocked_layer)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 6; i++) cs.push_back({100.0 + i * 40, 150, 300, 40, 0});
+    in.layers.push_back(PlanLayer(7, cs, rnd::MB_LIGHTS));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(lp.clusters.empty() && lp.subs.size() == 6);
+    for (int i = 0; i < 6; i++) CHECK(lp.subs[i].copy == i);
+}
+
+TEST(merge_group_depth_order)
+{
+    // two merge-on layers overlapping on screen: A (z 300..400) in front of B (z 600..700)
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    std::vector<PlanCopy> a, b;
+    for (int i = 0; i < 10; i++) a.push_back({120.0 + i * 15, 150, 300.0 + i * 10, 40, 0});
+    for (int i = 0; i < 10; i++) b.push_back({120.0 + i * 15, 160, 600.0 + i * 10, 40, 0});
+    in.layers.push_back(PlanLayer(7, a));
+    in.layers.push_back(PlanLayer(8, b));
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    const auto& la = p.layers.at(rnd::MergeLayerKey(1, 7));
+    const auto& lb = p.layers.at(rnd::MergeLayerKey(1, 8));
+    CHECK(la.clusters.size() == 1 && lb.clusters.size() == 1);
+    CHECK(la.clusters[0].depth < lb.clusters[0].depth);
+    // interleaved: A at 300 and 900, B at 600, all overlapping: A's near and far copies cannot share a group
+    rnd::MergeSceneInput in2;
+    in2.cam = PlanCam();
+    std::vector<PlanCopy> a2, b2;
+    for (int i = 0; i < 5; i++) a2.push_back({150.0 + i * 20, 150, 300, 60, 0});
+    for (int i = 0; i < 5; i++) a2.push_back({150.0 + i * 20, 150, 900, 60, 0});
+    for (int i = 0; i < 5; i++) b2.push_back({150.0 + i * 20, 150, 600, 60, 0});
+    in2.layers.push_back(PlanLayer(7, a2));
+    in2.layers.push_back(PlanLayer(8, b2));
+    rnd::MergePlan p2 = rnd::BuildMergePlan(in2);
+    const auto& la2 = p2.layers.at(rnd::MergeLayerKey(1, 7));
+    const auto& lb2 = p2.layers.at(rnd::MergeLayerKey(1, 8));
+    const int gn = GroupOf(la2, 0), gf = GroupOf(la2, 5);
+    CHECK(gn < 0 || gf < 0 || gn != gf);
+    if (gn >= 0 && GroupOf(lb2, 0) >= 0) CHECK(la2.clusters[gn].depth < lb2.clusters[GroupOf(lb2, 0)].depth);
+    if (gf >= 0 && GroupOf(lb2, 0) >= 0) CHECK(la2.clusters[gf].depth > lb2.clusters[GroupOf(lb2, 0)].depth);
+}
+
+TEST(merge_area_cap)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 10; i++) cs.push_back({20.0 + i * 40, 20.0 + i * 28, 300, 40, 0});  // spread over the screen
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergeOptions o;
+    o.maxAreaScreens = 0.3;
+    rnd::MergePlan p = rnd::BuildMergePlan(in, o);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    double area = 0;
+    for (auto& c : lp.clusters) area += (c.rect[2] - c.rect[0]) * (c.rect[3] - c.rect[1]);
+    CHECK(area <= 0.3 * 400 * 300 + 1e-6);
+}
+
+static void PlanSpeed(const char* name, int n, int walls, double size, double maxMs, bool expectGroups)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    for (int k = 0; k < walls; k++) in.planes.push_back(PlanWall(400.0 * (k + 0.5) / walls, 150, 100.0 + 50 * k, 60, 300, 30.0 * (k % 3)));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < n; i++)
+        cs.push_back({(double)((i * 37) % 400), (double)((i * 53) % 300), 50.0 + (i * 71) % 1200, size, (double)(i * 13 % 70)});
+    in.layers.push_back(PlanLayer(7, cs));
+    auto t0 = std::chrono::steady_clock::now();
+    rnd::MergePlan p = rnd::BuildMergePlan(in);
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    std::printf("  %s: %d copies, %d walls: %.1f ms, %d rounds (pre %.0f, filter %.0f, groups %.0f, depths %.0f ms)%s, %zu groups, "
+                "%d individual\n",
+                name, n, walls, ms, p.rounds, p.ms[0], p.ms[1], p.ms[2], p.ms[3], p.overBudget ? " OVER BUDGET" : "",
+                lp.clusters.size(), Individuals(lp));
+    CHECK(ms < maxMs);
+    if (p.overBudget) CHECK(lp.clusters.empty() && (int)lp.subs.size() == n);  // nothing merges
+    if (expectGroups) CHECK(!p.overBudget && !lp.clusters.empty());
+}
+
+// a bounded cost however dense the scene (past the budget nothing merges), and a realistic scene merges quickly
+TEST(merge_plan_speed)
+{
+    PlanSpeed("merge_plan_speed (stress)", 5000, 20, 20, 600, false);  // the budget (200 ms) bounds it
+    PlanSpeed("merge_plan_speed (field)", 1000, 3, 30, 100, true);
+    PlanSpeed("merge_plan_speed (free)", 5000, 0, 20, 100, true);
+}
+
 // The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in
 // ScatterParams' padding (the saved sequence data keeps its size); it is off by default.
 TEST(params_merge_last)

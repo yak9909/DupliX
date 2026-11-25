@@ -62,6 +62,9 @@ struct MergeLayerInput {
     double layerToWorld[16];
     double srcRect[4];   // the layer's own rect (layer px), as the copies are drawn
     unsigned block = 0;  // MergeBlock reasons (0: may merge)
+    // Unit tests only: when not empty, copy i's matrix layer px -> world is explicitCopies[16 i .. 16 i + 15]
+    // (opacity 1) instead of the scatter parameters; p.count must be its size / 16.
+    std::vector<double> explicitCopies;
 };
 
 struct MergeSceneInput {
@@ -99,6 +102,9 @@ struct MergeLayerPlan {
     std::vector<MergeCluster> clusters;
 };
 struct MergePlan {
+    int rounds = 0;  // BuildMergePlan's rounds (diagnostics)
+    bool overBudget = false;  // the budget ran out: nothing merges this frame
+    double ms[4] = {0, 0, 0, 0};  // diagnostics: time in sides / neighbours / grouping / depths
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
 };
@@ -107,6 +113,22 @@ inline long long MergeLayerKey(int compItemId, int layerId) { return ((long long
 // Task 3 (interim): every copy of a layer that may merge (block 0, in front of the camera, opacity > 0) in one group
 // at the depth of its nearest copy; the others one by one. A group of one copy is drawn as that copy.
 MergePlan BuildSingleGroupPlan(const MergeSceneInput& in);
+
+struct MergeOptions {
+    double marginPx = 3;          // screen overlap tests grow every quad by this much (edge filtering)
+    double maxAreaScreens = 2;    // the groups' textures together cover at most this many comp screens
+    int maxRounds = 40;           // rounds of "a conflict makes copies individual, plan again"
+    // past this the frame does not merge (every copy one by one): a bounded cost. Generous: AE drawing the copies one
+    // by one costs far more (about 14 ms a copy in the user's scene), and a frame that merges only sometimes would
+    // flicker by the 1-2 levels merged copies differ.
+    double budgetMs = 200;
+};
+// The plan (spec 5.5, 5.9; Task 4: orders are judged where the copies' own quads are). Every group: copies of one
+// layer that, against every surface overlapping them on screen (other 3D layers, individual copies, copies of
+// other groups), are all on the same side of it; its plane's depth d keeps every such order where its copies are
+// (in front of what it is in front of, behind the rest), and groups overlapping each other are ordered by d like
+// their contents. Copies that cannot be grouped are drawn one by one.
+MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt = MergeOptions());
 
 // A hash of everything a plan depends on (camera, layers, parameters, surfaces).
 unsigned long long HashMergeScene(const MergeSceneInput& in);

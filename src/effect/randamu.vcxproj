@@ -86,9 +86,9 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
   <ItemGroup>
     <ClCompile Include="*.cpp" />
     <!-- raster_ref.cpp is the unit tests' reference only -->
-    <ClCompile Include="..\core\*.cpp" Exclude="..\core\raster.cpp;..\core\tiles.cpp;..\core\raster_ref.cpp" />
+    <ClCompile Include="..\core\*.cpp" Exclude="..\core\raster.cpp;..\core\tiles.cpp;..\core\raster_ref.cpp;..\core\merge_plan.cpp;..\core\merge_geom.cpp" />
     <!-- the fast mode's rasterizer is optimised in every configuration (AE loads the Debug build) -->
-    <ClCompile Include="..\core\raster.cpp;..\core\tiles.cpp;..\gpu\*.cpp">
+    <ClCompile Include="..\core\raster.cpp;..\core\tiles.cpp;..\core\merge_plan.cpp;..\core\merge_geom.cpp;..\gpu\*.cpp">
       <Optimization>MaxSpeed</Optimization>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
     </ClCompile>

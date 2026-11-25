@@ -15,6 +15,19 @@ struct ScreenQuad {
 };
 ScreenQuad ProjectRect(const CameraView& cam, const double toWorld[16], const double rect[4]);
 
+// Convex quads overlap on screen (each grown by marginPx).
+bool QuadsOverlap(const ScreenQuad& a, const ScreenQuad& b, double marginPx);
+
+// The infinite plane of a rectangle (toWorld: layer px -> world): +1 if the four world points are all on the
+// camera's side of it, -1 if all on the other side, 0 if they straddle it (or touch it).
+int SideOfPlane(const double planeToWorld[16], const double camPos[3], const double pts[4][3]);
+// The world corners of rect under toWorld.
+void RectCorners(const double toWorld[16], const double rect[4], double out[4][3]);
+
+// Camera-space z where the ray through comp px (sx, sy) meets the plane of planeToWorld (layer z = 0); false if it
+// does not (parallel, or behind the camera).
+bool PlaneDepthAt(const CameraView& cam, const double planeToWorld[16], double sx, double sy, double* z);
+
 // The sub-layer matrix of a group plane: the layer's texture rect texRect (layer px, as AE clips the texture)
 // facing the camera at camera-space depth d, covering the screen rect `rect` (full-resolution comp px,
 // left, top, right, bottom). layerToWorld: the layer's own transform (AE multiplies it after the sub-layer's).
