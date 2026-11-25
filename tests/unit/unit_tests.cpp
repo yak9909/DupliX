@@ -14,8 +14,10 @@
 #include <chrono>
 #include <new>
 #include <thread>
+#include <string>
 #include <vector>
 
+#include "core/ae_span.h"
 #include "core/fast_plane.h"
 #include "core/merge_geom.h"
 #include "core/merge_plan.h"
@@ -1683,6 +1685,102 @@ TEST(vec_reserve_small_and_aligned)
     CHECK(v.last == v.first && v.end - v.first == 12800);
     CHECK(rnd::bee::VecReserve(&v, 128, 200));  // grow again, frees the aligned block correctly
     CHECK(v.end - v.first == 25600);
+}
+
+// ---- AE's span drawing (core/ae_span) against captures of AE drawing a copy (RANDAMU_A3D_DRAW=3). The capture
+// directories come from RANDAMU_SPAN_CAP (separated by ';'); without it the test only checks the pieces.
+static std::vector<unsigned char> ReadAll(const std::string& path)
+{
+    std::vector<unsigned char> b;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return b;
+    fseek(f, 0, SEEK_END);
+    b.resize((size_t)ftell(f));
+    fseek(f, 0, SEEK_SET);
+    if (!b.empty() && fread(b.data(), 1, b.size(), f) != b.size()) b.clear();
+    fclose(f);
+    return b;
+}
+template <class T> static T At(const std::vector<unsigned char>& b, size_t off)
+{
+    T v{};
+    if (off + sizeof(T) <= b.size()) std::memcpy(&v, b.data() + off, sizeof(T));
+    return v;
+}
+static void SpanCapture(const std::string& dir)
+{
+    const auto st = ReadAll(dir + "\\state.bin"), pa = ReadAll(dir + "\\params.bin"), sm = ReadAll(dir + "\\samples.bin");
+    const auto th = ReadAll(dir + "\\tex_hdr.bin"), tx = ReadAll(dir + "\\tex.bin"), rows = ReadAll(dir + "\\rows.bin");
+    CHECK(!st.empty() && !pa.empty() && sm.size() >= 72 && !th.empty() && !tx.empty() && !rows.empty());
+    if (st.empty() || pa.empty() || sm.size() < 72 || th.empty() || tx.empty() || rows.empty()) return;
+    static rnd::AeRcpTable rcp;
+    rnd::AeFillRcpTable(&rcp);
+    rnd::AeSpanParams p;
+    const int si = At<int>(st, 0x30);
+    for (int k = 0; k < 9; k++) p.m[k] = At<double>(sm, 72 * (size_t)si + 8 * k);
+    p.persp = st[0x98] != 0, p.a0 = At<double>(st, 0xA0), p.quality = st[0xA8];
+    p.opacity = At<double>(pa, 0x20), p.colorMode = pa[0x5B];
+    p.rcp = &rcp;
+    rnd::AeTex8 t;
+    t.data = tx.data(), t.rowbytes = At<int>(th, 40), t.width = At<int>(th, 44), t.height = At<int>(th, 48);
+    long long pixels = 0, bad = 0;
+    int shown = 0;
+    for (size_t o = 0; o + 20 <= rows.size();) {
+        const int y = At<int>(rows, o + 4), x0 = At<int>(rows, o + 8), x1 = At<int>(rows, o + 12), n = At<int>(rows, o + 16);
+        o += 20;
+        if (n <= 0) continue;
+        std::vector<unsigned char> buf(rows.begin() + o, rows.begin() + o + n);
+        const unsigned char* after = rows.data() + o + n;
+        o += 2 * (size_t)n;
+        rnd::AeDrawSpan8(p, t, x0, x1, y, buf.data() - 4 * (ptrdiff_t)x0);
+        for (int i = 0; i < n / 4; i++) {
+            pixels++;
+            if (std::memcmp(&buf[4 * i], after + 4 * i, 4)) {
+                if (shown++ < 8)
+                    std::printf("  span %s: (%d, %d) ours %d %d %d %d AE %d %d %d %d\n", dir.c_str(), x0 + i, y, buf[4 * i],
+                                buf[4 * i + 1], buf[4 * i + 2], buf[4 * i + 3], after[4 * i], after[4 * i + 1], after[4 * i + 2],
+                                after[4 * i + 3]);
+                bad++;
+            }
+        }
+    }
+    std::printf("  ae_span %s: %lld pixels, %lld differ (quality %d, persp %d, texture %dx%d)\n", dir.c_str(), pixels, bad,
+                p.quality, (int)p.persp, t.width, t.height);
+    CHECK(pixels > 0 && bad == 0);
+}
+
+TEST(ae_span_pieces)
+{
+    // a constant texture samples as itself; in-front transfer of opaque / transparent sources
+    unsigned char tex[4 * 4 * 4];
+    for (int i = 0; i < 16; i++) tex[4 * i] = 255, tex[4 * i + 1] = 10, tex[4 * i + 2] = 20, tex[4 * i + 3] = 30;
+    rnd::AeTex8 t;
+    t.data = tex, t.rowbytes = 16, t.width = 4, t.height = 4;
+    unsigned char o[4];
+    rnd::AeSubpixelSample8(t, 0x18000, 0x14000, o);
+    CHECK(o[0] == 255 && o[1] == 10 && o[2] == 20 && o[3] == 30);
+    rnd::AeAreaSample8(t, 0x20000, 0x20000, 0x10000, 0x10000, o);
+    CHECK(o[0] == 255 && o[1] == 10 && o[2] == 20 && o[3] == 30);
+    static rnd::AeRcpTable rcp;
+    rnd::AeFillRcpTable(&rcp);
+    unsigned char d[4] = {255, 1, 2, 3}, s[4] = {255, 9, 8, 7};
+    rnd::AeXferInFront8(s, 255, rcp, d);
+    CHECK(!std::memcmp(d, s, 4));
+    unsigned char s0[4] = {0, 9, 8, 7}, d0[4] = {255, 1, 2, 3};
+    rnd::AeXferInFront8(s0, 255, rcp, d0);
+    CHECK(d0[1] == 1 && d0[2] == 2 && d0[3] == 3);
+    char env[2048] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {
+        std::string all = env;
+        size_t a = 0;
+        while (a <= all.size()) {
+            const size_t b = all.find(';', a);
+            const std::string dir = all.substr(a, b == std::string::npos ? std::string::npos : b - a);
+            if (!dir.empty()) SpanCapture(dir);
+            if (b == std::string::npos) break;
+            a = b + 1;
+        }
+    }
 }
 
 int main()

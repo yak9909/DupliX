@@ -7,6 +7,10 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <chrono>
 
 #include "core/fast_plane.h"
 #include "core/scatter.h"
@@ -861,7 +865,9 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     // RANDAMU_A3D_DRAW=3: capture the first draw of copy RANDAMU_A3D_CAPSUB (default 0) into RANDAMU_A3D_CAPDIR:
     // the draw's raster state and texture, the surface, and every row's target span before and after AE drew it
     // (the reference for an exact copy of AE's span drawing)
-    static std::atomic<int> s_capDone{0};
+    // RANDAMU_A3D_CAPSUB may list several copies ("0,5,9"); each goes to RANDAMU_A3D_CAPDIR\s<copy>
+    static std::mutex s_capDoneMu;
+    static std::vector<int> s_capDone;
     static bool s_cap = false;
     static std::string s_capDir;
     static std::mutex s_capMu;
@@ -871,18 +877,34 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     };
     static std::vector<CapRow> s_capRows;
     s_cap = false;
-    if (mode == 3 && mine && !s_capDone.load()) {
-        char sv[16] = {0}, dir[512] = {0};
-        const int want = GetEnvironmentVariableA("RANDAMU_A3D_CAPSUB", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
+    if (mode == 3 && mine) {
+        char sv[256] = {0}, dir[512] = {0};
+        bool listed = false;
+        if (GetEnvironmentVariableA("RANDAMU_A3D_CAPSUB", sv, sizeof(sv)) > 0) {
+            for (const char* q = sv; *q;) {
+                if (atoi(q) == sub) listed = true;
+                const char* c = strchr(q, ',');
+                if (!c) break;
+                q = c + 1;
+            }
+        } else {
+            listed = sub == 0;
+        }
         // RANDAMU_A3D_CAPW: only a target of this width (buffer: +32 data, +40 rowbytes, +44 width, +48 height)
         const int wantW = GetEnvironmentVariableA("RANDAMU_A3D_CAPW", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
         const unsigned char* tgt = *(int*)a7 == 1 ? *(const unsigned char**)(a7 + 8) : nullptr;
         const bool widthOk = !wantW || (tgt && *(const int*)(tgt + 44) == wantW);
-        if (sub == want && widthOk && GetEnvironmentVariableA("RANDAMU_A3D_CAPDIR", dir, sizeof(dir)) > 0 &&
-            !s_capDone.exchange(1)) {
-            s_cap = true, s_capDir = dir;
-            s_capRows.clear();
+        bool first = false;
+        if (listed && widthOk) {
+            std::lock_guard<std::mutex> lk(s_capDoneMu);
+            first = std::find(s_capDone.begin(), s_capDone.end(), sub) == s_capDone.end();
+            if (first) s_capDone.push_back(sub);
+        }
+        if (first && GetEnvironmentVariableA("RANDAMU_A3D_CAPDIR", dir, sizeof(dir)) > 0) {
             CreateDirectoryA(dir, nullptr);
+            s_cap = true, s_capDir = std::string(dir) + "\\s" + std::to_string(sub);
+            s_capRows.clear();
+            CreateDirectoryA(s_capDir.c_str(), nullptr);
             auto dump = [&](const char* name, const void* p, size_t n) {
                 FILE* f = fopen((s_capDir + "\\" + name).c_str(), "wb");
                 if (f) fwrite(p, 1, n, f), fclose(f);
@@ -891,7 +913,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             dump("ctx.bin", (const void*)ctx, 512);
             const unsigned char* tb = *(const unsigned char**)(a7 + 8);
             dump("target_hdr.bin", tb, 128);
-            RLog("a3d capture: sub %d into %s (kind %d)", sub, dir, *(int*)a7);
+            RLog("a3d capture: sub %d into %s (kind %d)", sub, s_capDir.c_str(), *(int*)a7);
         }
     }
     // the draw's pixel loop: the ctx's iterate function (+224, rows on AE's threads); its time apart from the setup
@@ -960,7 +982,8 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
                 const uintptr_t pfb = (uintptr_t)pf;
                 typedef void* (*GetXferFn)(int);
                 auto gx = (GetXferFn)GetProcAddress(pf, "?PF_Get_Xfer1_Opacity_table8@@YAP6AXPEBVPF_Pixel8@@PEBUPF_LinearBlendingTables@@EPEAV1@@ZH@Z");
-                const uintptr_t area = *(const uintptr_t*)(pfb + 0x425A28);
+                const uintptr_t area = *(const uintptr_t*)(pfb + 0x425A28), area1 = *(const uintptr_t*)(pfb + 0x425A18);
+                RLog("a3d capture: PF qword_180425A18 -> +%llx", (unsigned long long)(area1 - pfb));
                 RLog("a3d capture: PF base %p area sampler +%llx xfer[%d] +%llx", (void*)pf, (unsigned long long)(area - pfb),
                      lp ? lp[0x18] & 0x7F : -1, gx && lp ? (unsigned long long)((uintptr_t)gx(lp[0x18] & 0x7F) - pfb) : 0ull);
             }
