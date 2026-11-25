@@ -1,5 +1,7 @@
 #include "effect/transfer.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "hook/bee_hooks.h"
@@ -27,8 +29,9 @@ struct Acquired {
 }  // namespace
 
 TransferResult TransferLayerToWorld(PF_InData* in_data, AEGP_PluginID id, const rnd::WorldXform& cur,
-                                    rnd::WorldXform* out)
+                                    rnd::WorldXform* out, bool* worldChanged)
 {
+    *worldChanged = false;
     SPBasicSuite* sp = in_data->pica_basicP;
     Acquired<AEGP_PFInterfaceSuite1> pfi(sp, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
     Acquired<AEGP_LayerSuite9> ls(sp, kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
@@ -62,7 +65,46 @@ TransferResult TransferLayerToWorld(PF_InData* in_data, AEGP_PluginID id, const 
          (int)ct.scale);
     if (!rnd::TransferToWorld(cur, m, ax, ay, (double)w, (double)h, out)) return TransferResult::Failed;
 
-    // 2. the layer to its initial 2D state, as one undo step
+    // 2. checks, still before any change
+    Acquired<AEGP_DynamicStreamSuite4> ds(sp, kAEGPDynamicStreamSuite, kAEGPDynamicStreamSuiteVersion4);
+    {
+        AEGP_StreamRefH s = nullptr;
+        A_Boolean sep = FALSE;
+        if (ds && !ss->AEGP_GetNewLayerStream(id, L, AEGP_LayerStream_POSITION, &s) && s) {
+            ds->AEGP_AreDimensionsSeparated(s, &sep);
+            ss->AEGP_DisposeStream(s);
+        }
+        if (sep) return TransferResult::RefusedSeparated;
+    }
+    double gCur[16], gNew[16], d = 0;
+    rnd::WorldM4(cur, ax, ay, gCur);
+    rnd::WorldM4(*out, ax, ay, gNew);
+    for (int i = 0; i < 16; i++) d = std::max(d, std::fabs(gCur[i] - gNew[i]));
+    *worldChanged = d > 1e-6;
+    if (*worldChanged) {
+        // Writing params[] of a keyframed parameter adds a keyframe at this time only (dev log 11/25): the
+        // other keyframes would miss the layer's transform. Refuse instead.
+        Acquired<AEGP_EffectSuite4> es(sp, kAEGPEffectSuite, kAEGPEffectSuiteVersion4);
+        AEGP_EffectRefH eff = nullptr;
+        bool animated = false;
+        if (!es || pfi->AEGP_GetNewEffectForEffect(id, in_data->effect_ref, &eff) || !eff) return TransferResult::Failed;
+        for (int i = RP_WORLD_POS_X; i <= RP_WORLD_SCALE_Z && !animated; i++) {
+            AEGP_StreamRefH s = nullptr;
+            if (ss->AEGP_GetNewEffectStreamByIndex(id, eff, i, &s) || !s) continue;
+            A_long nk = 0;
+            A_Boolean expr = FALSE;
+            animated = (!ks->AEGP_GetStreamNumKFs(s, &nk) && nk > 0) ||
+                       (!ss->AEGP_GetExpressionState(id, s, &expr) && expr);
+            ss->AEGP_DisposeStream(s);
+        }
+        es->AEGP_DisposeEffect(eff);
+        if (animated) {
+            *worldChanged = false;
+            return TransferResult::RefusedWorldAnimated;
+        }
+    }
+
+    // 3. the layer to its initial 2D state, as one undo step
     bool dropped = false, failed = false;
     us->AEGP_StartUndoGroup("Fast Mode");
     auto reset = [&](AEGP_LayerStream which, double x, double y, double z) {
@@ -108,7 +150,7 @@ TransferResult TransferLayerToWorld(PF_InData* in_data, AEGP_PluginID id, const 
     RLog("transfer: layer->world pos (%.2f,%.2f,%.2f) rot (%.2f,%.2f,%.2f) scale (%.2f,%.2f,%.2f) dropped=%d failed=%d",
          out->pos[0], out->pos[1], out->pos[2], out->rotDeg[0], out->rotDeg[1], out->rotDeg[2], out->scale[0],
          out->scale[1], out->scale[2], (int)dropped, (int)failed);
-    if (failed) return TransferResult::Failed;
+    if (failed) return TransferResult::Partial;  // the layer changed: the World Transform must still be written
     return dropped ? TransferResult::DoneAnimationDropped : TransferResult::Done;
 }
 

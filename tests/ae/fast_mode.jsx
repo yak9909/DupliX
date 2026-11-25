@@ -24,6 +24,8 @@
         {name: "fast_identity", params: {count: 1}, world: {pos: [0, -10, 0], rot: [25, -30, 10]}, camMoved: true},
         {name: "fast_scatter", params: scatter, world: world},
         {name: "fast_anim", params: scatter, world: world, anim: true, frames: 30},
+        // only the camera moves (still image, static World Transform): AE must not reuse a cached frame
+        {name: "fast_camonly", params: scatter, world: world, camAnim: true, frames: 30},
         {name: "fast_half", params: scatter, world: world, half: true},
         {name: "fast_nocam", params: scatter, world: world, noCam: true},
         {name: "fast_count0", params: {count: 0}, world: world},
@@ -77,7 +79,7 @@
         T.threeDLayer = !fast;
         tg(T).property("ADBE Position").setValue(fast ? [W / 2, H / 2] : [W / 2, H / 2, 0]);
         if (c.anim) T.startTime = -0.4;  // layer time != comp time
-        if (cam && c.anim) {
+        if (cam && (c.anim || c.camAnim)) {
             var cp = tg(cam).property("ADBE Position");
             var p0 = cp.value;
             cp.setValueAtTime(0, [p0[0] - 150, p0[1] - 60, p0[2]]);
@@ -164,9 +166,9 @@
             } else if (!c.move2d) {
                 addRQ(build(c, false), c);
             }
-            if (c.anim) {
+            if (c.anim || c.camAnim) {
                 var order = [29, 3, 17, 0, 11, 24, 8, 21];
-                for (var k = 0; k < order.length; k++) png(fm, "single_" + order[k], order[k] / 30);
+                for (var k = 0; k < order.length; k++) png(fm, (c.anim ? "single_" : "camsingle_") + order[k], order[k] / 30);
             }
             log("built " + c.name);
         }

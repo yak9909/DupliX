@@ -143,7 +143,11 @@ struct SeqDataV2 {
 static_assert(sizeof(rnd::WorldXform) == 72, "WorldXform layout is saved in projects");
 static_assert(sizeof(SeqDataV2) == 192, "SeqDataV2 layout is saved in projects");
 
-enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, Need2D, FastAnimDropped, TransferFailed };
+enum class SelfState {
+    Ready, NoHooks, Not3D, Off, Unknown, Need2D,
+    // notes left by the last switch to fast mode
+    FastAnimDropped, TransferFailed, RefusedSeparated, RefusedWorldAnimated
+};
 
 // What the last switch to fast mode left to tell (per layer), shown while fast mode stays on.
 std::mutex g_noteMutex;
@@ -346,7 +350,13 @@ const char* StatusText(SelfState st)
     static const char* dropped = UiName("準備できています（レイヤーのアニメーションは写していません。取り消しで戻せます）",
                                         "Ready (the layer's animation was not moved; Undo restores it)");
     static const char* failed = UiName("レイヤーの変形をワールド変形に写せませんでした", "Could not move the layer transform");
+    static const char* separated = UiName("位置の次元が分割されているので、レイヤーの変形を写せません。分割を戻してからオンにし直してください",
+                                          "Position has separated dimensions: join them and turn Fast Mode on again");
+    static const char* worldAnim = UiName("ワールド変形にキーフレームがあるので、レイヤーの変形を写せません。レイヤーを初期状態にしてからオンにし直してください",
+                                          "World Transform is animated: reset the layer transform and turn Fast Mode on again");
     switch (st) {
+    case SelfState::RefusedSeparated: return separated;
+    case SelfState::RefusedWorldAnimated: return worldAnim;
     case SelfState::FastAnimDropped: return dropped;
     case SelfState::TransferFailed: return failed;
     case SelfState::Need2D: return need2d;
@@ -361,10 +371,13 @@ const char* StatusText(SelfState st)
 PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
     SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
-    if (st == SelfState::Ready && params[RP_FAST]->u.bd.value) {
+    if ((st == SelfState::Ready || st == SelfState::Need2D) && params[RP_FAST]->u.bd.value) {
         std::lock_guard<std::mutex> lk(g_noteMutex);
         auto it = g_transferNote.find(NoteKey(g_lastKey.compItemId, g_lastKey.layerId));
-        if (it != g_transferNote.end()) st = it->second;
+        // a refusal explains why the layer is still 3D; the others are shown while fast mode works
+        if (it != g_transferNote.end() &&
+            (st == SelfState::Need2D || it->second == SelfState::FastAnimDropped || it->second == SelfState::TransferFailed))
+            st = it->second;
     }
     PF_ParamDef copy = *params[RP_STATUS];
     copy.ui_flags |= PF_PUI_DISABLED;
@@ -387,8 +400,9 @@ void FastToggled(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[]
     SelfState note = SelfState::Ready;
     if (on) {
         rnd::WorldXform w;
-        TransferResult r = TransferLayerToWorld(in_data, g_pluginId, WorldFromArray(params), &w);
-        if (r != TransferResult::Failed) {
+        bool worldChanged = false;
+        TransferResult r = TransferLayerToWorld(in_data, g_pluginId, WorldFromArray(params), &w, &worldChanged);
+        if (worldChanged) {
             for (int k = 0; k < 3; k++) {
                 params[RP_WORLD_POS_X + k]->u.fs_d.value = w.pos[k];
                 params[RP_WORLD_ROT_X + k]->u.ad.value = FLOAT2FIX(w.rotDeg[k]);
@@ -398,9 +412,11 @@ void FastToggled(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[]
                 params[RP_WORLD_SCALE_X + k]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
             }
         }
-        note = r == TransferResult::Failed               ? SelfState::TransferFailed
-               : r == TransferResult::DoneAnimationDropped ? SelfState::FastAnimDropped
-                                                           : SelfState::Ready;
+        note = r == TransferResult::Failed || r == TransferResult::Partial ? SelfState::TransferFailed
+               : r == TransferResult::RefusedSeparated                     ? SelfState::RefusedSeparated
+               : r == TransferResult::RefusedWorldAnimated                 ? SelfState::RefusedWorldAnimated
+               : r == TransferResult::DoneAnimationDropped                 ? SelfState::FastAnimDropped
+                                                                           : SelfState::Ready;
     } else {
         SetLayer3D(in_data, true);
     }

@@ -65,6 +65,23 @@ def main() -> int:
            and s.get("wposX") == "0", f"after one Undo: {s}")
     dd = diff(png("toggle_parent_before"), png("toggle_parent_undo"))
     report("toggle_parent undo img", dd.max() <= 1, f"after one Undo vs before {stats(dd)}")
+    # refused cases: the layer is left exactly as it was (still 3D, parent/rotation kept), World untouched
+    s = states.get("toggle_separated_after", {})
+    report("toggle_separated", s.get("3d") == "true" and s.get("rotY") == "20" and s.get("wposX") == "0"
+           and s.get("fast") == "1", f"refused, layer unchanged: {s}")
+    s = states.get("toggle_world_keys_after", {})
+    k = states.get("toggle_world_keys_keys", {})
+    report("toggle_world_keys", s.get("3d") == "true" and s.get("rotY") == "26" and k.get("n") == "2"
+           and k.get("k2") == "40", f"refused, layer and keys unchanged: {s} {k}")
+    s = states.get("toggle_initial_keys_after", {})
+    k = states.get("toggle_initial_keys_keys", {})
+    report("toggle_initial_keys", s.get("3d") == "false" and k.get("n") == "2" and k.get("k2") == "40",
+           f"layer to 2D, World keys untouched: {s} {k}")
+    if (d / "toggle_initial_keys_before.png").exists() and (d / "toggle_initial_keys_after.png").exists():
+        dd = diff(png("toggle_initial_keys_before"), png("toggle_initial_keys_after"))
+        report("toggle_initial_keys img", dd.mean() <= 2.0 and (dd > 32).mean() <= 0.01, f"before vs after {stats(dd)}")
+    else:
+        report("toggle_initial_keys img", False, "png missing")
     print("TRANSFER ALL PASS" if fails == 0 else f"TRANSFER FAILURES: {fails}")
     return 0 if fails == 0 else 1
 

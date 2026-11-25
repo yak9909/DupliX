@@ -100,6 +100,38 @@
         c.fx.property(FAST).setValue(1);
         state("toggle_anim_after", c.layer, c.fx);
         png(c.comp, "toggle_anim_after");
+        // separated position dimensions: refused before anything changes (final review, item 1)
+        log("CASE toggle_separated");
+        var e = scene("toggle_separated");
+        var pe = tg(e.layer).property("ADBE Position");
+        pe.dimensionsSeparated = true;
+        tg(e.layer).property("ADBE Position_0").setValue(230);
+        tg(e.layer).property("ADBE Rotate Y").setValue(20);
+        e.fx.property(FAST).setValue(1);
+        state("toggle_separated_after", e.layer, e.fx);
+
+        // a keyframed World Transform with a layer not in its initial state: refused (final review, item 2)
+        log("CASE toggle_world_keys");
+        var f = scene("toggle_world_keys");
+        tg(f.layer).property("ADBE Rotate Y").setValue(26);
+        f.fx.property(WPOS).setValueAtTime(0, -40);
+        f.fx.property(WPOS).setValueAtTime(1, 40);
+        f.fx.property(FAST).setValue(1);
+        state("toggle_world_keys_after", f.layer, f.fx);
+        log("STATE toggle_world_keys_keys n=" + f.fx.property(WPOS).numKeys + " k2=" + f.fx.property(WPOS).keyValue(2));
+
+        // a keyframed World Transform with the layer already in its initial 3D state: nothing to move
+        log("CASE toggle_initial_keys");
+        var g2 = scene("toggle_initial_keys");
+        tg(g2.layer).property("ADBE Position").setValue([W / 2, H / 2, 0]);
+        g2.fx.property(WPOS).setValueAtTime(0, -40);
+        g2.fx.property(WPOS).setValueAtTime(1, 40);
+        g2.comp.time = 0.5;
+        png(g2.comp, "toggle_initial_keys_before");
+        g2.fx.property(FAST).setValue(1);
+        state("toggle_initial_keys_after", g2.layer, g2.fx);
+        log("STATE toggle_initial_keys_keys n=" + g2.fx.property(WPOS).numKeys + " k2=" + g2.fx.property(WPOS).keyValue(2));
+        png(g2.comp, "toggle_initial_keys_after");
         log("done");
     } catch (e) {
         log("EXCEPTION " + e.toString() + " line " + e.line);

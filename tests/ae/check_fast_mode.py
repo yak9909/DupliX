@@ -55,7 +55,7 @@ def main() -> int:
         report(name, ok, f"{tag}fast vs normal {stats(dd)}")
         return ok
 
-    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_half", "fast_nocam", "fast_count0", "fast_grow",
+    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_camonly", "fast_half", "fast_nocam", "fast_count0", "fast_grow",
              "fast_move2d", "fast_nohooks", "fast_remove"]
     for c in cases:
         if only and c not in only:
@@ -105,7 +105,7 @@ def main() -> int:
         elif c == "fast_count0":
             dd = diff(a, b)
             report(c, dd.max() <= 1, f"fast vs normal (no copies) {stats(dd)}")
-        elif c == "fast_anim":
+        elif c in ("fast_anim", "fast_camonly"):
             worst_mean, worst_frac, bad = 0.0, 0.0, []
             for f in range(30):
                 pa, pb = frame(d, "fm_" + c, f), frame(d, "nm_" + c, f)
@@ -118,7 +118,7 @@ def main() -> int:
                     bad.append(f"{f}:mean={dd.mean():.2f},>32={100 * (dd > 32).mean():.2f}%")
             report(c, not bad, f"30 frames fast vs normal: worst mean={worst_mean:.3f} >32={100 * worst_frac:.2f}% "
                                f"{' '.join(bad[:6])}")
-            for s in sorted(d.glob("single_*.png")):
+            for s in sorted(d.glob(("single_" if c == "fast_anim" else "camsingle_") + "*.png")):
                 f = int(s.stem.split("_")[1])
                 pa = frame(d, "fm_" + c, f)
                 if not pa.exists():
