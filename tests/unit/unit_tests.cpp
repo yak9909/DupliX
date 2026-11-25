@@ -1226,6 +1226,7 @@ TEST(merge_tilted_wall_sides)
     in.layers.push_back(PlanLayer(7, cs));
     rnd::MergePlan p = rnd::BuildMergePlan(in);
     const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    std::printf("  merge_tilted_wall_sides: AE cycle %d ties %d\n", p.aeCycle, p.aeTies);
     CHECK(!p.ambiguous && lp.clusters.size() == 2 && Individuals(lp) == 0);
     const int gf = GroupOf(lp, 0), gb = GroupOf(lp, 5);
     CHECK(gf >= 0 && gf == GroupOf(lp, 4) && gb >= 0 && gb == GroupOf(lp, 9) && gf != gb);
@@ -1264,6 +1265,7 @@ TEST(merge_ambiguous_no_merge)
     in.layers.push_back(PlanLayer(7, cs));
     rnd::MergePlan p = rnd::BuildMergePlan(in);
     const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    std::printf("  merge_ambiguous_no_merge: AE cycle %d ties %d\n", p.aeCycle, p.aeTies);
     CHECK(p.ambiguous && p.aeCycle > 0);
     CHECK(lp.clusters.empty() && Individuals(lp) == 6);
     // without the turned copy the others merge
@@ -1377,9 +1379,9 @@ static void PlanSpeed(const char* name, int n, int walls, double size, double ma
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
     std::printf("  %s: %d copies, %d walls: %.1f ms, %d rounds (pre %.0f, filter %.0f, groups %.0f, depths %.0f ms)%s, %zu groups, "
-                "%d individual\n",
+                "%d individual, AE cycle %d ties %d\n",
                 name, n, walls, ms, p.rounds, p.ms[0], p.ms[1], p.ms[2], p.ms[3], p.overBudget ? " OVER BUDGET" : "",
-                lp.clusters.size(), Individuals(lp));
+                lp.clusters.size(), Individuals(lp), p.aeCycle, p.aeTies);
     CHECK(ms < maxMs);
     if (p.overBudget) CHECK(lp.clusters.empty() && (int)lp.subs.size() == n);  // nothing merges
     if (expectGroups) CHECK(!p.overBudget && !lp.clusters.empty());
