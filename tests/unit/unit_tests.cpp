@@ -1048,6 +1048,20 @@ TEST(group_texture_m3)
     for (int k = 0; k < 4; k++) CHECK(std::fabs(r[k] - tex[k]) < 1e-9);
 }
 
+// A group rect (24 px aligned) grown to whole pixels of a 1/5 render; 1/1 and unknown (0) leave it as it is.
+TEST(align_rect_to_downsample)
+{
+    const double in[4] = {24, 48, 408, 312};
+    double r[4];
+    rnd::AlignRectToDownsample(in, 5, 3, r);
+    CHECK(r[0] == 20 && r[1] == 48 && r[2] == 410 && r[3] == 312);
+    rnd::AlignRectToDownsample(in, 1, 0, r);
+    for (int k = 0; k < 4; k++) CHECK(r[k] == in[k]);
+    const double neg[4] = {-24, -48, 0, 24};
+    rnd::AlignRectToDownsample(neg, 5, 7, r);
+    CHECK(r[0] == -25 && r[1] == -49 && r[2] == 0 && r[3] == 28);
+}
+
 // Many render threads asking for the same frame: the plan is built once and shared; new inputs rebuild it.
 TEST(plan_cache_one_build)
 {

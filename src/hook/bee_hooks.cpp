@@ -327,6 +327,7 @@ bool ParamsFor(const void* layer, const void* tm, ParamSnapshot* out)
 // ---- merge: the plan of `layer` at hook time `tm` (render threads only; s: its parameters). *lp: the layer's part
 // when it has a group (otherwise null: the layer is drawn as before). The returned pointer keeps *lp alive.
 std::atomic<bool> g_texHooked{false};  // both texture entry points are replaced: groups can be drawn
+thread_local AEGP_DownsampleFactor t_dsf = {0, 0};  // the render's downsample as Advanced3D last asked on this thread
 
 std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
                                              const MergeLayerPlan** lp)
@@ -498,6 +499,10 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     const MergeLayerPlan* lp = nullptr;
     auto plan = MergePlanOf((const void*)a, (const void*)c, s, false, &lp);
     size_t n = lp ? lp->subs.size() : (size_t)s.p.count;
+    {
+        static LogLimit probe;  // dbg: is the render's downsample known on this thread when the planes are placed?
+        if (lp && probe.Take(6)) RLog("dbg: rects with downsample (%d,%d) on this thread", (int)t_dsf.xS, (int)t_dsf.yS);
+    }
     if (!bee::VecReserve(vR, bee::kRectBytes, n) || !bee::VecReserve(v3, bee::kM3Bytes, n) ||
         !bee::VecReserve(v4, bee::kM4Bytes, n))
         return b;
@@ -516,7 +521,10 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
             Mul4(x.m4, G, m);
         } else {
             const MergeCluster& cl = lp->clusters[lp->subs[i].cluster];
-            if (!GroupPlaneM4(plan->cam, lp->in.layerToWorld, cl.depth, rect, cl.rect, m)) {
+            // on whole pixels of this render (Advanced3D asked its downsample on this thread before the planes)
+            double gr[4];
+            AlignRectToDownsample(cl.rect, t_dsf.xS, t_dsf.yS, gr);
+            if (!GroupPlaneM4(plan->cam, lp->in.layerToWorld, cl.depth, rect, gr, m)) {
                 static LogLimit warned;
                 if (warned.Take(5)) RLog("merge: group plane failed (depth %.2f)", cl.depth);
                 std::memset(m, 0, sizeof(m));  // a degenerate plane draws nothing
@@ -647,7 +655,8 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     auto plan = MergePlanOf(layer, tm, s, false, &lp);
     if (!lp || index >= (int)lp->subs.size() || lp->subs[index].cluster < 0) return;
     double out3[9];
-    AEGP_WorldH w1 = RenderGroupTexture((AEGP_WorldH)*world, m3, *plan, *lp, lp->clusters[lp->subs[index].cluster], out3);
+    AEGP_WorldH w1 = RenderGroupTexture((AEGP_WorldH)*world, m3, *plan, *lp, lp->clusters[lp->subs[index].cluster], t_dsf.xS,
+                                        t_dsf.yS, out3);
     if (!w1) {
         RLog("merge: texture failed (%s): drawing the group (comp %d layer %d sub %d)", which, k.compItemId, k.layerId, index);
         return;
@@ -728,6 +737,50 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     return err;
 }
 
+// ---- merge: the render's downsample factor. Advanced3D asks AEGP_CanvasSuite::AEGP_GetRenderDownsampleFactor;
+// the answer is remembered per thread for the hooks of the same render (Rects, texture).
+typedef A_Err (*GetDsfFn)(PR_RenderContextH, AEGP_DownsampleFactor*);
+GetDsfFn g_origGetDsf = nullptr;
+LogLimit g_dsfLog;
+
+A_Err HookGetDsf(PR_RenderContextH ctx, AEGP_DownsampleFactor* f)
+{
+    A_Err err = g_origGetDsf(ctx, f);
+    if (!err && f) {
+        t_dsf = *f;
+        if (g_dsfLog.Take(6)) RLog("dbg: render downsample (%d,%d) on this thread", (int)f->xS, (int)f->yS);
+    }
+    return err;
+}
+
+void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
+{
+    (void)a3dLo, (void)a3dHi;
+    // Advanced3D acquires the canvas suite with version 10: find its table's slot of the function by comparing
+    // with the SDK version's table (the same implementation)
+    void** t10 = nullptr;
+    AEGP_CanvasSuite8* t14 = nullptr;
+    if (!g_pica || g_pica->AcquireSuite(kAEGPCanvasSuite, 10, (const void**)&t10) || !t10 ||
+        g_pica->AcquireSuite(kAEGPCanvasSuite, kAEGPCanvasSuiteVersion8, (const void**)&t14) || !t14) {
+        RLog("merge: downsample hook not installed (suites)");
+        return;
+    }
+    void* fn = (void*)t14->AEGP_GetRenderDownsampleFactor;
+    int slot = -1;
+    for (int i = 0; i < 40; i++)
+        if (t10[i] == fn) { slot = i; break; }
+    if (slot < 0) {
+        RLog("merge: downsample hook not installed (slot not found)");
+        return;
+    }
+    g_origGetDsf = (GetDsfFn)t10[slot];
+    bool ok = WritePtr(&t10[slot], (void*)&HookGetDsf);
+    // the SDK version's table too (other artisans may use it)
+    if (ok && (void*)t14->AEGP_GetRenderDownsampleFactor == fn)
+        ok = WritePtr((void**)&t14->AEGP_GetRenderDownsampleFactor, (void*)&HookGetDsf);
+    RLog("merge: downsample hook %s (v10 slot %d)", ok ? "installed" : "failed", slot);
+}
+
 void InstallQualityHook()
 {
     HMODULE a3d = GetModuleHandleA("Advanced3D.aex");
@@ -745,6 +798,7 @@ void InstallQualityHook()
     g_origGetQuality = (GetLayerQualityFn)*slot;
     bool ok = WritePtr(slot, (void*)&HookGetLayerQuality);
     RLog("merge: quality hook %s (table %p slot %p)", ok ? "installed" : "failed", (void*)ls, (void*)slot);
+    InstallDownsampleHook(g_a3dLo, g_a3dHi);
 }
 
 // ---- installation

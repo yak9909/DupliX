@@ -40,4 +40,8 @@ void GroupTextureM3(const double texRect[4], int worldW, int worldH, double out[
 // The texture rect AE clips to: the layer px covered by a texture of w x h px under its matrix m3.
 void TextureLayerRect(const double m3[9], int w, int h, double out[4]);
 
+// A group's screen rect (full-resolution comp px) grown to whole pixels of a render downsampled by (nx, ny)
+// (multiples of n; n <= 1 leaves that axis as it is): the group plane then lies on the render's pixel grid.
+void AlignRectToDownsample(const double in[4], int nx, int ny, double out[4]);
+
 }  // namespace rnd

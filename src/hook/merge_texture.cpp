@@ -16,7 +16,7 @@
 namespace rnd {
 
 AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], const MergePlan& plan, const MergeLayerPlan& lp,
-                               const MergeCluster& c, double outM3[9])
+                               const MergeCluster& c, int dsfX, int dsfY, double outM3[9])
 {
     SPBasicSuite* sp = HookPica();
     AEGP_WorldSuite3* ws = nullptr;
@@ -63,15 +63,23 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
     if (!Invert3(texM3, inv) || !(texRect[2] > texRect[0]) || !(texRect[3] > texRect[1]) || !(full[2] > full[0]) ||
         !(full[3] > full[1]))
         return nullptr;
-    const double dsX = (texRect[2] - texRect[0]) / (full[2] - full[0]), dsY = (texRect[3] - texRect[1]) / (full[3] - full[1]);
-    const long dw = std::lround((c.rect[2] - c.rect[0]) * dsX), dh = std::lround((c.rect[3] - c.rect[1]) * dsY);
+    const bool known = dsfX >= 1 && dsfY >= 1;
+    const double dsX = known ? 1.0 / dsfX : (texRect[2] - texRect[0]) / (full[2] - full[0]);
+    const double dsY = known ? 1.0 / dsfY : (texRect[3] - texRect[1]) / (full[3] - full[1]);
+    double gr[4];  // the group's screen rect on whole render pixels (as the Rects hook placed the plane)
+    AlignRectToDownsample(c.rect, known ? dsfX : 1, known ? dsfY : 1, gr);
+    // the layer rect the group's world spans, in the texture's (downsampled) layer px: the layer's own rect at
+    // the render's scale (AE rounds the layer texture up, so texRect may be a little larger)
+    double spanRect[4] = {texRect[0], texRect[1], texRect[2], texRect[3]};
+    if (known) spanRect[0] = full[0] * dsX, spanRect[1] = full[1] * dsY, spanRect[2] = full[2] * dsX, spanRect[3] = full[3] * dsY;
+    const long dw = std::lround((gr[2] - gr[0]) * dsX), dh = std::lround((gr[3] - gr[1]) * dsY);
     {
         static LogLimit logged;
         if (logged.Take(6))
             RLog("merge: group texture from %dx%d bpc %d m3=[%.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f] texRect=(%.1f,%.1f,%.1f,%.1f) "
-                 "ds=(%.3f,%.3f) -> %ldx%ld",
+                 "ds=(%.4f,%.4f)%s -> %ldx%ld",
                  (int)w, (int)h, bpc, texM3[0], texM3[1], texM3[2], texM3[3], texM3[4], texM3[5], texM3[6], texM3[7], texM3[8],
-                 texRect[0], texRect[1], texRect[2], texRect[3], dsX, dsY, dw, dh);
+                 texRect[0], texRect[1], texRect[2], texRect[3], dsX, dsY, known ? " (render's)" : " (estimated)", dw, dh);
     }
     if (dw <= 0 || dh <= 0) return nullptr;
 
@@ -126,8 +134,8 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
         copies.push_back(rc);
     }
     RasterImage src = {base, (int)w, (int)h, (long)rb, bpc, 0, 0};
-    RasterImage dst = {obase, (int)dw, (int)dh, (long)orb, bpc, (int)std::lround(c.rect[0] * dsX),
-                       (int)std::lround(c.rect[1] * dsY)};
+    RasterImage dst = {obase, (int)dw, (int)dh, (long)orb, bpc, (int)std::lround(gr[0] * dsX),
+                       (int)std::lround(gr[1] * dsY)};
     unsigned hw = std::thread::hardware_concurrency();
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
@@ -141,7 +149,7 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
                  (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart);
         }
     }
-    GroupTextureM3(texRect, (int)dw, (int)dh, outM3);
+    GroupTextureM3(spanRect, (int)dw, (int)dh, outM3);
     return out;
 }
 

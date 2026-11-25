@@ -143,4 +143,13 @@ void TextureLayerRect(const double m3[9], int w, int h, double out[4])
     out[0] = mnx, out[1] = mny, out[2] = mxx, out[3] = mxy;
 }
 
+void AlignRectToDownsample(const double in[4], int nx, int ny, double out[4])
+{
+    const double fx = nx > 1 ? nx : 0, fy = ny > 1 ? ny : 0;
+    out[0] = fx ? std::floor(in[0] / fx) * fx : in[0];
+    out[1] = fy ? std::floor(in[1] / fy) * fy : in[1];
+    out[2] = fx ? std::ceil(in[2] / fx) * fx : in[2];
+    out[3] = fy ? std::ceil(in[3] / fy) * fy : in[3];
+}
+
 }  // namespace rnd
