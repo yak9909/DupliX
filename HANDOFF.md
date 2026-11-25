@@ -3,11 +3,12 @@
 ## 再開の手順（2026-11-26 8 時、画面での速さを修正済み・利用者の試用待ち）
 
 - **済み（commit 2bbac0d、push 済み）: 利用者の報告「新しい軽量化でも画面のレンダリング時間が変わらない（380 枚 700 ms〜1 秒）」を再現して直した。** 詳細は `docs/experiments/2026-11-26-dev-log.md`。原因は画面の経路でだけコピーごとに起きていた 2 つ: (1) AE がコピーごとにテクスチャを取り直す（約 1 ms）→ 軽量化オンのレイヤーは 1 フレームの描画の中で 1 枚目の複製を返す（`HookTex` の共有）。(2) サブレイヤーごとの PreRender が毎回フックのキャッシュの世代を進め、不透明度のフックが毎回 AEGP で読み直していた（約 0.55 ms）→ パラメーターとアンカーの指紋が変わったときだけ進める（`ParamsChangedAt`）。ほかに、テクスチャのフックの以前の方式の処理（約 0.9 ms）を `RANDAMU_MERGE_OLD=1` のときだけにした。
-- **結果（画面の経路 `run_preview.ps1`、Test A、span）: オン 20 / 100 / 380 枚 = 16 / 59 / 221 ms（修正前 84 / 323 / 1008）。オフは 52〜80 / 198〜215 / 640〜710。オンとオフの絵は差 0。** レンダーキュー: オン 152、オフ 183、花なし 163 ms/フレーム。
-- **確かめた試験:** 新しい編集の試験 `run_preview.ps1 ... -Variants "pv_on20,pv_off20,pv_on100" -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（共有が働いたことをログで確認）、`run_ref` REF ALL PASS、`run_ui` UI ALL PASS、単体 ALL PASS、`gpu_test` GPU ALL PASS、`run_user_merge.ps1`（Test A・Test）オン＝オフ。
-- **ビルドの既定を Release にした**（`tools/build.ps1`。それまで利用者が試していたのは Debug 版）。今の `dev_plugins\randamu.aex` は Release（7:49 のビルドの中身＝2bbac0d）。
-- **利用者の回答待ち:** 新しい版を画面で試してもらう（20・100・380 枚、オン・オフ）。目標は「100 枚で 50 ms 以下」（今は span 59 ms。利用者の画面の表示は保存の時間などを含まないので、もう少し小さく見える可能性）。
-- **次の候補（利用者の結果しだい）:** (a) 残りの 1 枚 約 0.55 ms の内訳（フックの時間 380 枚で約 70 ms＝Separately/Count/IsLayerType の呼び出し回数が多い、AE のサブレイヤーごとの処理）、(b) GPU の往復を連続するコピーでまとめる（今は 1 枚ずつ同期、約 0.3〜1 ms）、(c) 前からの候補（16/32 bit・画質 2、群れの方式のコードの整理、手引きの「軽量化」の節の書き直し）。
+- **結果（画面の経路 `run_preview.ps1`、Test A、span、最終ビルド 8:29）: オン 20 / 100 / 380 枚 = 19 / 57 / 237 ms（修正前 84 / 323 / 1008）。オフは 77 / 228 / 689。オンとオフの絵は差 0。目標の「100 枚で 50 ms 以下」にはまだ届いていない。** レンダーキュー: オン 152、オフ 183、花なし 163 ms/フレーム。
+- **テクスチャの共有の確認（助言役の指摘）:** 花の色が毎フレーム変わる変種 `pv_anim_on100`/`pv_anim_off100`（DupliX の前に塗り＋時刻の式）で、オン＝オフ差 0、連続フレームは実際に変わる。編集の試験に「塗りの式を同じ時刻で変える」手順を追加し、EDIT ALL PASS。
+- **確かめた試験:** 新しい編集の試験 `run_preview.ps1 ... -Variants "pv_anim_on100,pv_on20" -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（共有が働いたことをログで確認）、`run_ref` REF ALL PASS、`run_ui` UI ALL PASS、単体 ALL PASS、`gpu_test` GPU ALL PASS、`run_user_merge.ps1`（Test A・Test）オン＝オフ。
+- **ビルドの既定を Release にした**（`tools/build.ps1`。それまで利用者が試していたのは Debug 版）。今の `dev_plugins\randamu.aex` は Release（8:29 のビルド＝最新の commit）。
+- **利用者の回答待ち:** 新しい版を画面で試してもらう（20・100・380 枚、オン・オフ。AE の再起動が必要）。目標は「100 枚で 50 ms 以下」（今は span 57 ms）。
+- **次の候補（利用者の結果しだい）:** (a) PreRender がコピーごとに約 1 回来る（呼び出し元は AE の描画計画 BEE/RG と、Advanced3D+0x8b72 の各サブレイヤーの範囲の問い合わせ＝canvas suite の +128 付近。`RANDAMU_PRE_STACK=1` で記録）。そのたびに編集検出の指紋（約 30 個の `PF_CHECKOUT_PARAM`＋アンカー）で 1 回 約 0.15 ms＝100 枚で約 15 ms。指紋の安い方法か、範囲の問い合わせの共有を検討。(b) フックの時間（380 枚で約 75 ms）、(c) GPU のテクスチャの転送が共有のたびに起きる（`memcmp` で省けば 100 枚で約 10 ms 減の見込み）、(d) GPU の往復を連続するコピーでまとめる、(e) 前からの候補（16/32 bit・画質 2、群れの方式のコードの整理、手引きの「軽量化」の節の書き直し）。
 - 気を付けること: 診断の道具は環境変数（`RANDAMU_A3D_TIME`・`RANDAMU_A3D_PROF`・`RANDAMU_A3D_AEPIX`・`RANDAMU_CMDLOG`、記録の 6 節）。簡易プロファイラーは相手のスレッドを止めたままスタックをたどると AE が固まる（直した）。判定の Python は `spike/.venv`。
 
 ## 再開の手順（2026-11-26 朝、新しい軽量化を実装済み・利用者の試用待ち）

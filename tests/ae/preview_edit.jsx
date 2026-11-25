@@ -35,7 +35,18 @@
         function (fx) { fx.property(2).setValue(fx.property(2).value + 7); },          // count
         function (fx) { fx.property(3).setValue(fx.property(3).value + 1); },          // seed
         function (fx) { fx.property(12).setValue(20); fx.property(13).setValue(60); }, // opacity range
-        function (fx) { fx.property(2).setValue(fx.property(2).value - 3); }           // count back down
+        function (fx) { fx.property(2).setValue(fx.property(2).value - 3); },          // count back down
+        function (fx) {                                                                // another effect on the layer
+            var L = fx.parentProperty.parentProperty, P = L.property("ADBE Effect Parade");
+            for (var i = 1; i <= P.numProperties; i++) {
+                var e = P.property(i);
+                if (e.matchName !== "ADBE Fill") continue;
+                for (var q = 1; q <= e.numProperties; q++)
+                    if (e.property(q).propertyValueType === PropertyValueType.COLOR) e.property(q).expression = "[0.9, 0.2, 0.1, 1]";
+                return;
+            }
+            fx.property(3).setValue(fx.property(3).value + 1);  // no Fill: the seed again
+        }
     ];
     // a queue of steps; each waits for the previous PNG (saveFrameToPng returns before the frame is written)
     var steps = [], log = [];

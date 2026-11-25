@@ -919,6 +919,28 @@ PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW
 
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
+    {
+        // RANDAMU_PRE_STACK=1 (diagnostics): who asks for the pre-render (module+offset of the callers)
+        static const bool s_stack = GetEnvironmentVariableA("RANDAMU_PRE_STACK", nullptr, 0) > 0;
+        static std::atomic<int> n{0};
+        if (s_stack && ++n % 50 == 0 && n <= 5000) {
+            void* fr[24] = {};
+            const USHORT k = RtlCaptureStackBackTrace(1, 24, fr, nullptr);
+            std::string s;
+            for (USHORT i = 0; i < k; i++) {
+                HMODULE m = nullptr;
+                char name[MAX_PATH] = "?";
+                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCSTR)fr[i], &m) && m)
+                    GetModuleFileNameA(m, name, MAX_PATH);
+                const char* bn = strrchr(name, '\\');
+                char one[160];
+                snprintf(one, sizeof(one), " %s+%llx", bn ? bn + 1 : name, (unsigned long long)((uintptr_t)fr[i] - (uintptr_t)m));
+                s += one;
+            }
+            RLog("pre stack:%s", s.c_str());
+        }
+    }
     if (FastModeOn(in_data)) return FastPreRender(in_data, out_data, extra);
     PF_Err err = PF_Err_NONE;
     long long tStart = rnd::TimingNow();

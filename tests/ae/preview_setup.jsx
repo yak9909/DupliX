@@ -74,6 +74,21 @@
             variant("pv_off" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(0); });
         })(counts[ci]);
         variant("pv_none", function (c, T, f) { T.enabled = false; });
+        // the layer's pixels change every frame (a Fill before DupliX whose color follows the time): a texture kept
+        // from another frame would show
+        function animFill(T) {
+            T.property("ADBE Effect Parade").addProperty("ADBE Fill").moveTo(1);
+            var fill = T.property("ADBE Effect Parade").property(1);  // moveTo invalidates the reference
+            for (var q = 1; q <= fill.numProperties; q++) {
+                var pr = fill.property(q);
+                if (pr.propertyValueType === PropertyValueType.COLOR) {
+                    pr.expression = "[0.5 + 0.5 * Math.sin(time * 9), 0.5 + 0.5 * Math.cos(time * 7), 0.4, 1]";
+                    break;
+                }
+            }
+        }
+        variant("pv_anim_on100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); animFill(T); });
+        variant("pv_anim_off100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(0); animFill(T); });
         write("variants.txt", lines.join("\n") + "\n");
     } catch (e) {
         write("variants.txt", "EXCEPTION " + e.message + " (line " + e.line + ")\n");
