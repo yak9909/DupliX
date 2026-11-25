@@ -668,16 +668,34 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     if (g_texSwaps.Take(5, true, &n)) RLog("merge: texture swapped %d (%s, comp %d layer %d sub %d)", n, which, k.compItemId, k.layerId, index);
 }
 
+// experiment (RANDAMU_A3D_DRAW set): the time AE spends getting each sub-layer's texture
+LogLimit g_texTimeLog;
+void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_point t0)
+{
+    char ev[8] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) <= 0 || !g_texTimeLog.Take(4000)) return;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    int sub = -9;
+    if (trace) {
+        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+        if (v) sub = *(int*)(v + bee::kArtLayerToSubIndex);
+    }
+    RLog("a3d tex time: %s sub %d %.3f ms", which, sub, ms);
+}
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
+    LogTexTime(trace, "tex", t0);
     if (!r) SwapGroupTexture(trace, world, m3, "tex");
     return r;
 }
 int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* rect, void* opts, void* mrect, void** world,
               double* m3)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
+    LogTexTime(trace, "texrc", t0);
     if (!r) SwapGroupTexture(trace, world, m3, "texrc");
     return r;
 }
@@ -847,9 +865,22 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     IterFn* slot = (IterFn*)(ctx + 224);
     t_iter = *slot;
     t_iterMs = 0;
+    // the row callback's own time summed over AE's threads (experiment: MFR off, one draw at a time)
+    typedef int (*RowFn)(uintptr_t, uintptr_t, uintptr_t);
+    static RowFn s_row = nullptr;
+    static std::atomic<long long> s_rowNs{0};
+    static std::atomic<int> s_rows{0};
+    s_rowNs = 0, s_rows = 0;
     *slot = [](uintptr_t n, uintptr_t d, uintptr_t cb) {
         const auto s = std::chrono::steady_clock::now();
-        const int e = t_iter(n, d, cb);
+        s_row = (RowFn)cb;
+        const int e = t_iter(n, d, (uintptr_t)(RowFn)[](uintptr_t a, uintptr_t b, uintptr_t c) {
+            const auto r0 = std::chrono::steady_clock::now();
+            const int x = s_row(a, b, c);
+            s_rowNs += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+            s_rows++;
+            return x;
+        });
         t_iterMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s).count();
         return e;
     };
@@ -857,7 +888,9 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     *slot = t_iter;
     const double all = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    if (g_a3dDrawLog.Take(4000)) RLog("a3d draw time: seq %ld all %.2f ms pixels %.2f ms", seq, all, t_iterMs);
+    if (g_a3dDrawLog.Take(4000))
+        RLog("a3d draw time: seq %ld all %.2f ms pixels %.2f ms rows %d row-work %.2f ms", seq, all, t_iterMs,
+             s_rows.load(), s_rowNs.load() / 1e6);
     logIt(all);
     return r;
 }
