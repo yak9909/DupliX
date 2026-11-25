@@ -578,6 +578,18 @@ MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt)
         done = true;
     }
 
+    for (size_t c = 0; c < items.size(); c++) {
+        const Item& it = items[c];
+        MergePlan::DebugCopy dc;
+        dc.layer = it.layer, dc.copy = it.copy;
+        dc.group = done && !it.individual ? groupOf[c] : -1;
+        for (int k = 0; k < 4; k++) {
+            dc.x[k] = it.q.x[k], dc.y[k] = it.q.y[k];
+            for (int j = 0; j < 3; j++) dc.corners[k][j] = it.corners[k][j];
+        }
+        dc.zMin = it.q.zMin, dc.zMax = it.q.zMax;
+        plan.debugCopies.push_back(dc);
+    }
     // the layers' plans
     for (size_t li = 0; li < in.layers.size(); li++) {
         MergeLayerPlan lp;

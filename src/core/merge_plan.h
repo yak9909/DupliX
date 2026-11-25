@@ -109,6 +109,13 @@ struct MergePlan {
     double ms[4] = {0, 0, 0, 0};  // diagnostics: time in sides / neighbours / grouping / depths
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
+    // diagnostics (RANDAMU_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
+    struct DebugCopy {
+        int layer, copy, group;
+        double x[4], y[4], zMin, zMax;
+        double corners[4][3];
+    };
+    std::vector<DebugCopy> debugCopies;
 };
 inline long long MergeLayerKey(int compItemId, int layerId) { return ((long long)compItemId << 32) | (unsigned)layerId; }
 

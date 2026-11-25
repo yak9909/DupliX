@@ -22,6 +22,40 @@ MergePlanCache g_plans;  // by comp and comp time
 std::mutex g_lastMu;
 std::map<std::pair<long long, long long>, std::shared_ptr<const MergePlan>> g_last;
 
+// Diagnostics: RANDAMU_MERGE_DUMP names a file that gets the first plan of each log generation (camera, other
+// surfaces, every copy's screen quad / world corners / group, the groups' depths and rects), one record per line.
+void DumpPlan(const MergeSceneInput& in, const MergePlan& p)
+{
+    char path[MAX_PATH] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_MERGE_DUMP", path, sizeof(path)) <= 0 || !path[0]) return;
+    static LogLimit once;
+    if (!once.Take(1)) return;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "w") || !f) return;
+    fprintf(f, "cam dist %.6f w %.0f h %.0f m", p.cam.dist, p.cam.compW, p.cam.compH);
+    for (double v : p.cam.camToWorld) fprintf(f, " %.9g", v);
+    fprintf(f, "\n");
+    for (const ScenePlane& s : in.planes) {
+        fprintf(f, "plane unbounded %d rect %.3f %.3f %.3f %.3f m", (int)s.unbounded, s.rect[0], s.rect[1], s.rect[2], s.rect[3]);
+        for (double v : s.toWorld) fprintf(f, " %.9g", v);
+        fprintf(f, "\n");
+    }
+    for (const auto& c : p.debugCopies) {
+        fprintf(f, "copy %d %d group %d z %.4f %.4f q", c.layer, c.copy, c.group, c.zMin, c.zMax);
+        for (int k = 0; k < 4; k++) fprintf(f, " %.4f %.4f", c.x[k], c.y[k]);
+        fprintf(f, " w");
+        for (int k = 0; k < 4; k++) fprintf(f, " %.6f %.6f %.6f", c.corners[k][0], c.corners[k][1], c.corners[k][2]);
+        fprintf(f, "\n");
+    }
+    for (const auto& kv : p.layers)
+        for (const auto& cl : kv.second.clusters) {
+            fprintf(f, "cluster depth %.6f rect %.0f %.0f %.0f %.0f copies", cl.depth, cl.rect[0], cl.rect[1], cl.rect[2], cl.rect[3]);
+            for (int c : cl.copies) fprintf(f, " %d", c);
+            fprintf(f, "\n");
+        }
+    fclose(f);
+}
+
 long long TimeKey(const A_Time& t)
 {
     const double s = t.scale ? (double)t.value / (double)t.scale : 0.0;
@@ -91,6 +125,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
                 RLog("merge: test: group depth forced to %.2f", z);
             }
         }
+        DumpPlan(in, p);
         static LogLimit logged;
         if (p.overBudget) RLog("merge: plan over budget (%d rounds): no merging this frame", p.rounds);
         if (logged.Take(20)) {
