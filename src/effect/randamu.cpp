@@ -12,6 +12,7 @@
 #include <string>
 
 #include "effect/gpu_copy.h"
+#include "gpu/gpu_raster.h"
 #include "hook/bee_hooks.h"
 #include "core/fast_plane.h"
 #include "core/raster.h"
@@ -669,6 +670,8 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
         extra->output->max_result_rect = full;
         extra->output->pre_render_data = f;
         extra->output->delete_pre_render_data_func = DeleteFastPre;
+        if (extra->input->what_gpu == PF_GPU_Framework_CUDA && rnd::GpuRasterAvailable())
+            extra->output->flags |= PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
     } else {
         // Nothing to show (camera or comp unreadable): an empty output.
         delete f;
@@ -702,6 +705,28 @@ int WorldBpc(PF_InData* in_data, PF_EffectWorld* w)
     }
 }
 
+// Every copy's screen -> source projection, opacity and centre depth (CPU and GPU draw the same list).
+// inW, inH: the input buffer's size (downsampled px, at f.inRect's origin).
+std::vector<rnd::RasterCopy> BuildFastCopies(const FastPre& f, int inW, int inH)
+{
+    // the source in full-resolution layer px
+    const double srcRect[4] = {f.inRect.left / f.dsX, f.inRect.top / f.dsY, (f.inRect.left + inW) / f.dsX,
+                               (f.inRect.top + inH) / f.dsY};
+    const double cx = (srcRect[0] + srcRect[2]) / 2, cy = (srcRect[1] + srcRect[3]) / 2;
+    std::vector<rnd::RasterCopy> copies;
+    copies.reserve((size_t)std::max(f.p.count, 0));
+    for (int i = 0; i < f.p.count; i++) {
+        rnd::CopyXform x;
+        rnd::ComputeCopy(f.p, i, f.anchorX, f.anchorY, &x);
+        rnd::RasterCopy rc;
+        if (x.opacity <= 0 || !rnd::CopyHomography(f.cam, f.W, x.m4, srcRect, rc.screenToSrc)) continue;
+        rc.opacity = x.opacity;
+        rc.depth = rnd::CopyDepth(f.cam, f.W, x.m4, cx, cy);
+        copies.push_back(rc);
+    }
+    return copies;
+}
+
 PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW, PF_EffectWorld* outW)
 {
     int bpc = WorldBpc(in_data, outW);
@@ -717,20 +742,7 @@ PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW
     if (f && inW && inW->data && WorldBpc(in_data, inW) == bpc) {
         src = {inW->data, (int)inW->width, (int)inW->height, (long)inW->rowbytes, bpc, (int)f->inRect.left,
                (int)f->inRect.top};
-        // the source in full-resolution layer px
-        const double srcRect[4] = {f->inRect.left / f->dsX, f->inRect.top / f->dsY,
-                                   (f->inRect.left + inW->width) / f->dsX, (f->inRect.top + inW->height) / f->dsY};
-        const double cx = (srcRect[0] + srcRect[2]) / 2, cy = (srcRect[1] + srcRect[3]) / 2;
-        copies.reserve((size_t)std::max(f->p.count, 0));
-        for (int i = 0; i < f->p.count; i++) {
-            rnd::CopyXform x;
-            rnd::ComputeCopy(f->p, i, f->anchorX, f->anchorY, &x);
-            rnd::RasterCopy rc;
-            if (x.opacity <= 0 || !rnd::CopyHomography(f->cam, f->W, x.m4, srcRect, rc.screenToSrc)) continue;
-            rc.opacity = x.opacity;
-            rc.depth = rnd::CopyDepth(f->cam, f->W, x.m4, cx, cy);
-            copies.push_back(rc);
-        }
+        copies = BuildFastCopies(*f, (int)inW->width, (int)inW->height);
         static std::atomic<int> logged{0};
         if (++logged <= 3)
             RLog("fast: render bpc %d in %dx%d origin(%d,%d) inRect(%d,%d) out %dx%d origin(%d,%d) copies %zu/%d", bpc,
@@ -822,6 +834,40 @@ struct RenderMark {
     }
 };
 
+// Fast mode on the GPU (CUDA only: PreRender allows the GPU render for CUDA only). AE's GPU worlds are BGRA
+// float, straight alpha, like gpu_raster expects.
+PF_Err FastSmartRenderGpu(PF_InData* in_data, PF_SmartRenderExtra* extra, PF_EffectWorld* inW, PF_EffectWorld* outW)
+{
+    const FastPre* f = (const FastPre*)extra->input->pre_render_data;
+    Suite<PF_GPUDeviceSuite1> gs(in_data->pica_basicP, kPFGPUDeviceSuite, kPFGPUDeviceSuiteVersion1);
+    PF_GPUDeviceInfo info;
+    AEFX_CLR_STRUCT(info);
+    void* src = nullptr;
+    void* dst = nullptr;
+    if (extra->input->what_gpu != PF_GPU_Framework_CUDA || !gs ||
+        gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info) ||
+        gs->GetGPUWorldData(in_data->effect_ref, outW, &dst) || (inW && gs->GetGPUWorldData(in_data->effect_ref, inW, &src)))
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    rnd::GpuImage gin = {src, inW ? (int)inW->width : 0, inW ? (int)inW->height : 0, inW ? (long)inW->rowbytes : 0,
+                         f ? (int)f->inRect.left : 0, f ? (int)f->inRect.top : 0};
+    rnd::GpuImage gout = {dst, (int)outW->width, (int)outW->height, (long)outW->rowbytes, (int)outW->origin_x,
+                          (int)outW->origin_y};
+    std::vector<rnd::RasterCopy> copies;
+    if (f && src) {
+        gout.screenShiftX = f->cam.compW / 2 - f->anchorX;  // the output is in layer px (see FastSmartRender)
+        gout.screenShiftY = f->cam.compH / 2 - f->anchorY;
+        copies = BuildFastCopies(*f, gin.width, gin.height);
+    }
+    bool ok = rnd::GpuRasterize(info.contextPV, info.command_queuePV, gin, gout, copies.data(), (int)copies.size(),
+                                f ? f->dsX : 1.0, f ? f->dsY : 1.0);
+    static std::atomic<int> logged{0};
+    if (++logged <= 3 || !ok)
+        RLog("fast: gpu render ok=%d in %dx%d rowbytes %d origin(%d,%d) out %dx%d rowbytes %d origin(%d,%d) copies %zu",
+             (int)ok, gin.width, gin.height, (int)gin.rowBytes, gin.originX, gin.originY, gout.width, gout.height,
+             (int)gout.rowBytes, gout.originX, gout.originY, copies.size());
+    return ok ? PF_Err_NONE : PF_Err_INTERNAL_STRUCT_DAMAGED;
+}
+
 PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extra)
 {
     RenderMark mark{in_data};
@@ -830,7 +876,9 @@ PF_Err SmartRenderGpu(PF_InData* in_data, PF_OutData*, PF_SmartRenderExtra* extr
     PF_EffectWorld* outW = nullptr;
     ERR(extra->cb->checkout_layer_pixels(in_data->effect_ref, RP_INPUT, &inW));
     ERR(extra->cb->checkout_output(in_data->effect_ref, &outW));
-    if (!err && inW && outW) {
+    if (!err && outW && FastModeOn(in_data)) {
+        err = FastSmartRenderGpu(in_data, extra, inW, outW);
+    } else if (!err && inW && outW) {
         Suite<PF_GPUDeviceSuite1> gs(in_data->pica_basicP, kPFGPUDeviceSuite, kPFGPUDeviceSuiteVersion1);
         PF_GPUDeviceInfo info;
         AEFX_CLR_STRUCT(info);

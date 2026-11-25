@@ -1,17 +1,23 @@
 # Fast mode checks: builds fast.aep with tests/ae/fast_mode.jsx (hidden AE), renders it with aerender
 # (MFR off and on) and compares fast vs normal mode with check_fast_mode.py. Exit 1 on any failure.
-#   pwsh tests/ae/run_fast_mode.ps1 [-Cases fast_identity,fast_scatter] [-Mfrs OFF,ON] [-SkipScene]
-param([string]$Cases = "", [string[]]$Mfrs = @("OFF", "ON"), [switch]$SkipScene, [int]$RenderTimeoutSec = 600)
+#   pwsh tests/ae/run_fast_mode.ps1 [-Cases fast_identity,fast_scatter] [-Mfrs OFF,ON] [-SkipScene] [-Gpu CUDA]
+# -Gpu: the project's GPU acceleration (a GpuAccelType name). SOFTWARE (default) renders on the CPU into
+# build\test\fast; CUDA renders into build\test\fast_gpu and also compares with the CPU run (check_gpu_cpu.py,
+# run the CPU run first) and checks that the GPU path was used.
+param([string]$Cases = "", [string[]]$Mfrs = @("OFF", "ON"), [switch]$SkipScene, [int]$RenderTimeoutSec = 600,
+      [string]$Gpu = "SOFTWARE")
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$outDir = Join-Path $root "build\test\fast"
+$name = if ($Gpu -eq "SOFTWARE") { "fast" } else { "fast_gpu" }
+$outDir = Join-Path $root "build\test\$name"
+$env:RANDAMU_FAST_GPU = $Gpu
 $py = Join-Path $root "spike\.venv\Scripts\python.exe"
 $check = Join-Path $PSScriptRoot "check_fast_mode.py"
 
 if (-not $SkipScene) {
     $env:RANDAMU_FAST_IMAGE = Join-Path $root "spike\assets\probe_img.png"
     $env:RANDAMU_FAST_ONLY = $Cases
-    & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/fast_mode.jsx -Name fast -TimeoutSec 900 -Expect "^done" |
+    & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/fast_mode.jsx -Name $name -TimeoutSec 900 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT|window class|half:"
     if ($LASTEXITCODE -ne 0) { Write-Host "scene build failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }
 }
@@ -47,6 +53,14 @@ foreach ($mfr in $Mfrs) {
     }
     & $py -I $check $outDir $mfr $Cases
     if ($LASTEXITCODE -ne 0) { $fail++ }
+    if ($Gpu -ne "SOFTWARE") {
+        $gpuLines = @(Select-String -Path (Join-Path $outDir "plugin_aer_$mfr.log") -Pattern "fast: gpu render ok=1")
+        $bad = @(Select-String -Path (Join-Path $outDir "plugin_aer_$mfr.log") -Pattern "fast: gpu render ok=0")
+        Write-Host ("  GPU path used: {0} logged renders ok, {1} failed" -f $gpuLines.Count, $bad.Count)
+        if ($gpuLines.Count -eq 0 -or $bad.Count -gt 0) { $fail++ }
+        & $py -I (Join-Path $PSScriptRoot "check_gpu_cpu.py") (Join-Path $root "build\test\fast") $outDir $mfr
+        if ($LASTEXITCODE -ne 0) { $fail++ }
+    }
 }
 Write-Host $(if ($fail -eq 0) { "FAST ALL PASS" } else { "FAST FAILURES (runs): $fail" })
 exit $(if ($fail -eq 0) { 0 } else { 1 })

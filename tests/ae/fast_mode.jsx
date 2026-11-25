@@ -146,6 +146,10 @@
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
+        // RANDAMU_FAST_GPU: the project's GPU acceleration (SOFTWARE = CPU only, CUDA = the GPU path)
+        var gpu = $.getenv("RANDAMU_FAST_GPU") || "SOFTWARE";
+        app.project.gpuAccelType = GpuAccelType[gpu];
+        log("gpu set: " + app.project.gpuAccelType);
         var only = $.getenv("RANDAMU_FAST_ONLY") || "";
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
@@ -165,6 +169,13 @@
                 nf.open("w"); nf.write(String(idx)); nf.close();
             } else if (!c.move2d) {
                 addRQ(build(c, false), c);
+            }
+            if (gpu !== "SOFTWARE" && c.name === "fast_scatter") {
+                // fast_gpu_switch: the same frame on the GPU, then with the project switched to CPU only
+                png(fm, "sw_gpu", 0);
+                app.project.gpuAccelType = GpuAccelType.SOFTWARE;
+                png(fm, "sw_cpu", 0);
+                app.project.gpuAccelType = GpuAccelType[gpu];
             }
             if (c.anim || c.camAnim) {
                 var order = [29, 3, 17, 0, 11, 24, 8, 21];
