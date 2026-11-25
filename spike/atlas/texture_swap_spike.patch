@@ -1,0 +1,377 @@
+diff --git a/src/effect/randamu.cpp b/src/effect/randamu.cpp
+index fca9221..7bdacd4 100644
+--- a/src/effect/randamu.cpp
++++ b/src/effect/randamu.cpp
+@@ -800,6 +800,40 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
+         extra->output->result_rect = in_result.result_rect;
+         extra->output->max_result_rect = in_result.max_result_rect;
+         extra->output->flags |= PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
++        if (rnd::SpikeAtlasMode() > 0 && rnd::SpikeAtlasMode() < 8) {  // SPIKE: input + inverted copies to its right
++            const int iw = in_result.max_result_rect.right - in_result.max_result_rect.left;
++            int w = (iw + rnd::SpikeGutter()) * (rnd::SpikeCells() - 1);
++            if (GetEnvironmentVariableA("RANDAMU_SPIKE_POW2", nullptr, 0) > 0 && iw > 0) {
++                int total = iw;  // the whole width a power-of-two multiple of the input's: k = 2^n exactly
++                while (total < iw + w) total *= 2;
++                w = total - iw;
++            }
++            extra->output->max_result_rect.right += w;
++            {
++                const double dsX = in_data->downsample_x.den ? (double)in_data->downsample_x.num / in_data->downsample_x.den : 1.0;
++                const double il = in_result.max_result_rect.left / dsX;
++                rnd::SpikeSetAtlas(g_lastKey.compItemId, g_lastKey.layerId, il, iw / dsX, il, (iw + w) / dsX);
++            }
++            // the result is the request's part of the whole (else AE's internal check stops the render)
++            const PF_LRect& q = req.rect;
++            PF_LRect& r = extra->output->result_rect;
++            r = extra->output->max_result_rect;
++            r.left = std::max(r.left, q.left), r.top = std::max(r.top, q.top);
++            r.right = std::min(r.right, q.right), r.bottom = std::min(r.bottom, q.bottom);
++            if (r.right < r.left) r.right = r.left;
++            if (r.bottom < r.top) r.bottom = r.top;
++            static std::atomic<int> lq{0};
++            if (++lq <= 4)
++                RLog("spike: request (%d,%d,%d,%d) -> result (%d,%d,%d,%d)", (int)q.left, (int)q.top, (int)q.right,
++                     (int)q.bottom, (int)r.left, (int)r.top, (int)r.right, (int)r.bottom);
++            extra->output->flags &= ~PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
++            static std::atomic<int> lg{0};
++            if (++lg <= 4)
++                RLog("spike: prerender in result (%d,%d,%d,%d) max (%d,%d,%d,%d)", (int)in_result.result_rect.left,
++                     (int)in_result.result_rect.top, (int)in_result.result_rect.right, (int)in_result.result_rect.bottom,
++                     (int)in_result.max_result_rect.left, (int)in_result.max_result_rect.top,
++                     (int)in_result.max_result_rect.right, (int)in_result.max_result_rect.bottom);
++        }
+     }
+     return err;
+ }
+@@ -934,6 +968,27 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
+     ERR(extra->cb->checkout_output(in_data->effect_ref, &outW));
+     if (!err && outW && FastModeOn(in_data)) {
+         err = FastSmartRender(in_data, (const FastPre*)extra->input->pre_render_data, inW, outW);
++    } else if (!err && inW && outW && rnd::SpikeAtlasMode() > 0 && rnd::SpikeAtlasMode() < 8) {
++        // SPIKE (8 bpc only): left = the input, right = the input inverted (alpha kept)
++        static std::atomic<int> lg{0};
++        if (++lg <= 4)
++            RLog("spike: render in %dx%d origin(%d,%d) out %dx%d origin(%d,%d)", (int)inW->width, (int)inW->height,
++                 (int)inW->origin_x, (int)inW->origin_y, (int)outW->width, (int)outW->height, (int)outW->origin_x,
++                 (int)outW->origin_y);
++        for (int y = 0; y < outW->height; y++) {
++            PF_Pixel8* o = (PF_Pixel8*)((char*)outW->data + (size_t)y * outW->rowbytes);
++            for (int x = 0; x < outW->width; x++) o[x] = {0, 0, 0, 0};
++            if (y >= inW->height) continue;
++            const PF_Pixel8* s = (const PF_Pixel8*)((const char*)inW->data + (size_t)y * inW->rowbytes);
++            for (int x = 0; x < inW->width && x < outW->width; x++) o[x] = s[x];
++            for (int c = 1; c < rnd::SpikeCells(); c++) {
++                const int off = (inW->width + rnd::SpikeGutter()) * c;
++                for (int x = 0; x < inW->width && off + x < outW->width; x++) {
++                    PF_Pixel8 p = s[x];
++                    o[off + x] = {p.alpha, (A_u_char)(255 - p.red), (A_u_char)(255 - p.green), (A_u_char)(255 - p.blue)};
++                }
++            }
++        }
+     } else if (!err && inW && outW) {
+         PF_WorldTransformSuite1* wts = nullptr;
+         if (in_data->pica_basicP->AcquireSuite(kPFWorldTransformSuite, kPFWorldTransformSuiteVersion1,
+diff --git a/src/hook/bee_hooks.cpp b/src/hook/bee_hooks.cpp
+index 837350f..336fea8 100644
+--- a/src/hook/bee_hooks.cpp
++++ b/src/hook/bee_hooks.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <atomic>
+ #include <cstring>
++#include <map>
+ #include <mutex>
+ 
+ #include "core/fast_plane.h"
+@@ -56,6 +57,35 @@ CompBoolFn g_compIsCalder = nullptr, g_compIsErnst = nullptr, g_compIsEscher = n
+ std::atomic<int> g_effectKey{-1};  // this effect's installed key (-1 = not known yet)
+ uintptr_t g_betaFn = 0;
+ 
++// SPIKE: RANDAMU_SPIKE_RECT = "<left index>,<right index>,<shift>" of the rect's 4 doubles
++int g_spikeL = 1, g_spikeR = 3;
++double g_spikeW = 120;
++// SPIKE: per layer, the atlas geometry from the effect's PreRender (full-resolution layer px, x only):
++// the input (original image) [il, il + iw), the whole output [ol, ol + ow).
++struct SpikeAtlasGeom {
++    double il = 0, iw = 0, ol = 0, ow = 0;
++};
++std::mutex g_spikeMu;
++std::map<long long, SpikeAtlasGeom> g_spikeGeom;
++bool KeyOf(const void* layer, LayerKey* k);
++bool SpikeGeomFor(const void* layer, SpikeAtlasGeom* g)
++{
++    LayerKey k;
++    if (!KeyOf(layer, &k)) return false;
++    std::lock_guard<std::mutex> lk(g_spikeMu);
++    auto it = g_spikeGeom.find(((long long)k.compItemId << 32) | (unsigned)k.layerId);
++    if (it == g_spikeGeom.end() || !(it->second.iw > 0)) return false;
++    *g = it->second;
++    return true;
++}
++struct SpikeRectInit {
++    SpikeRectInit()
++    {
++        char v[64] = {0};
++        if (GetEnvironmentVariableA("RANDAMU_SPIKE_RECT", v, sizeof(v)) > 0) sscanf_s(v, "%d,%d,%lf", &g_spikeL, &g_spikeR, &g_spikeW);
++    }
++} g_spikeRectInit;
++
+ bool KeyOf(const void* layer, LayerKey* k)
+ {
+     if (!layer) return false;
+@@ -399,15 +429,50 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
+         return b;
+     double G[16];  // World Transform: copies * G * layer-to-world
+     WorldM4(s.world, s.anchorX, s.anchorY, G);
++    const int spike = SpikeAtlasMode();
++    {
++        static std::atomic<int> lg{0};
++        if (spike && ++lg <= 6)
++            RLog("spike: rects in rect %.2f %.2f %.2f %.2f", rect[0], rect[1], rect[2], rect[3]);
++    }
+     for (size_t i = 0; i < n; i++) {
+         std::memcpy(vR->last, rect, bee::kRectBytes);
+-        vR->last += bee::kRectBytes;
+         g_m3Identity(v3->last);
++        if (spike == 2 && (i & 1)) {
++            // SPIKE: copy 1 takes the part to the right of the original rect (rect layout from the log)
++            double* r = (double*)vR->last;
++            double* m3 = (double*)v3->last;
++            const double w = g_spikeW;
++            if (spike == 5) {  // the right part only (the inverted copy), no M3
++                r[g_spikeL] += w;
++                r[g_spikeR] += w;
++            } else {
++                r[g_spikeL] += w;
++                r[g_spikeR] += w;
++                if (spike == 3) m3[6] = -w;
++                if (spike == 4) m3[2] = -w;
++            }
++        }
++        vR->last += bee::kRectBytes;
+         v3->last += bee::kM3Bytes;
+         CopyXform x;
+         ComputeCopy(s.p, (int)i, s.anchorX, s.anchorY, &x);
+         double m[16];
+         Mul4(x.m4, G, m);
++        if (spike == 6 || spike == 7) {  // SPIKE: undo the texture's x stretch about the left edge L
++            SpikeAtlasGeom g;
++            if (!SpikeGeomFor((const void*)a, &g)) {
++                static std::atomic<int> lg{0};
++                if (++lg <= 5) RLog("spike: rects no atlas geometry");
++                g = {0, 1, 0, 1};
++            }
++            // p = il + (p' - ol) / k
++            const double s = g.iw / g.ow;
++            const double D[16] = {s, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, g.il - g.ol * s, 0, 0, 1};
++            double t[16];
++            Mul4(D, m, t);
++            std::memcpy(m, t, sizeof(t));
++        }
+         std::memcpy(v4->last, m, bee::kM4Bytes);
+         v4->last += bee::kM4Bytes;
+     }
+@@ -484,6 +549,117 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
+     return op * x.opacity;
+ }
+ 
++// ---- SPIKE: the texture Artisan gets for a layer / sub-layer
++typedef int (*TexFn)(void*, void*, unsigned, double*, double*, void**, double*);
++typedef int (*TexRcFn)(void*, void*, unsigned, short, double*, double*, void*, void*, void**, double*);
++TexFn g_origTex = nullptr;
++TexRcFn g_origTexRc = nullptr;
++
++void SpikeTexLog(const char* tag, void* trace, unsigned u, short sh, double* v2, double* rect, void** world, double* m3,
++                 int ret)
++{
++    static std::atomic<int> n{0};
++    if (++n > 60) return;
++    int index = -2;
++    const void* layer = nullptr;
++    if (trace) {
++        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
++        if (v) {
++            layer = *(void**)(v + bee::kArtLayerToLayer);
++            index = *(int*)(v + bee::kArtLayerToSubIndex);
++        }
++    }
++    LayerKey k{};
++    if (layer) KeyOf(layer, &k);
++    PF_EffectWorld* w = world ? (PF_EffectWorld*)*world : nullptr;
++    RLog("spike: %s ret %d layer %d sub %d u=%u s=%d v2=(%.3f,%.3f) rect=(%.2f,%.2f,%.2f,%.2f) world %dx%d origin(%d,%d) "
++         "m3=[%.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f]",
++         tag, ret, k.layerId, index, u, (int)sh, v2 ? v2[0] : -1, v2 ? v2[1] : -1, rect ? rect[0] : -1, rect ? rect[1] : -1,
++         rect ? rect[2] : -1, rect ? rect[3] : -1, w ? (int)w->width : -1, w ? (int)w->height : -1, w ? (int)w->origin_x : 0,
++         w ? (int)w->origin_y : 0, m3 ? m3[0] : 0, m3 ? m3[1] : 0, m3 ? m3[2] : 0, m3 ? m3[3] : 0, m3 ? m3[4] : 0,
++         m3 ? m3[5] : 0, m3 ? m3[6] : 0, m3 ? m3[7] : 0, m3 ? m3[8] : 0);
++}
++
++int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
++{
++    int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
++    int mode = SpikeAtlasMode();
++    if (!r && m3 && trace && (mode == 3 || mode == 4)) {
++        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
++        int index = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -1;
++        if (index == 1) {
++            if (mode == 3) m3[6] -= g_spikeW;
++            if (mode == 4) m3[2] -= g_spikeW;
++        }
++    }
++    if (!r && m3 && trace && (mode == 6 || mode == 7)) {
++        // texture region [L + a, L + a + W] stretched over the layer's width AW = 2W + gutter, about the left
++        // edge L: M3' = M3 * T(-(L + a)) * S(k) * T(L)
++        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
++        int index = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -1;
++        const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
++        SpikeAtlasGeom g;
++        if (!layer || !SpikeGeomFor(layer, &g)) {
++            RLog("spike: tex no atlas geometry");
++            return r;
++        }
++        // layer' = ol + k * (layer - il - a): the cell [il + a, il + a + iw) over the whole output
++        const double k = g.ow / g.iw, a = (mode == 7 && index == 1) ? g.ow - g.iw : 0.0;
++        double A[9] = {k, 0, 0, 0, 1, 0, g.ol - k * (g.il + a), 0, 1}, o[9];
++        for (int rr = 0; rr < 3; rr++)
++            for (int c = 0; c < 3; c++) o[rr * 3 + c] = m3[rr * 3] * A[c] + m3[rr * 3 + 1] * A[3 + c] + m3[rr * 3 + 2] * A[6 + c];
++        std::memcpy(m3, o, sizeof(o));
++    }
++    if (!r && world && *world && m3 && trace && (mode == 8 || mode == 9)) {
++        // SPIKE: copy 1 gets a texture of our own (AEGP world, deleted by Artisan's DisposeTexture)
++        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
++        int index = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -1;
++        if (index == 1) {
++            Suite<AEGP_WorldSuite3> ws(kAEGPWorldSuite, kAEGPWorldSuiteVersion3);
++            AEGP_WorldH w0 = (AEGP_WorldH)*world;
++            AEGP_WorldType type = AEGP_WorldType_NONE;
++            A_long w = 0, h = 0;
++            A_u_long rb0 = 0, rb1 = 0;
++            PF_Pixel8* p0 = nullptr;
++            PF_Pixel8* p1 = nullptr;
++            AEGP_WorldH w1 = nullptr;
++            const int f = mode == 9 ? 2 : 1;  // mode 9: twice the size, M3 halves it back
++            bool ok = ws && !ws->AEGP_GetType(w0, &type) && type == AEGP_WorldType_8 && !ws->AEGP_GetSize(w0, &w, &h) &&
++                      !ws->AEGP_GetRowBytes(w0, &rb0) && !ws->AEGP_GetBaseAddr8(w0, &p0) &&
++                      !ws->AEGP_New(g_pluginId, type, w * f, h * f, &w1) && w1 && !ws->AEGP_GetRowBytes(w1, &rb1) &&
++                      !ws->AEGP_GetBaseAddr8(w1, &p1);
++            if (ok) {
++                for (A_long y = 0; y < h * f; y++) {
++                    const PF_Pixel8* s = (const PF_Pixel8*)((const char*)p0 + (size_t)(y / f) * rb0);
++                    PF_Pixel8* o = (PF_Pixel8*)((char*)p1 + (size_t)y * rb1);
++                    for (A_long x = 0; x < w * f; x++) {
++                        PF_Pixel8 q = s[x / f];
++                        o[x] = {q.alpha, (A_u_char)(255 - q.red), (A_u_char)(255 - q.green), (A_u_char)(255 - q.blue)};
++                    }
++                }
++                (**(void (***)(void*, int))w0)(w0, 1);  // what DisposeTexture does
++                *world = w1;
++                if (f == 2) {  // M3' = S(1/2) * M3
++                    for (int c = 0; c < 3; c++) m3[c] *= 0.5, m3[3 + c] *= 0.5;
++                }
++            } else if (w1) {
++                ws->AEGP_Dispose(w1);
++            }
++            RLog("spike: swap ok=%d type %d %dx%d rb %llu -> %p", (int)ok, (int)type, (int)w, (int)h,
++                 (unsigned long long)rb0, (void*)w1);
++        }
++    }
++    SpikeTexLog("tex", trace, u, 0, v2, rect, world, m3, r);
++    return r;
++}
++int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* rect, void* opts, void* mrect, void** world,
++              double* m3)
++{
++    int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
++    SpikeTexLog("texrc", trace, u, sh, v2, rect, world, m3, r);
++    return r;
++}
++
+ // ---- installation
+ int FindSlot(void** vt, HMODULE bee, const char* mangled)
+ {
+@@ -607,6 +783,23 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
+               (!(mask & 4) || WritePtr(&vt[sRc], (void*)&HookRects)) &&
+               (!(mask & 8) || WritePtr(&vt[sIs], (void*)&HookIsLayerType)) &&
+               (!(mask & 16) || WritePtr(iat, (void*)&HookArtOpacity));
++    if (ok && SpikeAtlasMode() > 0 && drv) {
++        void** t1 = FindImportSlot(drv, "BEE.dll",
++                                   "?BEE_RenderTextureForArtisan@@YAHPEAXPEAVBEE_RenderTrace@@IPEAV?$M_Vector2T@N@@"
++                                   "PEAUM_FloatRect@@PEAPEAVPF_World@@PEAVM_Matrix3@@@Z");
++        void** t2 = FindImportSlot(drv, "BEE.dll",
++                                   "?BEE_RenderTextureForArtisanWithReceipt@@YAHPEAXPEAVBEE_RenderTrace@@IFPEAV?$M_Vector2T@N@@"
++                                   "PEAUM_FloatRect@@PEAVBEE_LayerRenderOptions@@PEAUM_Rect@@PEAPEAVPF_World@@PEAVM_Matrix3@@@Z");
++        if (t1) {
++            g_origTex = (TexFn)*t1;
++            WritePtr(t1, (void*)&HookTex);
++        }
++        if (t2) {
++            g_origTexRc = (TexRcFn)*t2;
++            WritePtr(t2, (void*)&HookTexRc);
++        }
++        RLog("spike: texture hooks tex=%p texrc=%p", (void*)t1, (void*)t2);
++    }
+     g_status = ok ? HookStatus::Installed : HookStatus::MissingSymbols;
+     RLog("hooks: %s (main thread %lu)", ok ? "installed" : "VirtualProtect failed", g_mainThread);
+     return g_status;
+@@ -688,6 +881,44 @@ bool LayerIsLive(const void* layer)
+ }
+ 
+ HookStatus GetHookStatus() { return g_status; }
++
++void SpikeSetAtlas(int compItemId, int layerId, double il, double iw, double ol, double ow)
++{
++    std::lock_guard<std::mutex> lk(g_spikeMu);
++    g_spikeGeom[((long long)compItemId << 32) | (unsigned)layerId] = {il, iw, ol, ow};
++}
++
++int SpikeCells()
++{
++    static int c = [] {
++        char v[16] = {0};
++        int n = GetEnvironmentVariableA("RANDAMU_SPIKE_CELLS", v, sizeof(v)) > 0 ? atoi(v) : 2;
++        return n < 2 ? 2 : n;
++    }();
++    return c;
++}
++
++int SpikeGutter()
++{
++    static int g = [] {
++        char v[16] = {0};
++        return GetEnvironmentVariableA("RANDAMU_SPIKE_GUTTER", v, sizeof(v)) > 0 ? atoi(v) : 4;
++    }();
++    return g;
++}
++
++int SpikeAtlasMode()
++{
++    static int mode = [] {
++        char v[32] = {0};
++        if (GetEnvironmentVariableA("RANDAMU_SPIKE_ATLAS", v, sizeof(v)) == 0) return 0;
++        const char* names[] = {"off", "expand", "rect", "rectm3a", "rectm3b", "rectpart", "scaleid", "scale", "swap", "swapbig"};
++        for (int i = 0; i < 10; i++)
++            if (!_stricmp(v, names[i])) return i;
++        return 0;
++    }();
++    return mode;
++}
+ bool IsMainThread() { return GetCurrentThreadId() == g_mainThread; }
+ 
+ }  // namespace rnd
+diff --git a/src/hook/bee_hooks.h b/src/hook/bee_hooks.h
+index 7cc6e17..1a02e3e 100644
+--- a/src/hook/bee_hooks.h
++++ b/src/hook/bee_hooks.h
+@@ -13,6 +13,12 @@ enum class HookStatus { NotInstalled, Installed, MissingSymbols };
+ // hooks never call AEGP on it (doing so from inside BEE virtuals hung AE in the spike).
+ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId);
+ HookStatus GetHookStatus();
++// SPIKE (merge optimisation, throwaway): RANDAMU_SPIKE_ATLAS = off | expand | rect | rectm3a | rectm3b -> 0..4
++int SpikeAtlasMode();
++int SpikeGutter();  // RANDAMU_SPIKE_GUTTER (px between the atlas cells, default 4)
++int SpikeCells();   // RANDAMU_SPIKE_CELLS (cells in the atlas row: the original + inverted ones, default 2)
++// full-resolution layer px (x): the input [il, il + iw), the whole output [ol, ol + ow)
++void SpikeSetAtlas(int compItemId, int layerId, double il, double iw, double ol, double ow);
+ bool IsMainThread();  // the thread that ran InstallHooks (GLOBAL_SETUP)
+ // Finds BEE's internal type key of this effect (not the AEGP installed key) once per process:
+ // `layer` has this effect at AEGP index `effectIndex`. Call from the effect's own render commands.
