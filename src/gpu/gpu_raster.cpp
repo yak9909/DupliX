@@ -146,15 +146,21 @@ struct CtxScope {
 
 struct DevBuf {
     CUdeviceptr p = 0;
+    const GpuAllocator* al = nullptr;
+    explicit DevBuf(const GpuAllocator* a) : al(a) {}
     ~DevBuf()
     {
-        if (p) Cuda().memFree(p);
+        if (!p) return;
+        if (al) al->free((void*)p);
+        else Cuda().memFree(p);
     }
     bool Put(const void* host, size_t bytes, CUstream stream)
     {
         // never a zero-sized allocation; nothing to copy then
-        return Cuda().memAlloc(&p, bytes ? bytes : 4) == 0 &&
-               (!host || !bytes || Cuda().htodAsync(p, host, bytes, stream) == 0);
+        const size_t sz = bytes ? bytes : 4;
+        if (al) p = (CUdeviceptr)al->alloc(sz);
+        else if (Cuda().memAlloc(&p, sz)) p = 0;
+        return p && (!host || !bytes || Cuda().htodAsync(p, host, bytes, stream) == 0);
     }
 };
 
@@ -195,7 +201,8 @@ int GpuRasterCachedContexts()
 }
 
 GpuRasterStatus GpuRasterize(void* cuContext, void* cuStream, const GpuImage& src, const GpuImage& dst,
-                             const RasterCopy* copies, int n, double dsX, double dsY, const std::function<bool()>& abort)
+                             const RasterCopy* copies, int n, double dsX, double dsY, const std::function<bool()>& abort,
+                             const GpuAllocator* alloc)
 {
     t_launches = 0;
     const Api& cu = Cuda();
@@ -238,7 +245,7 @@ GpuRasterStatus GpuRasterize(void* cuContext, void* cuStream, const GpuImage& sr
     if (!fn) return kGpuFailed;
     CUstream stream = (CUstream)cuStream;
     {
-        DevBuf bc, bs, bi;  // freed before the context is popped
+        DevBuf bc(alloc), bs(alloc), bi(alloc);  // freed before the context is popped
         if (!bc.Put(g.data(), g.size() * sizeof(GCopy), stream) ||
             !bs.Put(pc.tiles.start.data(), pc.tiles.start.size() * sizeof(int), stream) ||
             !bi.Put(pc.tiles.index.empty() ? nullptr : pc.tiles.index.data(), pc.tiles.index.size() * sizeof(int),

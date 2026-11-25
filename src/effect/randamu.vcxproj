@@ -95,4 +95,9 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
     <ClCompile Include="..\hook\*.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- the CUDA kernel as an embedded PTX header (generated, git-ignored): made here when a plain msbuild finds it
+       missing (tools/build.ps1 makes it before every build) -->
+  <Target Name="RandamuPtx" BeforeTargets="ClCompile" Condition="!Exists('$(RepoRoot)src\gpu\fast_raster_ptx.h')">
+    <Exec Command="pwsh -NoProfile -File &quot;$(RepoRoot)tools\build_ptx.ps1&quot;" />
+  </Target>
 </Project>

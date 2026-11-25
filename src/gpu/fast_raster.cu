@@ -1,7 +1,8 @@
 // randamu: the fast mode's rasterizer on the GPU. Built into PTX by tools/build_ptx.ps1 (nvcc -ptx) and loaded
 // at run time with the CUDA driver API (src/gpu/gpu_raster.cpp). The same drawing as src/core/raster.cpp
 // (DrawTile): copies nearest first, per pixel at most MAX_FRAGS fragments, those behind an opaque fragment
-// dropped, past the limit the farthest goes under a back accumulator, then far to near by the depth at the
+// dropped, past the limit the farthest (and anything farther than what is already there) goes under a back
+// accumulator, then far to near by the depth at the
 // pixel (equal depths by rank), bilinear sampling, straight alpha in and out.
 // One block = one 16x16 tile, one thread = one pixel; one launch = a band of tile rows.
 
@@ -42,6 +43,7 @@ extern "C" __global__ void FastRaster(const float4* __restrict__ src, int srcPit
     int n = 0;
     float opaqueIz = 0.f;
     float4 back = make_float4(0.f, 0.f, 0.f, 0.f);
+    float backNear = 0.f;  // the nearest 1 / z under the back: anything farther goes under it too
     const float px = (float)x, py = (float)y;
     const int j1 = tileStart[tile + 1];
     for (int j = tileStart[tile]; j < j1; j++) {
@@ -72,16 +74,27 @@ extern "C" __global__ void FastRaster(const float4* __restrict__ src, int srcPit
                 if (fz[k] >= cut) fc[m] = fc[k], fz[m] = fz[k], fr[m] = fr[k], m++;
             n = m;
         }
-        if (n == MAX_FRAGS) {
+        bool toBack = hw < backNear;
+        if (!toBack && n == MAX_FRAGS) {
             int far = 0;
             for (int k = 1; k < n; k++)
                 if (fz[k] < fz[far] || (fz[k] == fz[far] && fr[k] < fr[far])) far = k;
-            back = Over(back, fc[far]);
-            n--;
-            fc[far] = fc[n], fz[far] = fz[n], fr[far] = fr[n];
+            if (hw < fz[far] || (hw == fz[far] && c.rank < fr[far])) {
+                toBack = true;  // this one is the farthest
+            } else {
+                back = Over(back, fc[far]);
+                backNear = fmaxf(backNear, fz[far]);
+                n--;
+                fc[far] = fc[n], fz[far] = fz[n], fr[far] = fr[n];
+            }
         }
-        fc[n] = s, fz[n] = hw, fr[n] = c.rank;
-        n++;
+        if (toBack) {
+            back = Over(back, s);
+            backNear = fmaxf(backNear, hw);
+        } else {
+            fc[n] = s, fz[n] = hw, fr[n] = c.rank;
+            n++;
+        }
         if (opaque && hw > opaqueIz) opaqueIz = hw;
     }
     for (int k = 1; k < n; k++) {

@@ -61,4 +61,8 @@
     <ClCompile Include="..\..\src\gpu\*.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- the generated PTX header (see src/effect/randamu.vcxproj) -->
+  <Target Name="RandamuPtx" BeforeTargets="ClCompile" Condition="!Exists('$(RepoRoot)src\gpu\fast_raster_ptx.h')">
+    <Exec Command="pwsh -NoProfile -File &quot;$(RepoRoot)tools\build_ptx.ps1&quot;" />
+  </Target>
 </Project>

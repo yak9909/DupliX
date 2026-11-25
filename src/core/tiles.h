@@ -39,8 +39,10 @@ struct PreparedCopies {
 void PrepareCopies(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY,
                    const RasterImage& dst, int tileSize, PreparedCopies* out);
 
-// Per-pixel fragment limit of both rasterizers. Past it the farthest fragment is composited under a back
-// accumulator (approximate only where more than kMaxFrags fragments are visible at one pixel).
+// Per-pixel fragment limit of both rasterizers. Past it the farthest fragment (the incoming one if it is the
+// farthest), and any later fragment farther than one already there, is composited under a back accumulator: a
+// farther fragment never ends above a nearer one; only the order among the fragments under the back is
+// approximate (where more than kMaxFrags fragments are visible at one pixel).
 constexpr int kMaxFrags = 64;
 // A fragment at least this opaque hides everything behind it at its pixel.
 constexpr float kOpaqueAlpha = 1.f - 1.f / 1024.f;

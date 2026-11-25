@@ -1024,6 +1024,50 @@ TEST(raster_overflow_64)
     CHECK(MaxDiff8(a, b, 1.f) <= 1);
 }
 
+// Past the 64-fragment limit the order must stay right: 70 faint fronto-parallel copies on one pixel, each a
+// different colour, arriving nearest first. The 65th (farther than every kept fragment) must go under the
+// others, not above the evicted one; a farther opaque copy must not hide nearer evicted ones.
+TEST(raster_overflow_order)
+{
+    for (int opaqueLast = 0; opaqueLast < 2; opaqueLast++) {
+        const int n = 70;
+        std::vector<PxF> src(n), a(1), b(1);
+        for (int i = 0; i < n; i++) src[i] = i % 2 ? PxF{1, 0, 0, 1} : PxF{1, 1, 0, 0};
+        rnd::RasterImage s = Img(src, n, 1, 32), da = Img(a, 1, 1, 32), db = Img(b, 1, 1, 32);
+        std::vector<rnd::RasterCopy> c;
+        for (int i = 0; i < n; i++) {
+            const double w = 1.0 + 0.01 * i;  // 1 / camera z: copy n-1 is the nearest
+            // screen (x, y) -> src (x + i, y) at depth 1 / w: u = (x * w + i * w) / w
+            rnd::RasterCopy k = {{w, 0, 0, 0, w, 0, i * w, 0, w}, (opaqueLast && i == 0) ? 1.0 : 0.05, 1.0 / w};
+            c.push_back(k);
+        }
+        auto c2 = c;
+        rnd::RasterizeCopies(s, c.data(), n, 1.0, 1.0, da, 1);
+        rnd::RasterizeCopiesReference(s, c2.data(), n, 1.0, 1.0, db, 1);
+        float m = std::max({std::fabs(a[0].a - b[0].a), std::fabs(a[0].r - b[0].r), std::fabs(a[0].g - b[0].g),
+                            std::fabs(a[0].b - b[0].b)});
+        std::printf("  raster_overflow_order opaqueLast=%d: max diff %g\n", opaqueLast, m);
+        CHECK(m < 1e-5f);
+    }
+}
+
+// A worker thread that cannot get its scratch memory stops; the calling thread draws the rest (no
+// std::terminate inside AE). The result is the same.
+TEST(raster_worker_out_of_memory)
+{
+    std::vector<Px8> src = MakeSrc8(40, 30), a((size_t)200 * 150), b((size_t)200 * 150);
+    rnd::RasterImage s = Img(src, 40, 30, 8), da = Img(a, 200, 150, 8), db = Img(b, 200, 150, 8);
+    std::vector<rnd::RasterCopy> c;
+    for (int i = 0; i < 30; i++) c.push_back(Copy(0.7, 100 - i, 0.5 + 0.02 * i, -3.0 * i, -2.0 * i));
+    auto c2 = c;
+    rnd::RasterizeCopies(s, c.data(), (int)c.size(), 1.0, 1.0, da, 4);
+    rnd::RasterTestFailWorkerScratch(true);
+    bool ok = rnd::RasterizeCopies(s, c2.data(), (int)c2.size(), 1.0, 1.0, db, 4);
+    rnd::RasterTestFailWorkerScratch(false);
+    CHECK(ok);
+    CHECK(MaxDiff8(a, b, 1.f) == 0);
+}
+
 TEST(raster_tiled_speed_report)
 {
     // like a cut-out PNG: an opaque ellipse on a transparent background

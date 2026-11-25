@@ -34,6 +34,13 @@ void GpuRasterForget(void* cuContext);
 
 enum GpuRasterStatus { kGpuOk, kGpuAborted, kGpuFailed };
 
+// Device memory for the copy lists (e.g. AE's PF_GPUDeviceSuite1, which can purge AE's own caches when memory is
+// short). alloc returns null on failure. Without one, cuMemAlloc / cuMemFree are used.
+struct GpuAllocator {
+    std::function<void*(size_t)> alloc;
+    std::function<void(void*)> free;
+};
+
 // The same drawing as RasterizeCopies (copies in any order) into dst, on `cuStream` (a CUstream; nullptr = the
 // default stream) of `cuContext` (a CUcontext, made current for the call). Waits until the drawing is done.
 // Drawn in bands of tile rows (one short launch each: no driver timeout); abort (optional) is asked between them.
@@ -41,7 +48,7 @@ enum GpuRasterStatus { kGpuOk, kGpuAborted, kGpuFailed };
 // with GpuRasterizeOnCpu instead.
 GpuRasterStatus GpuRasterize(void* cuContext, void* cuStream, const GpuImage& src, const GpuImage& dst,
                              const RasterCopy* copies, int n, double dsX, double dsY,
-                             const std::function<bool()>& abort = {});
+                             const std::function<bool()>& abort = {}, const GpuAllocator* alloc = nullptr);
 
 // The fallback inside AE's GPU render: copies src to host memory, draws with the CPU rasterizer (RasterizeCopies,
 // the same result as the GPU within its tolerance) and uploads the result to dst. kGpuFailed if the memory copies

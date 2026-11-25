@@ -80,11 +80,16 @@ struct TileScratch {
     int count[kTilePx];
     float opaqueIz[kTilePx];  // the nearest fully opaque fragment so far (0: none): anything behind it is hidden
     __m128 back[kTilePx];     // fragments evicted past kMaxFrags, composited under one another
+    float backNear[kTilePx];  // the nearest 1 / z in back (0: empty): anything farther also goes under it
 };
 
-// Scratch blocks reused across calls (each is 1.5 MB): taken by a worker for one call, then returned.
+std::atomic<bool> g_testFailWorkerScratch{false};
+
+// Scratch blocks reused across calls (each about 0.5 MB: 256 px x 64 fragments x 32 bytes): taken by a worker for
+// one call, then returned. At most kScratchKeep are kept (about two per hardware thread).
 std::mutex g_scratchMutex;
 std::vector<std::unique_ptr<TileScratch>> g_scratchFree;
+const size_t kScratchKeep = std::max<size_t>(8, 2 * (size_t)std::thread::hardware_concurrency());
 std::unique_ptr<TileScratch> TakeScratch()
 {
     {
@@ -100,7 +105,7 @@ std::unique_ptr<TileScratch> TakeScratch()
 void ReturnScratch(std::unique_ptr<TileScratch> s)
 {
     std::lock_guard<std::mutex> lk(g_scratchMutex);
-    if (g_scratchFree.size() < 64) g_scratchFree.push_back(std::move(s));
+    if (g_scratchFree.size() < kScratchKeep) g_scratchFree.push_back(std::move(s));
 }
 
 inline __m128 Over(__m128 front, __m128 behind)
@@ -125,7 +130,8 @@ void DrawTile(const RasterImage& src, const PreparedCopies& pc, int tile, double
                         (size_t)pw * sizeof(P));
         return;
     }
-    for (int i = 0; i < kTilePx; i++) sc.count[i] = 0, sc.opaqueIz[i] = 0.f, sc.back[i] = _mm_setzero_ps();
+    for (int i = 0; i < kTilePx; i++)
+        sc.count[i] = 0, sc.opaqueIz[i] = 0.f, sc.back[i] = _mm_setzero_ps(), sc.backNear[i] = 0.f;
     const float inv = 1.f / Traits<P>::kMax;
     const __m128 invv = _mm_set1_ps(inv), ones = _mm_set1_ps(1.f);
     auto Premul = [invv, ones](__m128 v) {
@@ -193,17 +199,31 @@ void DrawTile(const RasterImage& src, const PreparedCopies& pc, int tile, double
                         if (fp[(k) * kTilePx].iz >= cut) fp[(m++) * kTilePx] = fp[(k) * kTilePx];
                     n = m;
                 }
-                if (n == kMaxFrags) {  // still full: the farthest (lowest rank on a tie) goes under the back
+                // farther than something already under the back: it goes under the back too (never above a
+                // nearer evicted fragment)
+                bool toBack = iz < sc.backNear[p];
+                if (!toBack && n == kMaxFrags) {  // still full: the farthest (lowest rank on a tie) goes under
                     int far = 0;
                     for (int k = 1; k < n; k++)
                         if (fp[(k) * kTilePx].iz < fp[(far) * kTilePx].iz || (fp[(k) * kTilePx].iz == fp[(far) * kTilePx].iz && fp[(k) * kTilePx].rank < fp[(far) * kTilePx].rank)) far = k;
-                    sc.back[p] = Over(sc.back[p], fp[(far) * kTilePx].c);
-                    fp[(far) * kTilePx] = fp[(--n) * kTilePx];
+                    const Frag& f = fp[(far) * kTilePx];
+                    if (iz < f.iz || (iz == f.iz && rank < f.rank)) {
+                        toBack = true;  // this one is the farthest
+                    } else {
+                        sc.back[p] = Over(sc.back[p], f.c);
+                        sc.backNear[p] = std::max(sc.backNear[p], f.iz);
+                        fp[(far) * kTilePx] = fp[(--n) * kTilePx];
+                    }
                 }
-                fp[(n) * kTilePx].c = s;
-                fp[(n) * kTilePx].iz = iz;
-                fp[(n) * kTilePx].rank = rank;
-                n++;
+                if (toBack) {
+                    sc.back[p] = Over(sc.back[p], s);
+                    sc.backNear[p] = std::max(sc.backNear[p], iz);
+                } else {
+                    fp[(n) * kTilePx].c = s;
+                    fp[(n) * kTilePx].iz = iz;
+                    fp[(n) * kTilePx].rank = rank;
+                    n++;
+                }
                 if (opaque && iz > sc.opaqueIz[p]) {
                     if (sc.opaqueIz[p] == 0.f) opaquePx++;
                     sc.opaqueIz[p] = iz;
@@ -251,7 +271,16 @@ bool Run(const RasterImage& src, const PreparedCopies& pc, double dsX, double ds
     std::atomic<int> next{0};
     std::atomic<bool> stop{false};
     auto worker = [&](bool caller) {
-        std::unique_ptr<TileScratch> scp = TakeScratch();
+        std::unique_ptr<TileScratch> scp;
+        try {
+            if (!caller && g_testFailWorkerScratch) throw std::bad_alloc();
+            scp = TakeScratch();
+        } catch (const std::bad_alloc&) {
+            // a worker without memory stops (an exception leaving a std::thread would end AE); the calling
+            // thread passes it on after the others are joined
+            if (caller) throw;
+            return;
+        }
         TileScratch& sc = *scp;
         for (int k; !stop.load(std::memory_order_relaxed) && (k = next.fetch_add(1)) < tiles;) {
             // AE's abort callback is only asked on the calling (render) thread
@@ -270,12 +299,20 @@ bool Run(const RasterImage& src, const PreparedCopies& pc, double dsX, double ds
     } catch (...) {
         // no more threads: the ones already started and this one take all the tiles
     }
-    worker(true);
+    try {
+        worker(true);
+    } catch (...) {
+        stop = true;
+        for (auto& th : pool) th.join();
+        throw;
+    }
     for (auto& th : pool) th.join();
     return !stop.load();
 }
 
 }  // namespace
+
+void RasterTestFailWorkerScratch(bool fail) { g_testFailWorkerScratch = fail; }
 
 bool RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
                      int threads, const std::function<bool()>& abort)

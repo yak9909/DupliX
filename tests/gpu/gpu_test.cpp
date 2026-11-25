@@ -96,10 +96,10 @@ struct Compare {
 // Draws `copies` with both rasterizers into a dw x dh buffer at origin (ox, oy), downsample ds; returns the
 // difference in 8-bit units (the GPU output converted to ARGB).
 static Compare Run(void* ctx, const std::vector<ARGB>& src, int sw, int sh, std::vector<rnd::RasterCopy> copies, int dw,
-                   int dh, int ox, int oy, double ds, double shift, double* gpuMs)
+                   int dh, int ox, int oy, double ds, double shift, double* gpuMs, int sox = 0, int soy = 0)
 {
     std::vector<ARGB> cpu((size_t)dw * dh);
-    rnd::RasterImage s = {(void*)src.data(), sw, sh, (long)(sw * sizeof(ARGB)), 32, 0, 0};
+    rnd::RasterImage s = {(void*)src.data(), sw, sh, (long)(sw * sizeof(ARGB)), 32, sox, soy};
     rnd::RasterImage d = {cpu.data(), dw, dh, (long)(dw * sizeof(ARGB)), 32, ox, oy};
     d.screenShiftX = shift;
     auto c1 = copies;
@@ -114,10 +114,22 @@ static Compare Run(void* ctx, const std::vector<ARGB>& src, int sw, int sh, std:
         CHECK(!"gpu alloc/upload");
         return r;
     }
-    rnd::GpuImage gs = {dsrc, sw, sh, (long)(sw * sizeof(BGRA)), 0, 0};
+    rnd::GpuImage gs = {dsrc, sw, sh, (long)(sw * sizeof(BGRA)), sox, soy};
     rnd::GpuImage gd = {ddst, dw, dh, (long)(dw * sizeof(BGRA)), ox, oy, shift, 0};
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), ds, ds) == rnd::kGpuOk;
+    // device memory through an allocator like AE's GPU memory suite: every block allocated is freed
+    int allocs = 0, frees = 0;
+    rnd::GpuAllocator al;
+    al.alloc = [&](size_t bytes) {
+        allocs++;
+        return rnd::cu::Alloc(bytes);
+    };
+    al.free = [&](void* p) {
+        frees++;
+        rnd::cu::Free(p);
+    };
+    bool ok = rnd::GpuRasterize(ctx, nullptr, gs, gd, copies.data(), (int)copies.size(), ds, ds, {}, &al) == rnd::kGpuOk;
+    CHECK(allocs > 0 && allocs == frees);
     if (gpuMs) *gpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     CHECK(ok);
     CHECK(rnd::cu::Download(out.data(), ddst, out.size() * sizeof(BGRA)));
@@ -175,6 +187,28 @@ int main()
         Compare c = Run(ctx, src, sw, sh, copies, 320, 180, 800, 450, 1.0, 0, nullptr);
         std::printf("gpu_overflow_64: max %.3f mean %.4f >2: %.4f%%\n", c.maxDiff, c.Mean(), 100 * c.Frac());
         CHECK(c.Mean() <= 0.1f && c.Frac() <= 0.01f);
+    }
+    // gpu_origin_half: half resolution with a negative / nonzero source origin (an effect before that grows the
+    // layer) and a negative destination origin
+    {
+        auto copies = Scene(21, 60, sw, sh, 600, 50, 40);
+        Compare c = Run(ctx, src, sw, sh, copies, 960, 540, -37, 11, 0.5, 5.5, nullptr, -8, 5);
+        std::printf("gpu_origin_half: max %.3f mean %.4f >2: %.4f%% drawn %zu\n", c.maxDiff, c.Mean(), 100 * c.Frac(), c.drawn);
+        CHECK(c.drawn > 0 && c.Mean() <= 0.1f && c.Frac() <= 0.001f);
+    }
+    // gpu_overflow_order: 70 faint copies on one pixel, nearest first; the GPU keeps the CPU's order past 64
+    {
+        const int n = 70;
+        std::vector<ARGB> s(n);
+        for (int i = 0; i < n; i++) s[i] = i % 2 ? ARGB{1, 0, 0, 1} : ARGB{1, 1, 0, 0};
+        std::vector<rnd::RasterCopy> c;
+        for (int i = 0; i < n; i++) {
+            const double w = 1.0 + 0.01 * i;
+            c.push_back({{w, 0, 0, 0, w, 0, i * w, 0, w}, i == 0 ? 1.0 : 0.05, 1.0 / w});
+        }
+        Compare r = Run(ctx, s, n, 1, c, 1, 1, 0, 0, 1.0, 0, nullptr);
+        std::printf("gpu_overflow_order: max %.4f (8-bit units)\n", r.maxDiff);
+        CHECK(r.maxDiff < 0.01f);
     }
     // gpu_no_copies: all transparent
     {

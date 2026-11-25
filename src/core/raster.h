@@ -37,4 +37,7 @@ struct RasterCopy {
 bool RasterizeCopies(const RasterImage& src, RasterCopy* copies, int n, double dsX, double dsY, RasterImage& dst,
                      int threads, const std::function<bool()>& abort = {});
 
+// For the unit tests only: worker threads (not the calling thread) fail to get their scratch memory.
+void RasterTestFailWorkerScratch(bool fail);
+
 }  // namespace rnd

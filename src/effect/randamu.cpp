@@ -859,10 +859,25 @@ PF_Err FastSmartRenderGpu(PF_InData* in_data, PF_SmartRenderExtra* extra, PF_Eff
     AEFX_CLR_STRUCT(info);
     void* src = nullptr;
     void* dst = nullptr;
-    if (extra->input->what_gpu != PF_GPU_Framework_CUDA || !gs ||
-        gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info) ||
-        gs->GetGPUWorldData(in_data->effect_ref, outW, &dst) || (inW && gs->GetGPUWorldData(in_data->effect_ref, inW, &src)))
-        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    // PreRender offers the GPU for CUDA only
+    if (extra->input->what_gpu != PF_GPU_Framework_CUDA || !gs) return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    PF_Err e = gs->GetDeviceInfo(in_data->effect_ref, extra->input->device_index, &info);
+    if (!e) e = gs->GetGPUWorldData(in_data->effect_ref, outW, &dst);
+    if (!e && inW) e = gs->GetGPUWorldData(in_data->effect_ref, inW, &src);
+    if (e) {
+        RLog("fast: gpu suite error %d", (int)e);
+        return e;
+    }
+    // the copy lists in AE's GPU memory (AE can purge its caches for them when memory is short)
+    rnd::GpuAllocator al;
+    const PF_ProgPtr ref = in_data->effect_ref;
+    const A_u_long dev = extra->input->device_index;
+    PF_GPUDeviceSuite1* gsp = gs.s;
+    al.alloc = [gsp, ref, dev](size_t bytes) -> void* {
+        void* p = nullptr;
+        return gsp->AllocateDeviceMemory(ref, dev, bytes, &p) ? nullptr : p;
+    };
+    al.free = [gsp, ref, dev](void* p) { gsp->FreeDeviceMemory(ref, dev, p); };
     rnd::GpuImage gin = {src, inW ? (int)inW->width : 0, inW ? (int)inW->height : 0, inW ? (long)inW->rowbytes : 0,
                          f ? (int)f->inRect.left : 0, f ? (int)f->inRect.top : 0};
     rnd::GpuImage gout = {dst, (int)outW->width, (int)outW->height, (long)outW->rowbytes, (int)outW->origin_x,
@@ -876,7 +891,7 @@ PF_Err FastSmartRenderGpu(PF_InData* in_data, PF_SmartRenderExtra* extra, PF_Eff
     auto aborted = [in_data]() { return in_data->inter.abort && PF_ABORT(in_data) != PF_Err_NONE; };
     const double dsX = f ? f->dsX : 1.0, dsY = f ? f->dsY : 1.0;
     rnd::GpuRasterStatus st = rnd::GpuRasterize(info.contextPV, info.command_queuePV, gin, gout, copies.data(),
-                                                (int)copies.size(), dsX, dsY, aborted);
+                                                (int)copies.size(), dsX, dsY, aborted, &al);
     bool viaCpu = false;
     if (st == rnd::kGpuFailed) {
         // the GPU could not draw this frame (logged by gpu_raster): the CPU rasterizer draws it into AE's buffers
