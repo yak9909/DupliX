@@ -1,8 +1,11 @@
-// Fast mode checks (plan docs/superpowers/plans/2026-11-24-fast-mode.md, Task 4).
-// For every case builds fm_<case> (fast mode on) and nm_<case> (the same scene, normal mode), puts both in
-// the render queue (TIFF r_<comp>_[#####].tif), saves fast.aep. In this AE session it also saves:
+// Fast mode checks (plan docs/superpowers/plans/2026-11-25-fast-mode-plugin.md, Task 4).
+// For every case builds fm_<case> (fast mode: 2D layer in its initial state) and nm_<case> (the same scene in
+// normal mode: 3D layer in its initial state). The placement is in the World Transform parameters, so both
+// show the same copies. Both go in the render queue (TIFF r_<comp>_[#####].tif); fast.aep is saved.
+// In this AE session it also saves:
 //   fast_anim: single_<frame>.png  (fm_fast_anim frames rendered one by one, out of order)
-//   fast_toggle: tog_on.png (fast on), tog_off.png (switched off by script), tog_nm.png (normal mode comp)
+//   fast_remove: rm_on.png, rm_off.png (effect removed), rm_plain.png (never had it)
+// nohooks_rq.txt: the render queue index of fm_fast_nohooks (run_fast_mode.ps1 renders it again without hooks).
 // Env: RANDAMU_TEST_DIR (output), RANDAMU_FAST_IMAGE (png source), RANDAMU_FAST_ONLY (comma list, optional).
 (function () {
     var outDir = $.getenv("RANDAMU_TEST_DIR");
@@ -12,45 +15,53 @@
     function tg(L) { return L.property("ADBE Transform Group"); }
     var imgItem = null;
     var W = 400, H = 300;
-    var FAST = 15;  // effect property index of "Fast Mode" (= RP_FAST)
+    var FAST = 15, WPOS = 17, WROT = 20, WSCALE = 23;  // effect property indices (= RP_*)
 
+    var scatter = {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]};
+    var world = {pos: [0, -10, 0], rot: [0, 0, 0]};
     var cases = [
-        // one copy, no ranges: the plane must put the drawing exactly where the real layer is
-        {name: "fast_identity", image: true, params: {count: 1}, targetRot: [25, -30, 10], camMoved: true},
-        {name: "fast_scatter", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]}},
-        {name: "fast_anim", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         anim: true, frames: 30},
-        {name: "fast_half", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         half: true},
-        {name: "fast_nocam", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         noCam: true},
-        {name: "fast_count0", image: true, params: {count: 0}},
-        {name: "fast_toggle", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         toggle: true},
+        // one copy, no ranges: the drawing must be exactly where the real layer is
+        {name: "fast_identity", params: {count: 1}, world: {pos: [0, -10, 0], rot: [25, -30, 10]}, camMoved: true},
+        {name: "fast_scatter", params: scatter, world: world},
+        {name: "fast_anim", params: scatter, world: world, anim: true, frames: 30},
+        {name: "fast_half", params: scatter, world: world, half: true},
+        {name: "fast_nocam", params: scatter, world: world, noCam: true},
+        {name: "fast_count0", params: {count: 0}, world: world},
         // an effect before randamu grows the layer: the input's origin is negative
-        {name: "fast_grow", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         shadow: true},
+        {name: "fast_grow", params: scatter, world: world, shadow: true},
+        // the layer's 2D position moves the whole drawing (compared with fm_fast_move2d_ref; no Back layer, which
+        // would not move)
+        {name: "fast_move2d", params: scatter, world: world, move2d: [50, 20], noBack: true},
+        {name: "fast_move2d_ref", params: scatter, world: world, move2d: [0, 0], noBack: true},
+        // rendered again by run_fast_mode.ps1 with RANDAMU_HOOKMASK=0 (compared with fm_fast_scatter)
+        {name: "fast_nohooks", params: scatter, world: world, nohooks: true},
         // removing the effect while fast mode is on (same session): the plain layer again (PNGs only)
-        {name: "fast_remove", image: true, params: {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]},
-         remove: true}
+        {name: "fast_remove", params: scatter, world: world, remove: true}
     ];
 
-    function setParams(fx, p, fast) {
+    function setParams(fx, p, w, fast) {
         var pos = p.pos || [0, 0, 0], rot = p.rot || [0, 0, 0], sc = p.scale || [100, 100], op = p.opacity || [100, 100];
+        // fast mode first: switching it on transfers the layer's transform, here the initial state (no change)
+        fx.property(FAST).setValue(fast ? 1 : 0);
         fx.property(2).setValue(p.count);
         fx.property(3).setValue(p.seed || 0);
         for (var k = 0; k < 3; k++) { fx.property(4 + k).setValue(pos[k]); fx.property(7 + k).setValue(rot[k]); }
         fx.property(10).setValue(sc[0]); fx.property(11).setValue(sc[1]);
         fx.property(12).setValue(op[0]); fx.property(13).setValue(op[1]);
-        fx.property(FAST).setValue(fast ? 1 : 0);
+        for (var j = 0; j < 3; j++) {
+            fx.property(WPOS + j).setValue(w.pos[j]);
+            fx.property(WROT + j).setValue(w.rot[j]);
+        }
     }
     function build(c, fast, noFx) {
         var comp = app.project.items.addComp((noFx ? "plain_" : fast ? "fm_" : "nm_") + c.name, W, H, 1, c.frames ? c.frames / 30 : 2, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
-        // another 3D layer behind the copies (the plane must sort in front of it)
-        var back = comp.layers.addSolid([0.2, 0.3, 0.6], "Back", 300, 200, 1);
-        back.threeDLayer = true;
-        tg(back).property("ADBE Position").setValue([200, 150, 900]);
+        // another 3D layer behind the copies
+        if (!c.noBack) {
+            var back = comp.layers.addSolid([0.2, 0.3, 0.6], "Back", 300, 200, 1);
+            back.threeDLayer = true;
+            tg(back).property("ADBE Position").setValue([200, 150, 900]);
+        }
         var cam = null;
         if (!c.noCam) {
             cam = comp.layers.addCamera("Cam", [200, 150]);
@@ -59,30 +70,15 @@
                 tg(cam).property("ADBE Anchor Point").setValue([230, 170, 100]);  // point of interest
             }
         }
-        var T;
-        if (c.image) {
-            if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_FAST_IMAGE"))));
-            T = comp.layers.add(imgItem);
-        } else {
-            T = comp.layers.addSolid([1, 1, 1], "Target", 100, 100, 1);
-        }
+        if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_FAST_IMAGE"))));
+        var T = comp.layers.add(imgItem);
         T.name = "Target";
-        T.threeDLayer = true;
-        // Accepts Lights off (fast mode ignores lights; there are none here anyway)
-        tg(T).property("ADBE Position").setValue([200, 140, 0]);
-        if (c.targetRot) {
-            tg(T).property("ADBE Rotate X").setValue(c.targetRot[0]);
-            tg(T).property("ADBE Rotate Y").setValue(c.targetRot[1]);
-            tg(T).property("ADBE Rotate Z").setValue(c.targetRot[2]);
-        }
-        if (c.anim) {
-            // layer time != comp time: the plane table is keyed by layer time
-            T.startTime = -0.4;
-            var tp = tg(T).property("ADBE Position");
-            tp.setValueAtTime(0, [140, 120, 0]);
-            tp.setValueAtTime(29 / 30, [260, 170, 150]);
-            tg(T).property("ADBE Rotate Y").setValueAtTime(0, 0);
-            tg(T).property("ADBE Rotate Y").setValueAtTime(29 / 30, 40);
+        // the initial state: anchor at the centre (default), position = comp centre, 100%, no rotation
+        T.threeDLayer = !fast;
+        tg(T).property("ADBE Position").setValue(fast ? [W / 2, H / 2] : [W / 2, H / 2, 0]);
+        if (fast && c.move2d) tg(T).property("ADBE Position").setValue([W / 2 + c.move2d[0], H / 2 + c.move2d[1]]);
+        if (c.anim) T.startTime = -0.4;  // layer time != comp time
+        if (cam && c.anim) {
             var cp = tg(cam).property("ADBE Position");
             var p0 = cp.value;
             cp.setValueAtTime(0, [p0[0] - 150, p0[1] - 60, p0[2]]);
@@ -95,7 +91,14 @@
         }
         if (noFx) return comp;
         var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-        setParams(fx, c.params, fast);
+        setParams(fx, c.params, c.world, fast);
+        if (c.anim) {
+            // the World Transform animates (script key times are comp times)
+            var wp = fx.property(WPOS), wr = fx.property(WROT + 1), wz = fx.property(WPOS + 2);
+            wp.setValueAtTime(0, -60); wp.setValueAtTime(29 / 30, 60);
+            wz.setValueAtTime(0, 0); wz.setValueAtTime(29 / 30, 150);
+            wr.setValueAtTime(0, 0); wr.setValueAtTime(29 / 30, 40);
+        }
         if (c.half) comp.resolutionFactor = [2, 2];
         return comp;
     }
@@ -118,6 +121,7 @@
             try { rq.setSetting("Resolution", "Half"); set = true; } catch (eh) { log("setSetting Resolution failed: " + eh.message); }
             log("half: resolution setting " + (set ? "set" : "not set"));
         }
+        return app.project.renderQueue.numItems;
     }
     function png(comp, name, time) {
         var f = new File(outDir + "/" + name + ".png");
@@ -143,27 +147,25 @@
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;
-            var fm = build(c, true), nm = build(c, false);
+            var fm = build(c, true);
             if (c.remove) {
                 png(fm, "rm_on", 0);
                 fxOf(fm).remove();
                 png(fm, "rm_off", 0);
-                png(build(c, false, true), "rm_plain", 0);
+                png(build(c, true, true), "rm_plain", 0);  // the same 2D layer, never had the effect
                 log("built " + c.name);
                 continue;
             }
-            addRQ(fm, c);
-            addRQ(nm, c);
+            var idx = addRQ(fm, c);
+            if (c.nohooks) {
+                var nf = new File(outDir + "/nohooks_rq.txt");
+                nf.open("w"); nf.write(String(idx)); nf.close();
+            } else if (!c.move2d) {
+                addRQ(build(c, false), c);
+            }
             if (c.anim) {
                 var order = [29, 3, 17, 0, 11, 24, 8, 21];
                 for (var k = 0; k < order.length; k++) png(fm, "single_" + order[k], order[k] / 30);
-            }
-            if (c.toggle) {
-                png(fm, "tog_on", 0);
-                fxOf(fm).property(FAST).setValue(0);
-                png(fm, "tog_off", 0);
-                png(nm, "tog_nm", 0);
-                fxOf(fm).property(FAST).setValue(1);  // the render queue renders it in fast mode
             }
             log("built " + c.name);
         }

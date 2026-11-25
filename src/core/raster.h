@@ -15,6 +15,9 @@ struct RasterImage {
     long rowBytes;
     int bpc;
     int originX, originY;
+    // dst only: full-resolution screen px = full-resolution buffer px + shift (fast mode on a 2D layer:
+    // the output is in layer px, screen = layer px - anchor + comp centre). src ignores it.
+    double screenShiftX = 0, screenShiftY = 0;
 };
 
 // screenToSrc: full-resolution screen px -> full-resolution source layer px (CopyHomography).

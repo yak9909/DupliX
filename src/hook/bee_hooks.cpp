@@ -14,7 +14,6 @@
 #include "effect/randamu.h"
 #include "hook/bee_abi.h"
 #include "hook/flatten_site.h"
-#include "hook/fast_registry.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
 
@@ -169,7 +168,7 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     r.p.seed = (int)(seed + 0.5);
     r.p.keepFirst = keep != 0;
     r.p.fast = fast != 0;
-    r.valid = true;
+    r.valid = !r.p.fast;  // fast mode is drawn by the effect itself: the hooks leave the layer alone
     *out = r;
     return true;
 }
@@ -356,7 +355,6 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) {
             MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
-            if (s.p.fast) return 1;  // one plane showing the effect's own drawing of all copies
             return (uintptr_t)(unsigned)s.p.count;
         }
         uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
@@ -395,33 +393,6 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     auto* v3 = (bee::RawVec*)f;
     auto* v4 = (bee::RawVec*)g;
     for (int k = 0; k < 4; k++) ret[k] = rect[k];
-    if (s.p.fast) {
-        // Always exactly one entry (Count answered 1). Never the original function here: for an AV layer it
-        // returns an empty list, and the layer-set path behind it crashed AE (spike test 4).
-        LayerKey k{};
-        double m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        bool exact = false, found = false;
-        if (KeyOf((const void*)a, &k)) {
-            const int* ti = (const int*)c;
-            found = ti && FastGetPlane(k, ti[0], (unsigned)ti[1], m, &exact);
-        }
-        static std::atomic<long long> nExact{0}, nOther{0}, nNone{0};
-        long long cnt = !found ? ++nNone : exact ? ++nExact : ++nOther;
-        if ((cnt & (cnt - 1)) == 0 && (!found || !exact || cnt >= 64))
-            RLog("fast: plane lookups exact=%lld other-time=%lld none=%lld (comp %d layer %d t=%d/%d)",
-                 nExact.load(), nOther.load(), nNone.load(), k.compItemId, k.layerId, c ? ((const int*)c)[0] : 0,
-                 c ? ((const int*)c)[1] : 0);
-        if (bee::VecReserve(vR, bee::kRectBytes, 1) && bee::VecReserve(v3, bee::kM3Bytes, 1) &&
-            bee::VecReserve(v4, bee::kM4Bytes, 1)) {
-            std::memcpy(vR->last, rect, bee::kRectBytes);
-            vR->last += bee::kRectBytes;
-            g_m3Identity(v3->last);
-            v3->last += bee::kM3Bytes;
-            std::memcpy(v4->last, m, bee::kM4Bytes);
-            v4->last += bee::kM4Bytes;
-        }
-        return b;
-    }
     size_t n = (size_t)s.p.count;
     if (!bee::VecReserve(vR, bee::kRectBytes, n) || !bee::VecReserve(v3, bee::kM3Bytes, n) ||
         !bee::VecReserve(v4, bee::kM4Bytes, n))
@@ -507,7 +478,6 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     int index = *(int*)(v + bee::kArtLayerToSubIndex);
     ParamSnapshot s;
     if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
-    if (s.p.fast) return op;  // the copies' opacities are already in the effect's drawing
     CopyXform x;
     ComputeCopy(s.p, index, s.anchorX, s.anchorY, &x);
     MarkTiming(layer, t, TK_COPY, t0);

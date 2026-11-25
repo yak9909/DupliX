@@ -10,7 +10,6 @@
 #include "core/raster.h"
 #include "core/scatter.h"
 #include "core/world.h"
-#include "hook/fast_registry.h"
 #include "hook/flatten_site.h"
 #include "hook/registry.h"
 #include "hook/bee_abi.h"
@@ -617,6 +616,21 @@ TEST(raster_origins)
         for (int x = 0; x < 4; x++) CHECK(SamePx(dst[(size_t)y * 4 + x], src[(size_t)(y + 5) * w + (x + 7)]));
 }
 
+TEST(raster_screen_shift)
+{
+    // fast mode on a 2D layer: dst buffer px (i, j) is layer px, screen px = layer px + shift
+    const int w = 30, h = 20;
+    auto src = MakeSrc8(w, h);
+    std::vector<Px8> dst(8 * 6);
+    rnd::RasterImage s = Img(src, w, h, 8), d = Img(dst, 8, 6, 8);
+    d.screenShiftX = 10;
+    d.screenShiftY = 5;
+    rnd::RasterCopy c = Copy(1.0, 100);
+    rnd::RasterizeCopies(s, &c, 1, 1.0, 1.0, d, 1);
+    for (int y = 0; y < 6; y++)
+        for (int x = 0; x < 8; x++) CHECK(SamePx(dst[(size_t)y * 8 + x], src[(size_t)(y + 5) * w + (x + 10)]));
+}
+
 TEST(raster_opacity_half)
 {
     const int w = 6, h = 5;
@@ -854,73 +868,6 @@ TEST(raster_speed_report)
     rnd::RasterizeCopies(s, c, 0, 1.0, 1.0, d, counts[1]);
     std::printf("raster speed: 1920x1080, 0 copies (clear only), %d threads: %.2f ms\n", counts[1],
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-}
-
-// ---- fast mode: plane table
-static void PlaneOf(double v, double m[16])
-{
-    for (int k = 0; k < 16; k++) m[k] = v + k;
-}
-
-TEST(fast_registry_exact_time_rational)
-{
-    double a[16], b[16], o[16];
-    PlaneOf(1, a);
-    PlaneOf(2, b);
-    rnd::FastSetPlane({40, 2}, 10, 30, a);
-    rnd::FastSetPlane({40, 2}, 11, 30, b);
-    bool exact = false;
-    CHECK(rnd::FastGetPlane({40, 2}, 10, 30, o, &exact) && exact && o[0] == 1);
-    CHECK(rnd::FastGetPlane({40, 2}, 22, 60, o, &exact) && exact && o[0] == 2);  // same time, other scale
-    rnd::FastClear({40, 2});
-}
-
-TEST(fast_registry_fallback_last)
-{
-    double a[16], b[16], o[16];
-    PlaneOf(1, a);
-    PlaneOf(2, b);
-    rnd::FastSetPlane({41, 2}, 11, 30, b);
-    rnd::FastSetPlane({41, 2}, 10, 30, a);
-    bool exact = true;
-    CHECK(rnd::FastGetPlane({41, 2}, 99, 30, o, &exact) && !exact && o[0] == 2);  // nearest: 11
-    CHECK(!rnd::FastGetPlane({41, 3}, 10, 30, o, &exact));  // other layer
-    CHECK(!rnd::FastGetPlane({42, 2}, 10, 30, o, &exact));  // other comp
-    rnd::FastClear({41, 2});
-    CHECK(!rnd::FastGetPlane({41, 2}, 10, 30, o, &exact));
-}
-
-TEST(fast_registry_keeps_recent_64)
-{
-    // MFR on a many-core machine renders dozens of frames at once: keep 64 times per layer.
-    double m[16], o[16];
-    for (int i = 0; i < 70; i++) {
-        PlaneOf(i, m);
-        rnd::FastSetPlane({43, 1}, i, 30, m);
-    }
-    bool exact = false;
-    CHECK(rnd::FastGetPlane({43, 1}, 6, 30, o, &exact) && exact && o[0] == 6);
-    CHECK(rnd::FastGetPlane({43, 1}, 5, 30, o, &exact) && !exact);  // dropped
-    PlaneOf(500, m);
-    rnd::FastSetPlane({43, 1}, 40, 30, m);  // same time again: replaced in place
-    CHECK(rnd::FastGetPlane({43, 1}, 40, 30, o, &exact) && exact && o[0] == 500);
-    CHECK(rnd::FastGetPlane({43, 1}, 6, 30, o, &exact) && exact && o[0] == 6);
-    rnd::FastClear({43, 1});
-}
-
-TEST(fast_registry_fallback_nearest)
-{
-    // Motion blur asks for sub-frame times; MFR registers other frames in between: use the nearest time.
-    double m[16], o[16];
-    const int times[4] = {30, 10, 20, 40};  // registration order; 40 is the last
-    for (int t : times) {
-        PlaneOf(t, m);
-        rnd::FastSetPlane({44, 1}, t, 30, m);
-    }
-    bool exact = true;
-    CHECK(rnd::FastGetPlane({44, 1}, 41, 60, o, &exact) && !exact && o[0] == 20);  // 20.5/30 -> 20
-    CHECK(rnd::FastGetPlane({44, 1}, 11, 30, o, &exact) && !exact && o[0] == 10);
-    rnd::FastClear({44, 1});
 }
 
 // ---- hook tests

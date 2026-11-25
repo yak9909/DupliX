@@ -55,8 +55,8 @@ def main() -> int:
         report(name, ok, f"{tag}fast vs normal {stats(dd)}")
         return ok
 
-    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_half", "fast_nocam", "fast_count0", "fast_toggle",
-             "fast_grow", "fast_remove"]
+    cases = ["fast_identity", "fast_scatter", "fast_anim", "fast_half", "fast_nocam", "fast_count0", "fast_grow",
+             "fast_move2d", "fast_nohooks", "fast_remove"]
     for c in cases:
         if only and c not in only:
             continue
@@ -69,6 +69,20 @@ def main() -> int:
             report(c, doff.max() <= 1, f"removed in the session vs never had it {stats(doff)}")
             don = diff(load(on), load(plain))
             report(c + " on", don.max() > 32, f"while on, the copies were shown (vs plain {stats(don)})")
+            continue
+        if c in ("fast_move2d", "fast_nohooks"):  # fast mode only, compared with fm_fast_scatter
+            ref_comp = "fm_fast_move2d_ref" if c == "fast_move2d" else "fm_fast_scatter"
+            fm, ref = frame(d, "fm_" + c, 0), frame(d, ref_comp, 0)
+            if not fm.exists() or not ref.exists():
+                report(c, False, f"MISSING {fm.name if not fm.exists() else ref.name}")
+                continue
+            a, b = load(fm), load(ref)
+            if c == "fast_move2d":  # the layer's 2D position moved the whole drawing by (50, 20)
+                dd = diff(a[20:, 50:], b[:-20, :-50])
+                report(c, dd.max() <= 1, f"moved by (50, 20) vs fm_fast_move2d_ref {stats(dd)}")
+            else:
+                dd = diff(a, b)
+                report(c, dd.max() <= 1, f"without hooks vs with hooks {stats(dd)}")
             continue
         fm, nm = frame(d, "fm_" + c, 0), frame(d, "nm_" + c, 0)
         if not fm.exists() or not nm.exists():
@@ -91,15 +105,6 @@ def main() -> int:
         elif c == "fast_count0":
             dd = diff(a, b)
             report(c, dd.max() <= 1, f"fast vs normal (no copies) {stats(dd)}")
-        elif c == "fast_toggle":
-            near(c, a, b, 2.0, 0.01, "rendered with fast on: ")
-            on, off, nmp = d / "tog_on.png", d / "tog_off.png", d / "tog_nm.png"
-            if on.exists() and off.exists() and nmp.exists():
-                doff = diff(load(off), load(nmp))
-                report(c + " off", doff.max() <= 1, f"switched off in the session vs normal {stats(doff)}")
-                near(c + " on", load(on), load(nmp), 2.0, 0.01, "in the session: ")
-            else:
-                report(c + " pngs", False, "tog_*.png missing")
         elif c == "fast_anim":
             worst_mean, worst_frac, bad = 0.0, 0.0, []
             for f in range(30):

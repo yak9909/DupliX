@@ -77,7 +77,8 @@ bool CopyBox(const RasterImage& src, const RasterCopy& c, double dsX, double dsY
                 whole = true;
                 break;
             }
-            double sx = a / w * dsX - dst.originX - 0.5, sy = b / w * dsY - dst.originY - 0.5;
+            double sx = (a / w - dst.screenShiftX) * dsX - dst.originX - 0.5,
+                   sy = (b / w - dst.screenShiftY) * dsY - dst.originY - 0.5;
             mnx = std::min(mnx, sx), mxx = std::max(mxx, sx), mny = std::min(mny, sy), mxy = std::max(mxy, sy);
         }
     if (whole) {
@@ -139,13 +140,13 @@ void DrawRows(const RasterImage& src, const RasterCopy* copies, const Box* boxes
         for (int x = 0; x < w; x++) head[x] = -1;
         Frag* frags = sc.frags.data();
         size_t nFrag = 0, capFrag = sc.frags.size();
-        const double sy = (y + dst.originY + 0.5) / dsY;
+        const double sy = (y + dst.originY + 0.5) / dsY + dst.screenShiftY;
         for (int i = 0; i < n; i++) {
             const Box& b = boxes[i];
             if (!b.hit || y < b.y0 || y > b.y1) continue;
             const double* H = copies[i].screenToSrc;
             const float op = (float)copies[i].opacity * inv;
-            const double sx0 = (b.x0 + dst.originX + 0.5) / dsX;
+            const double sx0 = (b.x0 + dst.originX + 0.5) / dsX + dst.screenShiftX;
             // homogeneous source position along the row: linear in x (hw = 1 / camera z)
             double ha = sx0 * H[0] + sy * H[3] + H[6], hb = sx0 * H[1] + sy * H[4] + H[7], hw = sx0 * H[2] + sy * H[5] + H[8];
             const double da = H[0] * stepX, db = H[1] * stepX, dw = H[2] * stepX;

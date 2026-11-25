@@ -32,6 +32,19 @@ foreach ($mfr in $Mfrs) {
     if (-not $p.WaitForExit($RenderTimeoutSec * 1000)) { Write-Host "TIMEOUT aerender mfr=$mfr"; $p.Kill(); $fail++; continue }
     Remove-Item env:RANDAMU_LOG
     Write-Host ("aerender mfr={0}: {1:N1} s" -f $mfr, $sw.Elapsed.TotalSeconds)
+    # fast_nohooks: its render queue item again with no hooks installed (fast mode must not need them)
+    $rqFile = Join-Path $outDir "nohooks_rq.txt"
+    if (Test-Path $rqFile) {
+        $idx = (Get-Content $rqFile -Raw).Trim()
+        Get-ChildItem $outDir -Filter "r_fm_fast_nohooks_*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
+        $null = Repair-AeCrashState
+        $env:RANDAMU_HOOKMASK = "0"
+        $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $outDir "aerender_nohooks_$mfr.log") `
+            -ArgumentList @("-project", "`"$aep`"", "-rqindex", $idx, "-mfr", $mfr, "100", "-v", "ERRORS_AND_PROGRESS")
+        if (-not $p.WaitForExit($RenderTimeoutSec * 1000)) { Write-Host "TIMEOUT aerender nohooks"; $p.Kill(); $fail++ }
+        Remove-Item env:RANDAMU_HOOKMASK
+    }
     & $py -I $check $outDir $mfr $Cases
     if ($LASTEXITCODE -ne 0) { $fail++ }
 }

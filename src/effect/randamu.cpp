@@ -15,7 +15,6 @@
 #include "hook/bee_hooks.h"
 #include "core/fast_plane.h"
 #include "core/raster.h"
-#include "hook/fast_registry.h"
 #include "hook/registry.h"
 #include "hook/timing.h"
 
@@ -142,7 +141,7 @@ struct SeqDataV2 {
 static_assert(sizeof(rnd::WorldXform) == 72, "WorldXform layout is saved in projects");
 static_assert(sizeof(SeqDataV2) == 192, "SeqDataV2 layout is saved in projects");
 
-enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, FastLights };
+enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, Need2D };
 
 rnd::ScatterParams DefaultParams()
 {
@@ -209,24 +208,6 @@ enum class ParamSource {
                 // duplicates an effect, reading it fails AE's check "child not found in parent")
 };
 
-// The layer's "Accepts Lights" switch at layer time t (false if unreadable).
-bool AcceptsLights(SPBasicSuite* sp, AEGP_LayerH L, const A_Time& t)
-{
-    Suite<AEGP_StreamSuite6> ss(sp, kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
-    if (!ss) return false;
-    AEGP_StreamRefH s = nullptr;
-    if (ss->AEGP_GetNewLayerStream(g_pluginId, L, AEGP_LayerStream_ACCEPTS_LIGHTS, &s) || !s) return false;
-    AEGP_StreamValue2 v;
-    std::memset(&v, 0, sizeof(v));
-    bool on = false;
-    if (!ss->AEGP_GetNewStreamValue(g_pluginId, s, AEGP_LTimeMode_LayerTime, &t, FALSE, &v)) {
-        on = v.val.one_d != 0;
-        ss->AEGP_DisposeStreamValue(&v);
-    }
-    ss->AEGP_DisposeStream(s);
-    return on;
-}
-
 // Registers this effect's layer (key + parameter snapshot) for the hooks.
 // writeSeq: store key and parameters in sequence data (only in commands that may write it).
 thread_local int g_lastCompId = 0;  // comp of this thread's last registration (per-frame timing only)
@@ -291,15 +272,20 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     }
     AEGP_LayerFlags lflags = 0;
     ls->AEGP_GetLayerFlags(L, &lflags);
-    SelfState st = rnd::GetHookStatus() != rnd::HookStatus::Installed ? SelfState::NoHooks
-                   : !(lflags & AEGP_LayerFlag_LAYER_IS_3D)            ? SelfState::Not3D
-                   : (!read || !snap.valid)                            ? SelfState::Off
-                                                                       : SelfState::Ready;
-    if (st != SelfState::Ready) snap.valid = false;
+    const bool is3D = (lflags & AEGP_LayerFlag_LAYER_IS_3D) != 0;
+    SelfState st;
+    if (snap.p.fast) {
+        // Fast mode is an ordinary plugin on a 2D layer: no hooks needed, and the hooks leave the layer alone.
+        st = is3D ? SelfState::Need2D : SelfState::Ready;
+        snap.valid = false;
+    } else {
+        st = rnd::GetHookStatus() != rnd::HookStatus::Installed ? SelfState::NoHooks
+             : !is3D                                             ? SelfState::Not3D
+             : (!read || !snap.valid)                            ? SelfState::Off
+                                                                 : SelfState::Ready;
+        if (st != SelfState::Ready) snap.valid = false;
+    }
     rnd::RegRegister(key, snap);
-    // Fast mode draws without lights; AE would light the one plane as a flat board (spec 12.11).
-    if (st == SelfState::Ready && snap.p.fast && src != ParamSource::Aegp && AcceptsLights(sp, L, t))
-        st = SelfState::FastLights;
 
     if (writeSeq) {
         if (!out_data->sequence_data && in_data->sequence_data) out_data->sequence_data = in_data->sequence_data;
@@ -347,10 +333,9 @@ const char* StatusText(SelfState st)
     static const char* not3d = UiName("3D レイヤーにしてください", "Make the layer 3D");
     static const char* off = UiName("エフェクトがオフです", "Effect is off");
     static const char* unknown = UiName("状態を確認できません", "Unknown");
-    static const char* fastLights = UiName("高速モードではライトは使えません。『ライトを受ける』をオフにしてください",
-                                           "Fast Mode ignores lights. Turn off Accepts Lights");
+    static const char* need2d = UiName("高速モードでは 2D レイヤーにしてください", "Fast Mode: make the layer 2D");
     switch (st) {
-    case SelfState::FastLights: return fastLights;
+    case SelfState::Need2D: return need2d;
     case SelfState::Ready: return ready;
     case SelfState::NoHooks: return noHooks;
     case SelfState::Not3D: return not3d;
@@ -459,8 +444,10 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     return PF_Err_NONE;
 }
 
-// ---- fast mode (spec 12.11): all copies drawn here into one screen-sized image, shown by the hooks as
-// one plane facing the camera that maps the effect's output px (x, y) to comp px (x, y).
+// ---- fast mode (spec 12.13): an ordinary plugin on a 2D layer. All copies are drawn here into one comp-sized
+// image in layer px: screen px s is drawn at layer px q = s - (compW, compH) / 2 + anchor, so a layer in its
+// initial 2D state (position = comp centre, 100%, no rotation) shows it 1:1 and the layer's 2D transform
+// moves the whole image. The copies sit on a virtual 3D layer in its initial state: copies * G * V.
 
 // The build ID (a new build never reuses AE's disk cache of an old one) and, for timing tests only, the
 // value of RANDAMU_CACHE_SALT (a new salt makes AE render again instead of reading its disk cache).
@@ -479,8 +466,9 @@ void MixBuildId(PF_InData* in_data, PF_PreRenderExtra* extra)
 // What SmartRender needs, worked out in PreRender (pre_render_data).
 struct FastPre {
     rnd::CameraView cam;
-    double W[16];             // layer -> world
+    double W[16];             // copy layer px -> world: G(world) * V (virtual 3D layer in its initial state)
     rnd::ScatterParams p;
+    rnd::WorldXform world;
     double anchorX, anchorY;  // layer px
     double dsX, dsY;
     PF_LRect inRect;          // the input's result rect (downsampled layer px)
@@ -488,7 +476,7 @@ struct FastPre {
 void DeleteFastPre(void* p) { delete (FastPre*)p; }
 
 // The parameter values at the effect's current time (smart render: params[] is not passed).
-bool CheckoutScatterParams(PF_InData* in_data, rnd::ScatterParams* out)
+bool CheckoutScatterParams(PF_InData* in_data, rnd::ScatterParams* out, rnd::WorldXform* world)
 {
     PF_ParamDef defs[RP_NUM_PARAMS];
     PF_ParamDef* ptrs[RP_NUM_PARAMS] = {};
@@ -500,7 +488,10 @@ bool CheckoutScatterParams(PF_InData* in_data, rnd::ScatterParams* out)
                                &defs[i]) == PF_Err_NONE;
         if (ok) last = i, ptrs[i] = &defs[i];
     }
-    if (ok) *out = ParamsFromArray(ptrs);
+    if (ok) {
+        *out = ParamsFromArray(ptrs);
+        *world = WorldFromArray(ptrs);
+    }
     for (int i = RP_COUNT; i <= last; i++) PF_CHECKIN_PARAM(in_data, &defs[i]);
     return ok;
 }
@@ -516,7 +507,7 @@ bool FastModeOn(PF_InData* in_data)
     return on;
 }
 
-// Camera, layer transform, comp size and anchor at the effect's current time; registers the plane.
+// Camera, comp size and anchor at the effect's current time (public AEGP only; works on a 2D layer).
 bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
 {
     SPBasicSuite* sp = in_data->pica_basicP;
@@ -525,40 +516,32 @@ bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
     Suite<AEGP_CompSuite12> cs(sp, kAEGPCompSuite, kAEGPCompSuiteVersion12);
     Suite<AEGP_ItemSuite9> is(sp, kAEGPItemSuite, kAEGPItemSuiteVersion9);
     if (!pfi || !ls || !cs || !is) return false;
-    A_Time ct = {0, 1};  // comp time: what the camera and layer-to-world reads take
+    A_Time ct = {0, 1};  // comp time: what the camera read takes
     AEGP_LayerH L = nullptr;
     AEGP_CompH comp = nullptr;
     AEGP_ItemH item = nullptr;
-    A_long itemId = 0;
-    AEGP_LayerIDVal layerId = 0;
     if (pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &ct) ||
         pfi->AEGP_GetEffectLayer(in_data->effect_ref, &L) || ls->AEGP_GetLayerParentComp(L, &comp) ||
-        cs->AEGP_GetItemFromComp(comp, &item) || is->AEGP_GetItemID(item, &itemId) || ls->AEGP_GetLayerID(L, &layerId))
+        cs->AEGP_GetItemFromComp(comp, &item))
         return false;
     A_long w = 0, h = 0;
-    A_Matrix4 cam, l2w;
+    A_Matrix4 cam;
     A_FpLong dist = 0;
     A_short ipw = 0, iph = 0;
     if (is->AEGP_GetItemDimensions(item, &w, &h) || w <= 0 || h <= 0 ||
-        pfi->AEGP_GetEffectCameraMatrix(in_data->effect_ref, &ct, &cam, &dist, &ipw, &iph) || !(dist > 0) ||
-        ls->AEGP_GetLayerToWorldXform(L, &ct, &l2w))
+        pfi->AEGP_GetEffectCameraMatrix(in_data->effect_ref, &ct, &cam, &dist, &ipw, &iph) || !(dist > 0))
         return false;
     A_Time lt = {in_data->current_time, (A_u_long)(in_data->time_scale ? in_data->time_scale : 1)};
     if (!rnd::ReadLayerAnchor(L, lt, &f->anchorX, &f->anchorY)) return false;
     for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            f->cam.camToWorld[r * 4 + c] = cam.mat[r][c];
-            f->W[r * 4 + c] = l2w.mat[r][c];
-        }
+        for (int c = 0; c < 4; c++) f->cam.camToWorld[r * 4 + c] = cam.mat[r][c];
     f->cam.dist = dist;
     f->cam.compW = (double)w;
     f->cam.compH = (double)h;
-    // The plane's depth is the anchor's (spec 12.11). At or behind the camera any positive depth shows the
-    // same 1:1 picture, so keep it just in front of the camera.
-    double depth = std::max(rnd::AnchorDepth(f->cam, f->W, f->anchorX, f->anchorY), 2.0);
-    double m4[16];
-    if (!rnd::PlaneM4(f->cam, f->W, depth, m4)) return false;
-    rnd::FastSetPlane({(int)itemId, (int)layerId}, in_data->current_time, lt.scale, m4);
+    double G[16], V[16];
+    rnd::WorldM4(f->world, f->anchorX, f->anchorY, G);
+    rnd::InitialLayerToWorld(f->anchorX, f->anchorY, (double)w, (double)h, V);
+    rnd::Mul4(G, V, f->W);
     *compW = (int)w;
     *compH = (int)h;
     return true;
@@ -566,12 +549,12 @@ bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
 
 PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
-    RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);
+    RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);  // keeps the hooks off this layer
     auto* f = new FastPre();
     f->dsX = in_data->downsample_x.den ? (double)in_data->downsample_x.num / in_data->downsample_x.den : 1.0;
     f->dsY = in_data->downsample_y.den ? (double)in_data->downsample_y.num / in_data->downsample_y.den : 1.0;
     int cw = 0, ch = 0;
-    bool ok = CheckoutScatterParams(in_data, &f->p) && FastSetup(in_data, f, &cw, &ch);
+    bool ok = CheckoutScatterParams(in_data, &f->p, &f->world) && FastSetup(in_data, f, &cw, &ch);
     // The whole source is needed whatever part of the screen is asked for.
     PF_RenderRequest req = extra->input->output_request;
     req.rect.left = req.rect.top = -30000;
@@ -581,8 +564,9 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
     PF_Err err = extra->cb->checkout_layer(in_data->effect_ref, RP_INPUT, RP_INPUT, &req, in_data->current_time,
                                            in_data->time_step, in_data->time_scale, &in_result);
     f->inRect = in_result.result_rect;
-    // The output depends on the camera, the layer's transform, the comp size, the time and the downsample:
-    // mix them all into the cache key (required with I_MIX_GUID_DEPENDENCIES in any case).
+    // The output depends on the camera (AE does not know a 2D layer does), the world transform, the comp
+    // size, the time and the downsample: mix them all into the cache key (required with
+    // I_MIX_GUID_DEPENDENCIES in any case).
     double key[64] = {0};
     int n = 0;
     for (int i = 0; i < 16; i++) key[n++] = f->cam.camToWorld[i];
@@ -599,7 +583,11 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
         return err;
     }
     if (ok) {
-        PF_LRect full = {0, 0, (A_long)std::ceil(cw * f->dsX), (A_long)std::ceil(ch * f->dsY)};  // l, t, r, b
+        // the comp-sized area in (downsampled) layer px: screen (0, 0) is layer px anchor - comp centre
+        PF_LRect full = {(A_long)std::floor((f->anchorX - cw / 2.0) * f->dsX),
+                         (A_long)std::floor((f->anchorY - ch / 2.0) * f->dsY),
+                         (A_long)std::ceil((f->anchorX + cw / 2.0) * f->dsX),
+                         (A_long)std::ceil((f->anchorY + ch / 2.0) * f->dsY)};  // l, t, r, b
         const PF_LRect& q = extra->input->output_request.rect;
         PF_LRect x = {std::max(q.left, full.left), std::max(q.top, full.top), std::min(q.right, full.right),
                       std::min(q.bottom, full.bottom)};
@@ -610,7 +598,7 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
         extra->output->pre_render_data = f;
         extra->output->delete_pre_render_data_func = DeleteFastPre;
     } else {
-        // Nothing to show (camera or transform unreadable): an empty output, so no stale plane shows.
+        // Nothing to show (camera or comp unreadable): an empty output.
         delete f;
         PF_LRect none = {0, 0, 0, 0};
         extra->output->result_rect = none;
@@ -618,9 +606,9 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
     }
     static std::atomic<int> logged{0};
     if (++logged <= 6)
-        RLog("fast: prerender ok=%d comp %dx%d ds %.3f/%.3f in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) t=%d/%d", (int)ok, cw,
-             ch, ok ? f->dsX : 0.0, ok ? f->dsY : 0.0, (int)in_result.result_rect.left, (int)in_result.result_rect.top,
-             (int)in_result.result_rect.right, (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
+        RLog("fast: prerender ok=%d comp %dx%d in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) t=%d/%d", (int)ok, cw, ch,
+             (int)in_result.result_rect.left, (int)in_result.result_rect.top, (int)in_result.result_rect.right,
+             (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
              (int)extra->output->result_rect.top, (int)extra->output->result_rect.right,
              (int)extra->output->result_rect.bottom, (int)in_data->current_time, (int)in_data->time_scale);
     return PF_Err_NONE;
@@ -648,6 +636,10 @@ PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW
     if (!bpc) return PF_Err_BAD_CALLBACK_PARAM;
     rnd::RasterImage dst = {outW->data, (int)outW->width, (int)outW->height, (long)outW->rowbytes, bpc,
                             (int)outW->origin_x, (int)outW->origin_y};
+    if (f) {  // the output is in layer px: screen px = layer px - anchor + comp centre
+        dst.screenShiftX = f->cam.compW / 2 - f->anchorX;
+        dst.screenShiftY = f->cam.compH / 2 - f->anchorY;
+    }
     rnd::RasterImage src = {nullptr, 0, 0, 0, bpc, 0, 0};
     std::vector<rnd::RasterCopy> copies;
     if (f && inW && inW->data && WorldBpc(in_data, inW) == bpc) {

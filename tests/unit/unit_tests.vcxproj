@@ -63,7 +63,6 @@
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
     </ClCompile>
     <ClCompile Include="..\..\src\hook\registry.cpp" Condition="Exists('..\..\src\hook\registry.cpp')" />
-    <ClCompile Include="..\..\src\hook\fast_registry.cpp" Condition="Exists('..\..\src\hook\fast_registry.cpp')" />
     <ClCompile Include="..\..\src\hook\flatten_site.cpp" Condition="Exists('..\..\src\hook\flatten_site.cpp')" />
     <ClCompile Include="..\..\src\hook\bee_vec.cpp" Condition="Exists('..\..\src\hook\bee_vec.cpp')" />
   </ItemGroup>
