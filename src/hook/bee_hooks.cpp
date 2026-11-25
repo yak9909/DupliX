@@ -781,6 +781,102 @@ void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
     RLog("merge: downsample hook %s (v10 slot %d)", ok ? "installed" : "failed", slot);
 }
 
+// ---- experiment (11/26): classic 3D draws each surface (SY_TRLayer, 232 bytes, an element of Advanced3D's surface
+// vector) through its vtable slot 1, in the order of its own graph (sub_180014470 -> sub_180014800). The surface's
+// int at +224 is the index of its layer in the render (BEE_GetArtisanNthLayerToRender -> the render trace -> the
+// art layer -> the layer and the sub-layer index). RANDAMU_A3D_DRAW: 1 log every surface drawn, 2 also skip the
+// copies (to see that AE's frame is left without them).
+namespace a3d {
+constexpr uintptr_t kTRLayerVtRva = 0x80438, kTRLayerSlot0Rva = 0x11240, kTRLayerDrawRva = 0x12B30;
+constexpr ptrdiff_t kSurfLayerIndex = 224;
+constexpr ptrdiff_t kCtxRenderContext = 8, kCtxProgressCount = 252, kCtxProgressTotal = 248, kCtxProgress = 208;
+}  // namespace a3d
+typedef uintptr_t (*A3dDrawFn)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+typedef int (*ExtractRefconFn)(void*, void**);
+typedef int (*NthLayerFn)(void*, int, void**);
+A3dDrawFn g_origA3dDraw = nullptr;
+ExtractRefconFn g_extractRefcon = nullptr;
+NthLayerFn g_nthLayer = nullptr;
+LogLimit g_a3dDrawLog;
+std::atomic<long> g_a3dDrawSeq{0};
+
+uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
+{
+    char ev[8] = {0};
+    const int mode = GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) > 0 ? atoi(ev) : 0;
+    if (!mode) return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    const int index = *(int*)(self + a3d::kSurfLayerIndex);
+    void* refcon = nullptr;
+    void* trace = nullptr;
+    const void* layer = nullptr;
+    int sub = -9;
+    void** rc = *(void***)(ctx + a3d::kCtxRenderContext);
+    if (g_extractRefcon && g_nthLayer && !g_extractRefcon(rc, &refcon) && !g_nthLayer(refcon, index, &trace) && trace) {
+        char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+        if (v) layer = *(void**)(v + bee::kArtLayerToLayer), sub = *(int*)(v + bee::kArtLayerToSubIndex);
+    }
+    const bool mine = layer && sub >= 0 && IsMine(layer);
+    LayerKey k = {};
+    if (layer) KeyOf(layer, &k);
+    const long seq = g_a3dDrawSeq.fetch_add(1);
+    auto logIt = [&](double ms) {
+        if (!g_a3dDrawLog.Take(4000)) return;
+        // a7 -> {int kind, the target buffer} (sub_180014470: v39 = 1, v40 = target)
+        const unsigned* t = a7 ? *(const unsigned**)(a7 + 8) : nullptr;
+        static const unsigned zero[12] = {0};
+        if (!t) t = zero;
+        RLog("a3d draw: seq %ld tid %lu ra +%llx idx %d comp %d layer %d sub %d mine %d%s %.2f ms a3 %p [%08x %08x %08x "
+             "%08x %08x %08x %08x %08x %08x %08x %08x %08x] a4 %llx a6 %llx a7 %d",
+             seq, GetCurrentThreadId(), (unsigned long long)((uintptr_t)_ReturnAddress() - g_a3dLo), index, k.compItemId,
+             k.layerId, sub, (int)mine, mode == 2 && mine ? " SKIP" : "", ms, (const void*)t, t[0], t[1], t[2], t[3], t[4],
+             t[5], t[6], t[7], t[8], t[9], t[10], t[11], (unsigned long long)a4, (unsigned long long)a6,
+             a7 ? *(int*)a7 : -1);
+    };
+    if (mode == 2 && mine) {
+        logIt(0);
+        // what the draw does last: the progress count
+        const int n = ++*(int*)(ctx + a3d::kCtxProgressCount);
+        void*** pr = *(void****)(ctx + a3d::kCtxProgress);
+        ((void (*)(void*, uintptr_t, uintptr_t))(**pr))(pr, (uintptr_t)(unsigned)n, *(unsigned*)(ctx + a3d::kCtxProgressTotal));
+        return 0;
+    }
+    // the draw's pixel loop: the ctx's iterate function (+224, rows on AE's threads); its time apart from the setup
+    typedef int (*IterFn)(uintptr_t, uintptr_t, uintptr_t);
+    static thread_local IterFn t_iter = nullptr;
+    static thread_local double t_iterMs = 0;
+    IterFn* slot = (IterFn*)(ctx + 224);
+    t_iter = *slot;
+    t_iterMs = 0;
+    *slot = [](uintptr_t n, uintptr_t d, uintptr_t cb) {
+        const auto s = std::chrono::steady_clock::now();
+        const int e = t_iter(n, d, cb);
+        t_iterMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s).count();
+        return e;
+    };
+    const auto t0 = std::chrono::steady_clock::now();
+    const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    *slot = t_iter;
+    const double all = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (g_a3dDrawLog.Take(4000)) RLog("a3d draw time: seq %ld all %.2f ms pixels %.2f ms", seq, all, t_iterMs);
+    logIt(all);
+    return r;
+}
+
+void InstallA3dDrawHook(HMODULE a3d)
+{
+    void** vt = (void**)((uintptr_t)a3d + a3d::kTRLayerVtRva);
+    if (vt[0] != (void*)((uintptr_t)a3d + a3d::kTRLayerSlot0Rva) || vt[1] != (void*)((uintptr_t)a3d + a3d::kTRLayerDrawRva)) {
+        RLog("a3d draw hook: not installed (SY_TRLayer vtable %p does not match: %p %p)", (void*)vt, vt[0], vt[1]);
+        return;
+    }
+    HMODULE pr = GetModuleHandleA("PR.dll"), bee = GetModuleHandleA("BEE.dll");
+    g_extractRefcon = pr ? (ExtractRefconFn)GetProcAddress(pr, "?PR_ExtractRenderRefcon@@YAHPEAPEAUPR_RenderContext@@PEAPEAX@Z") : nullptr;
+    g_nthLayer = bee ? (NthLayerFn)GetProcAddress(bee, "?BEE_GetArtisanNthLayerToRender@@YAHPEAXHPEAPEAVBEE_RenderTrace@@@Z") : nullptr;
+    g_origA3dDraw = (A3dDrawFn)vt[1];
+    const bool ok = WritePtr(&vt[1], (void*)&HookA3dDraw);
+    RLog("a3d draw hook: %s (refcon %p nth %p)", ok ? "installed" : "failed", (void*)g_extractRefcon, (void*)g_nthLayer);
+}
+
 void InstallQualityHook()
 {
     HMODULE a3d = GetModuleHandleA("Advanced3D.aex");
@@ -799,6 +895,7 @@ void InstallQualityHook()
     bool ok = WritePtr(slot, (void*)&HookGetLayerQuality);
     RLog("merge: quality hook %s (table %p slot %p)", ok ? "installed" : "failed", (void*)ls, (void*)slot);
     InstallDownsampleHook(g_a3dLo, g_a3dHi);
+    InstallA3dDrawHook(a3d);
 }
 
 // ---- installation
