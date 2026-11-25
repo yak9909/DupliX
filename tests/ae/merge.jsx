@@ -113,10 +113,12 @@
         rqLines.push(comp.name + "=" + app.project.renderQueue.numItems);
     }
 
-    // RANDAMU_MERGE_PASSES ("OFF,ON,ND"; optional): render every comp in this AE, one render queue item at a time,
-    // in each pass: OFF / ON = multi-frame rendering off / on, ND = MFR off with the draft quality of all-group
-    // layers off (RANDAMU_MERGE_DRAFT=0). Each render gets its own plugin log (the plugin reads RANDAMU_LOG on every
-    // line), a fresh cache salt and purged caches; outputs <comp>_<pass>.tif and plugin_<comp>_<pass>.log.
+    // RANDAMU_MERGE_PASSES ("OFF,ON,ND,G,G16,..."; optional): render every comp in this AE, one render queue item at
+    // a time, in each pass: OFF / ON = multi-frame rendering off / on, ND = MFR off with the draft quality of
+    // all-group layers off (RANDAMU_MERGE_DRAFT=0); G = group textures drawn on the GPU (RANDAMU_MERGE_GPU_DRAW=1,
+    // every other pass draws them on the CPU), C = the CPU explicitly; a trailing 16 / 32 sets the project's bits
+    // per channel (8 otherwise). Each render gets its own plugin log (the plugin reads RANDAMU_LOG on every line), a
+    // fresh cache salt and purged caches; outputs <comp>_<pass>.tif and plugin_<comp>_<pass>.log.
     // RANDAMU_MERGE_FORCE_SEAM ("x,y,z"): RANDAMU_MERGE_FORCE_DW for the seam comps only.
     function renderPasses(targets, passes) {
         var forceSeam = $.getenv("RANDAMU_MERGE_FORCE_SEAM") || "";
@@ -124,6 +126,9 @@
             var pass = passes[pi];
             app.setMultiFrameRenderingConfig(pass === "ON", 100);
             $.setenv("RANDAMU_MERGE_DRAFT", pass === "ND" ? "0" : "");
+            $.setenv("RANDAMU_MERGE_GPU_DRAW", pass.charAt(0) === "G" ? "1" : "0");
+            var bpcM = /(16|32)$/.exec(pass);
+            app.project.bitsPerChannel = bpcM ? parseInt(bpcM[1], 10) : 8;
             for (var ti = 0; ti < targets.length; ti++) {
                 var tg0 = targets[ti], name = tg0.comp.name;
                 var t0 = new Date().getTime();

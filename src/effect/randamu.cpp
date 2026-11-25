@@ -864,6 +864,9 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     return err;
 }
 
+// CUDA devices AE has set up for this effect (its GPU acceleration is CUDA) whose kernel loaded.
+std::atomic<int> g_aeCudaDevices{0};
+
 PF_Err GpuDeviceSetup(PF_InData* in_data, PF_OutData* out_data, PF_GPUDeviceSetupExtra* extra)
 {
     PF_GPUDeviceInfo info;
@@ -879,6 +882,7 @@ PF_Err GpuDeviceSetup(PF_InData* in_data, PF_OutData* out_data, PF_GPUDeviceSetu
         // so setdown can drop its cached kernel.
         fastGpu = rnd::GpuRasterPrepare(info.contextPV);
         data = info.contextPV;
+        if (fastGpu) g_aeCudaDevices++;  // the merge may draw its group textures on the GPU too
     }
     extra->output->gpu_data = data;
     if (ok) out_data->out_flags2 = PF_OutFlag2_SUPPORTS_GPU_RENDER_F32;
@@ -890,6 +894,7 @@ PF_Err GpuDeviceSetup(PF_InData* in_data, PF_OutData* out_data, PF_GPUDeviceSetu
 PF_Err GpuDeviceSetdown(PF_GPUDeviceSetdownExtra* extra)
 {
     if (extra->input->what_gpu == PF_GPU_Framework_CUDA) {
+        if (g_aeCudaDevices > 0) g_aeCudaDevices--;
         rnd::GpuRasterForget(extra->input->gpu_data);
         return PF_Err_NONE;
     }
@@ -1084,4 +1089,17 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
     }
     if (d <= 200) RLog("dbg: cmd %d leave err=%d", (int)cmd, (int)err);
     return err;
+}
+
+// The merge draws its group textures on the GPU when AE's GPU acceleration is CUDA (a CUDA device set up for this
+// effect, its kernel loaded) and no GPU launch has failed. RANDAMU_MERGE_GPU_DRAW (read per call; tests): 0 = never,
+// 1 = whenever the driver can (also without AE's CUDA setting).
+bool MergeGpuAllowed()
+{
+    char v[8] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_MERGE_GPU_DRAW", v, sizeof(v)) > 0) {
+        if (v[0] == '0') return false;
+        if (v[0] == '1') return rnd::GpuRasterUsable();
+    }
+    return g_aeCudaDevices.load() > 0 && rnd::GpuRasterUsable();
 }

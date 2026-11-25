@@ -57,6 +57,13 @@ GpuRasterStatus GpuRasterizeOnCpu(void* cuContext, void* cuStream, const GpuImag
                                   const RasterCopy* copies, int n, double dsX, double dsY,
                                   const std::function<bool()>& abort = {});
 
+// Host images (the merge's group textures: AE's CPU worlds, ARGB 8 / 16 / 32 bpc, straight alpha): the same drawing
+// as RasterizeCopies into dst, on the GPU in the device's primary context with a stream of its own (callers take
+// turns). src is uploaded, dst downloaded and rounded like the CPU rasterizer. kGpuFailed (dst undefined): draw with
+// RasterizeCopies instead. *msOut (optional): the whole call's time.
+GpuRasterStatus GpuRasterizeHost(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY,
+                                 RasterImage& dst, double* msOut = nullptr);
+
 // Where the rasterizer logs failures (printf-style; the effect passes its log).
 void GpuRasterSetLog(void (*fn)(const char*, ...));
 

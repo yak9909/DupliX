@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <new>
@@ -44,6 +45,12 @@ struct Api {
     CUresult(__stdcall* launch)(CUfunction, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
                                 CUstream, void**, void**);
     CUresult(__stdcall* streamSync)(CUstream);
+    // for the host-image path (merge): optional, checked where used
+    CUresult(__stdcall* primaryRetain)(CUcontext*, CUdevice);
+    CUresult(__stdcall* streamCreate)(CUstream*, unsigned);
+    CUresult(__stdcall* memAllocHost)(void**, size_t);
+    CUresult(__stdcall* memFreeHost)(void*);
+    CUresult(__stdcall* dtohAsync)(void*, CUdeviceptr, size_t, CUstream);
     bool ok = false;
 };
 
@@ -70,6 +77,11 @@ const Api& Cuda()
         a.htodAsync = (decltype(a.htodAsync))get("cuMemcpyHtoDAsync_v2");
         a.launch = (decltype(a.launch))get("cuLaunchKernel");
         a.streamSync = (decltype(a.streamSync))get("cuStreamSynchronize");
+        a.primaryRetain = (decltype(a.primaryRetain))get("cuDevicePrimaryCtxRetain");
+        a.streamCreate = (decltype(a.streamCreate))get("cuStreamCreate");
+        a.memAllocHost = (decltype(a.memAllocHost))get("cuMemAllocHost_v2");
+        a.memFreeHost = (decltype(a.memFreeHost))get("cuMemFreeHost");
+        a.dtohAsync = (decltype(a.dtohAsync))get("cuMemcpyDtoHAsync_v2");
         a.ok = a.init && a.deviceGet && a.ctxCreate && a.ctxDestroy && a.ctxPush && a.ctxPop && a.moduleLoadData &&
                a.moduleGetFunction && a.memAlloc && a.memFree && a.htod && a.dtoh && a.htodAsync && a.launch &&
                a.streamSync;
@@ -109,16 +121,17 @@ thread_local int t_launches = 0;
 struct Loaded {
     CUmodule mod = nullptr;
     CUfunction fn = nullptr;
+    CUfunction toF = nullptr, fromF = nullptr;  // the merge's pixel conversions (null: that path draws on the CPU)
 };
 std::mutex g_moduleMutex;
 std::map<CUcontext, Loaded> g_functions;
 
 // The calling thread has ctx current.
-CUfunction FunctionFor(CUcontext ctx)
+const Loaded& LoadedFor(CUcontext ctx)
 {
     std::lock_guard<std::mutex> lk(g_moduleMutex);
     auto it = g_functions.find(ctx);
-    if (it != g_functions.end()) return it->second.fn;
+    if (it != g_functions.end()) return it->second;
     const Api& cu = Cuda();
     Loaded l;
     CUresult r = cu.moduleLoadData(&l.mod, kFastRasterPtx);
@@ -128,10 +141,12 @@ CUfunction FunctionFor(CUcontext ctx)
         l = Loaded{};
         g_failed = true;
         GpuLog("gpu raster: kernel load failed (CUresult %d): the fast mode draws on the CPU", (int)r);
+    } else if (cu.moduleGetFunction(&l.toF, l.mod, "ArgbToBgraF") || cu.moduleGetFunction(&l.fromF, l.mod, "BgraFToArgb")) {
+        l.toF = l.fromF = nullptr;
     }
-    g_functions[ctx] = l;
-    return l.fn;
+    return g_functions[ctx] = l;  // std::map: the reference stays valid until the entry is erased
 }
+CUfunction FunctionFor(CUcontext ctx) { return LoadedFor(ctx).fn; }
 
 // The context of the calling thread for the duration of a scope.
 struct CtxScope {
@@ -330,6 +345,125 @@ GpuRasterStatus GpuRasterizeOnCpu(void* cuContext, void* cuStream, const GpuImag
         }
     }
     return cu.htod((CUdeviceptr)dst.devPtr, raw.data(), raw.size()) ? kGpuFailed : kGpuOk;
+}
+
+// ---- host images (the merge's group textures: AE's CPU worlds)
+namespace {
+
+// One context (the device's primary one), one non-blocking stream and grow-only device buffers, used by one
+// thread at a time (render threads take turns: the GPU part is short). AE's pixels travel as they are (8 bpc is a
+// quarter of the float size) and are converted on the GPU.
+struct HostPath {
+    std::mutex mu;
+    bool tried = false;
+    CUcontext ctx = nullptr;
+    CUstream stream = nullptr;
+    CUdeviceptr rawSrc = 0, fSrc = 0, fDst = 0, rawDst = 0;
+    size_t rawSrcCap = 0, fSrcCap = 0, fDstCap = 0, rawDstCap = 0;
+};
+HostPath g_host;
+
+// The calling thread has the context current.
+bool GrowDev(CUdeviceptr* p, size_t* cap, size_t need)
+{
+    if (*cap >= need && *p) return true;
+    if (*p) Cuda().memFree(*p);
+    *p = 0, *cap = 0;
+    if (Cuda().memAlloc(p, need ? need : 4)) return *p = 0, false;
+    *cap = need;
+    return true;
+}
+
+bool LaunchConvert(CUfunction fn, CUstream stream, void** args, int w, int h)
+{
+    return Cuda().launch(fn, (unsigned)((w + 15) / 16), (unsigned)((h + 15) / 16), 1, 16, 16, 1, 0, stream, args,
+                         nullptr) == 0;
+}
+
+}  // namespace
+
+GpuRasterStatus GpuRasterizeHost(const RasterImage& src, const RasterCopy* copies, int n, double dsX, double dsY,
+                                 RasterImage& dst, double* msOut)
+{
+    const Api& cu = Cuda();
+    if (!cu.ok || g_failed.load() || !cu.primaryRetain || !cu.streamCreate || !cu.dtohAsync) return kGpuFailed;
+    if (!dst.data || dst.width <= 0 || dst.height <= 0) return kGpuFailed;
+    std::lock_guard<std::mutex> lk(g_host.mu);
+    if (!g_host.tried) {
+        g_host.tried = true;
+        CUdevice dev = 0;
+        if (cu.init(0) || cu.deviceGet(&dev, 0) || cu.primaryRetain(&g_host.ctx, dev)) {
+            g_host.ctx = nullptr;
+            GpuLog("gpu raster: no context for the merge (the merge draws on the CPU)");
+        } else {
+            CtxScope scope(g_host.ctx);
+            if (!scope.pushed || cu.streamCreate(&g_host.stream, 1 /* CU_STREAM_NON_BLOCKING */)) {
+                g_host.ctx = nullptr;
+                GpuLog("gpu raster: no stream for the merge (the merge draws on the CPU)");
+            }
+        }
+    }
+    if (!g_host.ctx) return kGpuFailed;
+    auto now = [] {
+        LARGE_INTEGER v;
+        QueryPerformanceCounter(&v);
+        return v.QuadPart;
+    };
+    long long t[5];
+    t[0] = now();
+    CtxScope scope(g_host.ctx);
+    if (!scope.pushed) return kGpuFailed;
+    const Loaded fns = LoadedFor(g_host.ctx);  // a copy: an entry may be erased by AE's setdown of the same context
+    if (!fns.fn || !fns.toF || !fns.fromF) return kGpuFailed;
+    const bool haveSrc = src.data && src.width > 0 && src.height > 0 && n > 0;
+    const size_t srcRaw = haveSrc ? (size_t)src.rowBytes * src.height : 0;
+    const size_t srcF = haveSrc ? (size_t)src.width * src.height * 16 : 0;
+    const size_t dstF = (size_t)dst.width * dst.height * 16, dstRaw = (size_t)dst.rowBytes * dst.height;
+    if ((haveSrc && (!GrowDev(&g_host.rawSrc, &g_host.rawSrcCap, srcRaw) || !GrowDev(&g_host.fSrc, &g_host.fSrcCap, srcF))) ||
+        !GrowDev(&g_host.fDst, &g_host.fDstCap, dstF) || !GrowDev(&g_host.rawDst, &g_host.rawDstCap, dstRaw)) {
+        GpuLog("gpu raster: merge buffers not allocated (%zu + %zu bytes): this frame on the CPU", srcRaw + srcF, dstF + dstRaw);
+        return kGpuFailed;
+    }
+    CUstream stream = g_host.stream;
+    if (haveSrc) {
+        if (cu.htodAsync(g_host.rawSrc, src.data, srcRaw, stream)) return kGpuFailed;
+        int pitchB = (int)src.rowBytes, w = src.width, h = src.height, bpc = src.bpc, fPitch = src.width;
+        CUdeviceptr in = g_host.rawSrc, out = g_host.fSrc;
+        void* a[] = {&in, &pitchB, &w, &h, &bpc, &out, &fPitch};
+        if (!LaunchConvert(fns.toF, stream, a, w, h)) return g_failed = true, kGpuFailed;
+    }
+    cu.streamSync(stream);
+    t[1] = now();
+    GpuImage gs = {haveSrc ? (void*)g_host.fSrc : nullptr, haveSrc ? src.width : 0, haveSrc ? src.height : 0,
+                   (long)(haveSrc ? src.width * 16 : 0), src.originX, src.originY};
+    GpuImage gd = {(void*)g_host.fDst, dst.width, dst.height, (long)(dst.width * 16), dst.originX, dst.originY};
+    gd.screenShiftX = dst.screenShiftX;
+    gd.screenShiftY = dst.screenShiftY;
+    GpuRasterStatus st = GpuRasterize(g_host.ctx, stream, gs, gd, copies, haveSrc ? n : 0, dsX, dsY);
+    if (st != kGpuOk) return st;
+    t[2] = now();
+    {
+        int fPitch = dst.width, w = dst.width, h = dst.height, bpc = dst.bpc, pitchB = (int)dst.rowBytes;
+        CUdeviceptr in = g_host.fDst, out = g_host.rawDst;
+        void* a[] = {&in, &fPitch, &w, &h, &bpc, &out, &pitchB};
+        if (!LaunchConvert(fns.fromF, stream, a, w, h)) return g_failed = true, kGpuFailed;
+    }
+    cu.streamSync(stream);
+    t[3] = now();
+    if (cu.dtohAsync(dst.data, g_host.rawDst, dstRaw, stream) || cu.streamSync(stream)) {
+        GpuLog("gpu raster: merge download failed: this frame on the CPU");
+        return kGpuFailed;
+    }
+    t[4] = now();
+    LARGE_INTEGER qf;
+    QueryPerformanceFrequency(&qf);
+    auto ms = [&](int a, int b) { return (t[b] - t[a]) * 1000.0 / qf.QuadPart; };
+    if (msOut) *msOut = ms(0, 4);
+    static std::atomic<int> logged{0};
+    if (++logged <= 12)
+        GpuLog("gpu raster: merge %dx%d bpc %d: upload+convert %.1f, draw %.1f, convert %.1f, download %.1f ms", dst.width,
+               dst.height, dst.bpc, ms(0, 1), ms(1, 2), ms(2, 3), ms(3, 4));
+    return kGpuOk;
 }
 
 namespace cu {

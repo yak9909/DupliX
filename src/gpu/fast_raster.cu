@@ -112,3 +112,49 @@ extern "C" __global__ void FastRaster(const float4* __restrict__ src, int srcPit
     const float inv = acc.w > 0.f ? 1.f / acc.w : 0.f;
     dst[y * dstPitch + x] = make_float4(acc.x * inv, acc.y * inv, acc.z * inv, acc.w);
 }
+
+// ---- the merge's host images (AE's CPU worlds): their pixels <-> the rasterizer's, on the GPU
+// AE's ARGB (8 bpc: 0..255, 16 bpc: 0..32768, 32 bpc: float) rows of srcPitchBytes -> BGRA float 0..1.
+extern "C" __global__ void ArgbToBgraF(const unsigned char* __restrict__ src, int srcPitchBytes, int w, int h, int bpc,
+                                       float4* __restrict__ dst, int dstPitch)
+{
+    const int x = blockIdx.x * 16 + threadIdx.x, y = blockIdx.y * 16 + threadIdx.y;
+    if (x >= w || y >= h) return;
+    const unsigned char* row = src + (size_t)y * srcPitchBytes;
+    float4 o;
+    if (bpc == 8) {
+        const uchar4 p = ((const uchar4*)row)[x];  // a, r, g, b
+        o = make_float4(p.w / 255.f, p.z / 255.f, p.y / 255.f, p.x / 255.f);
+    } else if (bpc == 16) {
+        const ushort4 p = ((const ushort4*)row)[x];
+        o = make_float4(p.w / 32768.f, p.z / 32768.f, p.y / 32768.f, p.x / 32768.f);
+    } else {
+        const float4 p = ((const float4*)row)[x];
+        o = make_float4(p.w, p.z, p.y, p.x);
+    }
+    dst[(size_t)y * dstPitch + x] = o;
+}
+
+__device__ __forceinline__ float Quant(float v, float mx)  // like raster.cpp's Store: v * max + 0.5, clamped, truncated
+{
+    return truncf(fminf(fmaxf(v * mx + 0.5f, 0.f), mx));
+}
+
+// BGRA float 0..1 -> AE's ARGB rows of dstPitchBytes.
+extern "C" __global__ void BgraFToArgb(const float4* __restrict__ src, int srcPitch, int w, int h, int bpc,
+                                       unsigned char* __restrict__ dst, int dstPitchBytes)
+{
+    const int x = blockIdx.x * 16 + threadIdx.x, y = blockIdx.y * 16 + threadIdx.y;
+    if (x >= w || y >= h) return;
+    const float4 p = src[(size_t)y * srcPitch + x];
+    unsigned char* row = dst + (size_t)y * dstPitchBytes;
+    if (bpc == 8) {
+        ((uchar4*)row)[x] = make_uchar4((unsigned char)Quant(p.w, 255.f), (unsigned char)Quant(p.z, 255.f),
+                                        (unsigned char)Quant(p.y, 255.f), (unsigned char)Quant(p.x, 255.f));
+    } else if (bpc == 16) {
+        ((ushort4*)row)[x] = make_ushort4((unsigned short)Quant(p.w, 32768.f), (unsigned short)Quant(p.z, 32768.f),
+                                          (unsigned short)Quant(p.y, 32768.f), (unsigned short)Quant(p.x, 32768.f));
+    } else {
+        ((float4*)row)[x] = make_float4(p.w, p.z, p.y, p.x);
+    }
+}

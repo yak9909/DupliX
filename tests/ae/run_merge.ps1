@@ -5,7 +5,7 @@
 # -CompareDraft: one more pass (MFR off, the draft quality of all-group layers off) that must equal the OFF pass
 # -Aerender [-SkipScene] [-Parallel 4]: the old way, one aerender per comp (AE's own command-line renderer)
 param([string]$Cases = "", [string[]]$Mfrs = @("OFF"), [switch]$SkipScene, [int]$RenderTimeoutSec = 600,
-      [string]$Gpu = "", [string]$ForceD = "", [int]$Parallel = 4, [switch]$Aerender, [switch]$CompareDraft)
+      [string]$Gpu = "", [string]$ForceD = "", [int]$Parallel = 4, [switch]$Aerender, [switch]$CompareDraft, [switch]$GpuDraw)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\merge"
@@ -19,7 +19,9 @@ if (-not $Aerender) {
     # One AE for everything (default): merge.jsx builds the scenes and renders each comp in every pass itself
     # (per-render plugin log / cache salt / environment through $.setenv). ND = MFR off with the draft quality
     # of all-group layers off: every frame must equal the OFF pass.
-    $passes = @($Mfrs) + $(if ($CompareDraft) { @("ND") } else { @() })
+    # -GpuDraw: also G (group textures on the GPU, compared with OFF) and the 16 / 32 bpc passes C16, G16, C32, G32
+    $passes = @($Mfrs) + $(if ($CompareDraft) { @("ND") } else { @() }) +
+              $(if ($GpuDraw) { @("G", "C16", "G16", "C32", "G32") } else { @() })
     $env:RANDAMU_MERGE_IMAGE = Join-Path $root "spike\assets\probe_img.png"
     $env:RANDAMU_MERGE_ONLY = $Cases
     $env:RANDAMU_MERGE_GPU = $Gpu
@@ -37,13 +39,23 @@ if (-not $Aerender) {
     if ($jsxFail) { Write-Host "scene build / render failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }
     Get-Content (Join-Path $outDir "jsx.log") | Select-String "no output|EXCEPTION"
     $fail = 0
-    foreach ($mfr in $Mfrs) {
-        & $py -I $check $outDir $mfr $Cases
+    foreach ($pass in ($passes | Where-Object { $_ -ne "ND" })) {
+        Write-Host "== $pass"
+        & $py -I $check $outDir $pass $Cases
         if ($LASTEXITCODE -ne 0) { $fail++ }
     }
     if ($CompareDraft) {
         & $py -I (Join-Path $PSScriptRoot "cmp_dirs.py") $outDir $outDir --suffix OFF ND
         if ($LASTEXITCODE -ne 0) { $fail++ }
+    }
+    if ($GpuDraw) {
+        # the GPU's group textures against the CPU's (gpu_test's tolerance: mean <= 0.1, > 2 levels <= 0.1 %; at 16 /
+        # 32 bpc AE's dithering into the 8-bit TIFF adds up to 1 level at most pixels: mean <= 1)
+        foreach ($pair in @(@("OFF", "G", "0.1"), @("C16", "G16", "1.0"), @("C32", "G32", "1.0"))) {
+            Write-Host "== $($pair[0]) vs $($pair[1])"
+            & $py -I (Join-Path $PSScriptRoot "cmp_dirs.py") $outDir $outDir --suffix $pair[0] $pair[1] --tol $pair[2] 0.001
+            if ($LASTEXITCODE -ne 0) { $fail++ }
+        }
     }
     Write-Host $(if ($fail -eq 0) { "MERGE ALL PASS" } else { "MERGE FAILURES (runs): $fail" })
     exit $(if ($fail -eq 0) { 0 } else { 1 })

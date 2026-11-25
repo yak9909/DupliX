@@ -10,6 +10,9 @@ import sys
 
 out_dir, mfr = sys.argv[1], sys.argv[2]
 only = [c for c in (sys.argv[3] if len(sys.argv) > 3 else "").split(",") if c]
+# 16 / 32 bpc passes (run_merge.ps1 C16, G32, ...): AE dithers them into the 8-bit TIFF, differently in every render
+# (two renders of the same comp differ by 1 level at most pixels), so "unchanged" means within 1 level there
+DITHER = 1 if re.search(r"(16|32)$", mfr) else 0
 
 
 def log_of(comp):
@@ -118,7 +121,7 @@ def same(name, block):
     text = log_of("mg_" + name)
     blocks = [int(x, 16) for x in re.findall(r"merge:   layer \S+ count=\d+ block=([0-9a-f]+)", text)]
     d = int(np.abs(a - b).max())
-    return d == 0 and blocks and all(x & block for x in blocks), f"max={d} blocks={['%x' % x for x in blocks]}"
+    return d <= DITHER and blocks and all(x & block for x in blocks), f"max={d} blocks={['%x' % x for x in blocks]}"
 
 
 def seam(name):
@@ -139,7 +142,7 @@ def seam(name):
             near |= np.roll(np.roll(wall, dy, 0), dx, 1)
     band = int(np.abs(a - b).max(axis=2)[near].max()) if near.any() else -1
     forced = "test: group depth forced" in log_of("mg_" + name)
-    return ok and forced and wall.sum() > 500 and band == 0, f"{msg} wall px={int(wall.sum())} wall max={band} forced={forced}"
+    return ok and forced and wall.sum() > 500 and band <= DITHER, f"{msg} wall px={int(wall.sum())} wall max={band} forced={forced}"
 
 
 CHECKS = {

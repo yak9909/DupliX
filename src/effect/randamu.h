@@ -24,6 +24,8 @@
 
 // Writes one line to the file named by the RANDAMU_LOG environment variable (no-op if unset).
 void RLog(const char* fmt, ...);
+// The merge may draw its group textures on the GPU (AE's GPU acceleration is CUDA; RANDAMU_MERGE_GPU_DRAW overrides).
+bool MergeGpuAllowed();
 // The log's generation: it changes when RANDAMU_LOG names another file (tests switch logs between comps).
 int RLogGeneration();
 // "Log only the first few" counters that start again in each log generation (each test comp's log gets them).

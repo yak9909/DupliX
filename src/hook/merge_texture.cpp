@@ -11,6 +11,7 @@
 #include "core/merge_geom.h"
 #include "core/raster.h"
 #include "effect/randamu.h"
+#include "gpu/gpu_raster.h"
 #include "hook/bee_hooks.h"
 
 namespace rnd {
@@ -139,14 +140,20 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
     unsigned hw = std::thread::hardware_concurrency();
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
-    RasterizeCopies(src, copies.data(), (int)copies.size(), dsX, dsY, dst, hw ? (int)hw : 4);
+    // on the GPU when allowed (AE's GPU acceleration is CUDA); any failure draws on the CPU
+    bool onGpu = false;
+    if (MergeGpuAllowed()) {
+        GpuRasterStatus st = GpuRasterizeHost(src, copies.data(), (int)copies.size(), dsX, dsY, dst);
+        onGpu = st == kGpuOk;
+    }
+    if (!onGpu) RasterizeCopies(src, copies.data(), (int)copies.size(), dsX, dsY, dst, hw ? (int)hw : 4);
     QueryPerformanceCounter(&q1);
     {
         static LogLimit timed;
         if (timed.Take(64)) {
             QueryPerformanceFrequency(&qf);
-            RLog("merge: group draw %ldx%ld copies %d in %.1f ms", dw, dh, (int)copies.size(),
-                 (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart);
+            RLog("merge: group draw %ldx%ld copies %d on the %s in %.1f ms", dw, dh, (int)copies.size(),
+                 onGpu ? "GPU" : "CPU", (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart);
         }
     }
     GroupTextureM3(spanRect, (int)dw, (int)dh, outM3);

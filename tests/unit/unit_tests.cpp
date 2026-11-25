@@ -1507,6 +1507,16 @@ TEST(raster_tiled_speed_report)
         }
     rnd::RasterImage s = Img(src, 577, 680, 8), d = Img(dst, 1920, 1080, 8);
     const int hw = (int)std::thread::hardware_concurrency();
+    {
+        // the part a GPU cannot remove: clearing and writing the image (no copies)
+        double best = 1e9;
+        for (int rep = 0; rep < 3; rep++) {
+            auto t0 = std::chrono::steady_clock::now();
+            rnd::RasterizeCopies(s, nullptr, 0, 1.0, 1.0, d, hw);
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        std::printf("raster speed: 1920x1080, no copies (clear only): %.1f ms\n", best);
+    }
     for (int n : {10, 100, 1000}) {
         auto copies = SceneCopies(7, n, 577, 680, 1500, 60, 100);
         double t[2];
