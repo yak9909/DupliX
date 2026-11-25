@@ -48,6 +48,10 @@
         variant("pv_merge10", function (c, T, f) { f.property(MERGE).setValue(1); });
         variant("pv_norm100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(0); });
         variant("pv_merge100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); });
+        // draft quality (nearest sampling): the group plane is pixel-aligned, so its pixels should not change
+        variant("pv_merge10_draft", function (c, T, f) { f.property(MERGE).setValue(1); T.quality = LayerQuality.DRAFT; });
+        variant("pv_merge100_draft", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); T.quality = LayerQuality.DRAFT; });
+        variant("pv_norm10_draft", function (c, T, f) { f.property(MERGE).setValue(0); T.quality = LayerQuality.DRAFT; });
         variant("pv_real10", function (c, T, f) {
             plain1(f);
             for (var d = 0; d < 10; d++) {

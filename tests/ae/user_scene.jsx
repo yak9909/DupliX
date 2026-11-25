@@ -115,6 +115,9 @@
         variant("v_merge10", function (c, T, f) { f.property(MERGE).setValue(1); });
         variant("v_merge100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); });
         variant("v_merge1000", function (c, T, f) { f.property(2).setValue(1000); f.property(MERGE).setValue(1); });
+        // probe: the layer in draft quality (nearest sampling) with merging - the group plane is pixel-aligned
+        variant("v_merge10_draft", function (c, T, f) { f.property(MERGE).setValue(1); T.quality = LayerQuality.DRAFT; });
+        variant("v_merge100_draft", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); T.quality = LayerQuality.DRAFT; });
         app.project.save(new File(outDir + "/variants.aep"));
         log("done");
     } catch (ex) {

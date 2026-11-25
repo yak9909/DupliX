@@ -2,6 +2,7 @@
 # aerender per variant comp over -Frames frames; prints AE's own elapsed render time (startup excluded).
 #   pwsh tests/ae/run_user.ps1 -Aep "tests/ae/user/DupliX Test.aep" [-Frames 120] [-Mfr ON] [-SkipScene]
 param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 120, [string]$Mfr = "ON", [switch]$SkipScene,
+      [string]$RsTemplate = "",  # render settings template (e.g. the draft one: layer quality draft for every layer)
       [string]$Variants = "v_asis,v_count1,v_count0,v_plain,v_real10,v_real10_fx")
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -30,9 +31,10 @@ foreach ($v in $Variants -split ",") {
     $env:RANDAMU_LOG = Join-Path $outDir "plugin_$v.log"
     if (Test-Path $env:RANDAMU_LOG) { Remove-Item $env:RANDAMU_LOG }
     $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow -RedirectStandardOutput $log `
-        -ArgumentList @("-project", "`"$(Join-Path $outDir 'variants.aep')`"", "-comp", $v, "-s", "0", "-e", ($Frames - 1),
+        -ArgumentList (@("-project", "`"$(Join-Path $outDir 'variants.aep')`"", "-comp", $v, "-s", "0", "-e", ($Frames - 1),
                         "-mfr", $Mfr, "100",
-                        "-output", "`"$(Join-Path $outDir 'u_[#####].tif')`"", "-v", "ERRORS_AND_PROGRESS")
+                        "-output", "`"$(Join-Path $outDir 'u_[#####].tif')`"", "-v", "ERRORS_AND_PROGRESS") +
+                      $(if ($RsTemplate) { @("-RStemplate", "`"$RsTemplate`"") } else { @() }))
     if (-not $p.WaitForExit(600 * 1000)) { $p.Kill(); Write-Host "TIMEOUT $v"; continue }
     Remove-Item env:RANDAMU_LOG
     Start-Sleep -Milliseconds 500  # aerender's child may still hold the redirected log

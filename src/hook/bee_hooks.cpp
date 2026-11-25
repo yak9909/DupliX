@@ -370,6 +370,27 @@ const int* ArtTimeOf(const LayerKey& k)
         if (e.k.compItemId == k.compItemId && e.k.layerId == k.layerId) return e.t;
     return nullptr;
 }
+// The time the Count hook last saw for each layer on this thread (the start of the layer's frame).
+thread_local LastArtTime t_lastCount[8];
+thread_local int t_lastCountNext = 0;
+void RememberCountTime(const LayerKey& k, const void* t)
+{
+    for (auto& e : t_lastCount)
+        if (e.k.compItemId == k.compItemId && e.k.layerId == k.layerId) {
+            e.t[0] = ((const int*)t)[0], e.t[1] = ((const int*)t)[1];
+            return;
+        }
+    LastArtTime& e = t_lastCount[t_lastCountNext];
+    t_lastCountNext = (t_lastCountNext + 1) % 8;
+    e.k = k;
+    e.t[0] = ((const int*)t)[0], e.t[1] = ((const int*)t)[1];
+}
+const int* CountTimeOf(const LayerKey& k)
+{
+    for (auto& e : t_lastCount)
+        if (e.k.compItemId == k.compItemId && e.k.layerId == k.layerId) return e.t;
+    return nullptr;
+}
 
 // ---- per-frame timing (RANDAMU_TIMING): an event for `layer` at hook time `tm` that started at t0
 void MarkTiming(const void* layer, const void* tm, TimingKind kind, long long t0)
@@ -432,6 +453,8 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
             // merge: the plan is read (and rebuilt if the comp changed) here, once per frame and layer
             const MergeLayerPlan* lp = nullptr;
             auto plan = MergePlanOf((const void*)a, (const void*)b, s, true, &lp);
+            LayerKey k;
+            if (s.p.merge && b && KeyOf((const void*)a, &k)) RememberCountTime(k, (const void*)b);
             if (lp) return (uintptr_t)lp->subs.size();
             return (uintptr_t)(unsigned)s.p.count;
         }
@@ -607,6 +630,13 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     ParamSnapshot s;
     if (!KeyOf(layer, &k)) return;
     const int* tm = ArtTimeOf(k);
+    {
+        // (experiment) the quality hook uses the Count time: check that it is the frame the texture is drawn for
+        const int* tc = CountTimeOf(k);
+        static std::atomic<int> mism{0};
+        if (tm && (!tc || (long long)tc[0] * tm[1] != (long long)tm[0] * tc[1]) && ++mism <= 20)
+            RLog("merge: count time %d/%d differs from the art time %d/%d (texture)", tc ? tc[0] : -1, tc ? tc[1] : -1, tm[0], tm[1]);
+    }
     // the parameters at that time (render thread: AEGP); the registry's snapshot may hold merge off
     if (!tm || !ParamsFor(layer, tm, &s) || !s.p.merge) {
         if (!tm && ParamsFor(layer, nullptr, &s) && s.p.merge)
@@ -641,6 +671,77 @@ int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* 
     int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
     if (!r) SwapGroupTexture(trace, world, m3, "texrc");
     return r;
+}
+
+// ---- merge (experiment, RANDAMU_MERGE_DRAFT=1): classic 3D (Advanced3D.aex) asks the layer's quality through
+// AEGP_LayerSuite::AEGP_GetLayerQuality. A group plane lies 1:1 on the screen pixels, so drawing it in draft
+// (nearest sampling) gives the same pixels without the per-pixel interpolation. Answer draft to Advanced3D only,
+// and only for a merge-on layer whose sub-layers at the last art time are all group planes.
+bool WritePtr(void** where, void* value);
+typedef A_Err (*GetLayerQualityFn)(AEGP_LayerH, AEGP_LayerQuality*);
+GetLayerQualityFn g_origGetQuality = nullptr;
+std::atomic<int> g_qCalls{0}, g_qDraft{0}, g_qNoTime{0};
+uintptr_t g_a3dLo = 0, g_a3dHi = 0;
+
+bool AllGroups(const MergeLayerPlan& lp)
+{
+    for (const auto& s : lp.subs)
+        if (s.cluster < 0) return false;
+    return !lp.subs.empty();
+}
+
+A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
+{
+    A_Err err = g_origGetQuality(L, q);
+    uintptr_t ra = (uintptr_t)_ReturnAddress();
+    if (err || !q || ra < g_a3dLo || ra >= g_a3dHi || GetCurrentThreadId() == g_mainThread) return err;
+    const void* layer = (const void*)L;
+    if (!IsMine(layer)) return err;
+    int n = ++g_qCalls;
+    LayerKey k;
+    ParamSnapshot s;
+    if (!KeyOf(layer, &k)) return err;
+    // the frame's time: the Count hook of the same layer on this thread (Count is asked when the layer's frame
+    // starts, the opacities only after the quality)
+    const int* tm = CountTimeOf(k);
+    if (!tm) {
+        int m = ++g_qNoTime;
+        if (m <= 5 || (m & (m - 1)) == 0) RLog("merge: quality asked without a count time (%d of %d calls)", m, n);
+        return err;
+    }
+    if (n <= 8) {
+        const int* ta = ArtTimeOf(k);
+        RLog("merge: quality call %d: count time %d/%d, last art time %d/%d", n, tm[0], tm[1], ta ? ta[0] : -1, ta ? ta[1] : -1);
+    }
+    if (!ParamsFor(layer, tm, &s) || !s.p.merge) return err;
+    const MergeLayerPlan* lp = nullptr;
+    auto plan = MergePlanOf(layer, tm, s, false, &lp);
+    if (!lp || !AllGroups(*lp)) return err;
+    *q = AEGP_LayerQual_DRAFT;
+    int d = ++g_qDraft;
+    if (d <= 5 || (d & (d - 1)) == 0) RLog("merge: draft quality answered %d (calls %d, comp %d layer %d)", d, n, k.compItemId, k.layerId);
+    return err;
+}
+
+void InstallQualityHook()
+{
+    char v[8] = {0};
+    if (GetEnvironmentVariableA("RANDAMU_MERGE_DRAFT", v, sizeof(v)) <= 0 || v[0] != '1') return;
+    HMODULE a3d = GetModuleHandleA("Advanced3D.aex");
+    AEGP_LayerSuite9* ls = nullptr;
+    // Advanced3D acquires the layer suite with version 10: patch that version's table
+    if (!a3d || !g_pica || g_pica->AcquireSuite(kAEGPLayerSuite, 10, (const void**)&ls) || !ls) {
+        RLog("merge: quality hook not installed (Advanced3D %p)", (void*)a3d);
+        return;
+    }
+    auto dos = (IMAGE_DOS_HEADER*)a3d;
+    auto nt = (IMAGE_NT_HEADERS64*)((unsigned char*)a3d + dos->e_lfanew);
+    g_a3dLo = (uintptr_t)a3d;
+    g_a3dHi = g_a3dLo + nt->OptionalHeader.SizeOfImage;
+    void** slot = (void**)&ls->AEGP_GetLayerQuality;
+    g_origGetQuality = (GetLayerQualityFn)*slot;
+    bool ok = WritePtr(slot, (void*)&HookGetLayerQuality);
+    RLog("merge: quality hook %s (table %p slot %p)", ok ? "installed" : "failed", (void*)ls, (void*)slot);
 }
 
 // ---- installation
@@ -776,6 +877,7 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
             g_texHooked = WritePtr(t1, (void*)&HookTex) && WritePtr(t2, (void*)&HookTexRc);
         }
         RLog("hooks: texture entry points %p %p -> merge %s", (void*)t1, (void*)t2, g_texHooked ? "available" : "off");
+        if (g_texHooked) InstallQualityHook();
     }
     g_status = ok ? HookStatus::Installed : HookStatus::MissingSymbols;
     RLog("hooks: %s (main thread %lu)", ok ? "installed" : "VirtualProtect failed", g_mainThread);

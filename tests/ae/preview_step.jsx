@@ -23,7 +23,12 @@
                 // AE reuses identical frames; preview_setup.jsx animates the camera so each frame is new.
                 // Render the frame (one at a time, so the plugin's span is the frame's latency).
                 if ($.getenv("RANDAMU_PREVIEW_PURGE") === "1") app.purge(PurgeTarget.ALL_CACHES);
-                s.comp.saveFrameToPng(t, new File(s.out + "/frame.png"));
+                var t0 = new Date().getTime();
+                s.comp.saveFrameToPng(t, new File(s.out + "/frame_" + s.comp.name + "_" + s.n + ".png"));
+                // saveFrameToPng returns before the frame is rendered: frame_ms.txt "<comp> <frame> <start epoch ms>",
+                // the PNG's write time minus the start is the frame's latency (render + PNG write)
+                var fm = new File(s.out + "/frame_ms.txt");
+                fm.open("a"); fm.writeln(s.comp.name + " " + s.n + " " + t0); fm.close();
                 s.n++;
                 app.scheduleTask("__pvStep()", s.interval, false);
             } else {
