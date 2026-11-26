@@ -43,6 +43,42 @@ bool AlignedRect(const std::vector<ScreenQuad>& qs, double compW, double compH, 
     return true;
 }
 
+// The area of q inside the comp rect shrunk by inset px: what AE surely draws of it (AE culls a surface outside its
+// view; a group whose representative is culled is not drawn at all, so the representative is a copy well on screen).
+constexpr double kMinRepArea = 16;  // comp px on screen a representative needs
+double OnScreenArea(const ScreenQuad& q, double compW, double compH, double inset = 4)
+{
+    if (!q.valid) return 0;
+    double px[16], py[16], tx[16], ty[16];
+    int n = 4;
+    for (int k = 0; k < 4; k++) px[k] = q.x[k], py[k] = q.y[k];
+    // clip by x >= l, x <= r, y >= t, y <= b
+    const double lim[4] = {inset, compW - inset, inset, compH - inset};
+    for (int e = 0; e < 4 && n; e++) {
+        const bool isX = e < 2, low = e % 2 == 0;
+        auto inside = [&](double x, double y) {
+            const double v = isX ? x : y;
+            return low ? v >= lim[e] : v <= lim[e];
+        };
+        int m = 0;
+        for (int i = 0; i < n && m < 14; i++) {
+            const int j = (i + n - 1) % n;
+            const bool ci = inside(px[i], py[i]), cj = inside(px[j], py[j]);
+            if (ci != cj) {
+                const double a = isX ? px[j] : py[j], b = isX ? px[i] : py[i];
+                const double t = (lim[e] - a) / (b - a);
+                tx[m] = px[j] + t * (px[i] - px[j]), ty[m] = py[j] + t * (py[i] - py[j]), m++;
+            }
+            if (ci) tx[m] = px[i], ty[m] = py[i], m++;
+        }
+        n = m;
+        for (int i = 0; i < n; i++) px[i] = tx[i], py[i] = ty[i];
+    }
+    double a = 0;
+    for (int i = 0; i < n; i++) a += px[i] * py[(i + 1) % n] - px[(i + 1) % n] * py[i];
+    return std::fabs(a) / 2;
+}
+
 }  // namespace
 
 MergePlan BuildSingleGroupPlan(const MergeSceneInput& in)
@@ -122,7 +158,7 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
                 const int n = (k + 1) % 4;
                 c.area += c.q.x[k] * c.q.y[n] - c.q.x[n] * c.q.y[k];
             }
-            c.area = std::fabs(c.area) / 2;
+            c.area = op > 0 ? OnScreenArea(c.q, in.cam.compW, in.cam.compH) : 0;  // for the representative
             if (c.ok)
                 for (const ScreenQuad& o : others)
                     if (QuadsOverlap(c.q, o, marginPx)) {
@@ -184,7 +220,8 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
             g.copies.push_back(i);
             if (c.area > repArea) repArea = c.area, rep = i;
         }
-        const bool group = g.copies.size() >= 2;
+        // no copy surely drawn by AE to stand for the group: one by one
+        const bool group = g.copies.size() >= 2 && repArea >= kMinRepArea;
         for (int i = 0; i < n; i++) {
             const bool grouped = group && std::binary_search(g.copies.begin(), g.copies.end(), i);
             MergePlan::DebugCopy dc;
@@ -388,6 +425,7 @@ MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx, do
             t.ok = !l.block && t.q.valid;
             if (!t.q.valid) layerBad[li] = 1;
             bounds(t);
+            t.area = op > 0 ? OnScreenArea(t.q, in.cam.compW, in.cam.compH) : 0;  // for the representative
             its.push_back(t);
         }
     }
@@ -492,7 +530,8 @@ MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx, do
         for (int k = 0; k < 2; k++) {
             g[k].depth = 0, g[k].place = k ? -1 : 1;
             g[k].rect[0] = g[k].rect[1] = g[k].rect[2] = g[k].rect[3] = 0;
-            if (g[k].copies.size() >= 2) {
+            // a group needs a representative AE surely draws (well on screen, visible): otherwise one by one
+            if (g[k].copies.size() >= 2 && repArea[k] >= kMinRepArea) {
                 clusterOf[k] = (int)lp.clusters.size();
                 plan.fb[k ? 2 : 1] += (int)g[k].copies.size();
                 lp.clusters.push_back(g[k]);

@@ -46,5 +46,10 @@
         }
     };
     comp.openInViewer();
+    // RANDAMU_PV_ZOOM (e.g. 4): the viewer zoomed in, so that AE draws only a part of the comp
+    var zoom = parseFloat($.getenv("RANDAMU_PV_ZOOM") || "");
+    if (zoom > 0) {
+        try { app.activeViewer.views[0].options.zoom = zoom; } catch (ez) {}
+    }
     app.scheduleTask("__pvStep()", 1000, false);
 })();

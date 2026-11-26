@@ -1555,6 +1555,32 @@ TEST(fb_orders_hold)
     FbOrdersHold("fb_orders_hold (sparse 2)", 80, 4242);
 }
 
+// Test B (11/26): a group's representative must be a copy AE draws. A big copy near the camera but off the screen
+// (AE culls it) would take the whole group with it; copies off screen still join groups.
+TEST(fb_representative_on_screen)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    // copy 0: huge, near the camera, entirely left of the screen; copies 1..3 small on screen; copy 4 off screen right
+    in.layers.push_back(PlanLayer(7, {{-900, 150, -300, 400, 0}, {100, 100, 300, 30, 0}, {200, 100, 300, 30, 0},
+                                      {300, 100, 300, 30, 0}, {1500, 150, 300, 30, 0}}));
+    for (int iso = 0; iso < 2; iso++) {
+        rnd::MergePlan p = iso ? rnd::BuildIsolatedGroupPlan(in) : rnd::BuildFrontBackGroupPlan(in);
+        const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+        CHECK(lp.clusters.size() == 1 && lp.clusters[0].copies.size() == 5);
+        int rep = -1;
+        for (const auto& s : lp.subs)
+            if (s.cluster >= 0) rep = s.copy;
+        CHECK(rep >= 1 && rep <= 3);
+    }
+    // nothing on screen: no group (every copy one by one, AE culls them)
+    rnd::MergeSceneInput off;
+    off.cam = PlanCam();
+    off.layers.push_back(PlanLayer(7, {{-900, 150, -300, 400, 0}, {1500, 150, 300, 30, 0}, {1600, 150, 300, 30, 0}}));
+    CHECK(rnd::BuildFrontBackGroupPlan(off).layers.at(rnd::MergeLayerKey(1, 7)).clusters.empty());
+    CHECK(rnd::BuildIsolatedGroupPlan(off).layers.at(rnd::MergeLayerKey(1, 7)).clusters.empty());
+}
+
 // The plan's cost (it is rebuilt whenever the scene changes, every frame of an animation)
 TEST(fb_plan_speed)
 {

@@ -1785,6 +1785,17 @@ void HookGraph(void* list, void* comps)
             }
         }
         if (inCluster) RLog("group: %d front/back representatives in AE's clusters (not moved; the plan is wrong)", inCluster);
+        // a representative AE did not put in its list (culled): its group is not drawn at all
+        {
+            int groups = 0;
+            for (const Seen& s : seen)
+                if (s.lp)
+                    for (const MergeCluster& c : s.lp->clusters) groups += c.place != 0;
+            static LogLimit ml;
+            if (groups > (int)(front.size() + back.size()) && ml.Take(20))
+                RLog("group: %d front/back groups but %zu representatives in AE's list (a representative culled: its group "
+                     "is missing)", groups, front.size() + back.size());
+        }
         auto unlink = [](uintptr_t* j) {
             uintptr_t* nx = (uintptr_t*)j[0];
             uintptr_t* pv = (uintptr_t*)j[1];
