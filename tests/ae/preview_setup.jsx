@@ -13,6 +13,10 @@
         for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
         return null;
     }
+    // the script arrived (run_preview.ps1 sends it again when this file does not appear; only the first runs)
+    var got = new File(outDir + "/script_got.txt");
+    if (got.exists) return;
+    got.open("w"); got.writeln("setup"); got.close();
     function plain1(f) { f.property(2).setValue(1); for (var q = 4; q <= 9; q++) f.property(q).setValue(0); }
     var lines = [];
     try {
@@ -68,7 +72,7 @@
         });
         // merge on / off with a copy count on the layer named RANDAMU_PV_LAYER (else the last DupliX layer):
         // pv_on20, pv_off100, ..., pv_none (that layer off: the scene without its copies)
-        var counts = [20, 100, 380];
+        var counts = [1, 20, 100, 380];
         for (var ci = 0; ci < counts.length; ci++) (function (n) {
             variant("pv_on" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(1); });
             variant("pv_off" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(0); });
@@ -89,6 +93,9 @@
         }
         variant("pv_anim_on100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(1); animFill(T); });
         variant("pv_anim_off100", function (c, T, f) { f.property(2).setValue(100); f.property(MERGE).setValue(0); animFill(T); });
+        // the original comp is open in a viewer and hidden AE draws it too (with its saved settings): its DupliX
+        // layers off so that its draws do not mix into the variants' timing (a copy of the user's file)
+        for (var oi = 1; oi <= src.numLayers; oi++) if (fxOf(src.layer(oi))) src.layer(oi).enabled = false;
         write("variants.txt", lines.join("\n") + "\n");
     } catch (e) {
         write("variants.txt", "EXCEPTION " + e.message + " (line " + e.line + ")\n");

@@ -30,9 +30,53 @@ $env:RANDAMU_LOG = Join-Path $out "plugin.log"
 $env:RANDAMU_TIMING = "1"
 $ae = Start-AeHidden -Exe $exe -Arguments $scene
 Remove-Item env:RANDAMU_LOG, env:RANDAMU_TIMING
-function Send-Script([string]$name) {
+Add-Type -TypeDefinition @"
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
+public static class PvChild {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+    public static void Close(IntPtr h) { PostMessage(h, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); }
+    public static List<string> Texts(IntPtr p) {
+        var r = new List<string>();
+        EnumChildWindows(p, (h, l) => { var c = new StringBuilder(256); var t = new StringBuilder(8192);
+            GetClassName(h, c, 256); SendMessage(h, 0x000D /* WM_GETTEXT */, (IntPtr)8192, t); r.Add(c + " [" + t + "]"); return true; }, IntPtr.Zero);
+        return r;
+    }
+}
+"@
+function Send-Once([string]$name) {
     $s = Start-AeHidden -Exe $exe -Arguments ("-r " + (Join-Path $env:TEMP "randamu_$name.jsx"))
     $null = $s.WaitForExit(30000)
+}
+# A script sent to the running AE sometimes never arrives (seen 11/26: the run then waited out every timeout and
+# printed "no timing lines"). Each script writes script_got.txt first: send again (up to 3 times) when it does not
+# appear within 25 s; the scripts run only once even if a late copy arrives.
+function Send-Script([string]$name) {
+    $got = Join-Path $out "script_got.txt"
+    Remove-Item $got -ErrorAction SilentlyContinue
+    for ($k = 1; $k -le 3; $k++) {
+        Send-Once $name
+        $deadline = (Get-Date).AddSeconds(25)
+        while (-not (Test-Path $got) -and (Get-Date) -lt $deadline -and -not $ae.HasExited) { Start-Sleep -Milliseconds 300 }
+        if (Test-Path $got) { return }
+        if ($ae.HasExited) { throw "AE exited (sending $name)" }
+        Write-Host "script $name did not arrive (try $k)"
+        # what AE shows meanwhile (a dialog would block scripts)
+        foreach ($d in Get-AeHiddenDialogs) { Write-Host ("  dialog: pid {0} {1} [{2}] {3}" -f $d.Pid, $d.Process, $d.Title, $d.Text) }
+        foreach ($w in Get-AeHiddenWindows -ProcessId $ae.Id | Where-Object Visible) {
+            Write-Host ("  window: {0} [{1}] {2}x{3}" -f $w.Class, $w.Title, $w.W, $w.H)
+            if ($w.Class -ne "#32770") { continue }
+            $texts = [PvChild]::Texts([IntPtr]$w.Hwnd)
+            foreach ($c in $texts) { Write-Host "    child: $c" }
+            # AE's warning "a second script while one is running was not run" (sent too early): close it, send again
+            if (($texts -join " ") -match "2 つめのスクリプト|second script") { [PvChild]::Close([IntPtr]$w.Hwnd); Write-Host "    (closed)"; Start-Sleep -Seconds 3 }
+        }
+        foreach ($p in Get-CimInstance Win32_Process -Filter "Name='AfterFX.exe'") { Write-Host ("  process: {0} {1}" -f $p.ProcessId, $p.CommandLine) }
+    }
+    throw "script $name did not arrive after 3 tries"
 }
 function Wait-File([string]$path, [int]$sec) {
     $deadline = (Get-Date).AddSeconds($sec)
@@ -49,6 +93,8 @@ try {
     Start-Sleep -Seconds 3
     Send-Script "preview_setup"
     if (-not (Wait-File (Join-Path $out "variants.txt") 120)) { throw "setup script did not run" }
+    # the setup script is still finishing when its file appears: a script sent now is refused with a warning dialog
+    Start-Sleep -Seconds 5
     $vars = @{}
     foreach ($l in Get-Content (Join-Path $out "variants.txt")) {
         if ($l -like "EXCEPTION*") { throw $l }

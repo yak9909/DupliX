@@ -3,6 +3,11 @@
 // (the viewer renders each frame like when scrubbing). Writes step_done.txt at the end.
 (function () {
     var outDir = $.getenv("RANDAMU_TEST_DIR");
+    // the script arrived (run_preview.ps1 sends it again when this file does not appear; a late first copy and
+    // the second one: only the first that arrives runs)
+    var got = new File(outDir + "/script_got.txt");
+    if (got.exists) return;
+    got.open("w"); got.writeln("step"); got.close();
     var f = new File(outDir + "/step_cmd.txt");
     f.encoding = "UTF-8"; f.open("r");
     var parts = f.readln().split(" ");

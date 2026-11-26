@@ -972,6 +972,10 @@ A_Err HookGetDsf(PR_RenderContextH ctx, AEGP_DownsampleFactor* f)
 // AEGP_GetRenderLayerBounds for every sub-layer, and each ask runs the layer's pre-render (the effects' bounds, ~0.2
 // ms each in the viewer). The copies are the same layer at the same time: within one pass (from its
 // AEGP_GetNumLayersToRender, on one thread) a later sub-layer of a layer with the merge on gets the first answer.
+std::atomic<DWORD> g_profTid{0};  // see ProfLoop
+// RANDAMU_A3D_PROF: 1 a copy's setup, 2 the drawing thread all the time, 3 a pass (its AEGP_GetNumLayersToRender
+// to its last surface drawn)
+int g_profMode = 0;
 typedef A_Err (*GetNumLayersFn)(PR_RenderContextH, A_long*);
 typedef A_Err (*GetBoundsFn)(PR_RenderContextH, AEGP_RenderLayerContextH, const A_Time*, A_LegacyRect*);
 GetNumLayersFn g_origGetNumLayers = nullptr;
@@ -984,12 +988,31 @@ struct SharedBounds {
     A_LegacyRect r;
 };
 thread_local std::vector<SharedBounds> t_bounds;
+struct SharedStream {  // see HookLayerStreamValue
+    AEGP_LayerH layer;
+    AEGP_LayerStream which;
+    AEGP_LTimeMode mode;
+    A_Time t;
+    A_Boolean pre;
+    AEGP_StreamVal2 v;
+    AEGP_StreamType type;
+};
+thread_local std::vector<SharedStream> t_streams;
+thread_local bool t_passOpen = false;  // between a pass's AEGP_GetNumLayersToRender and its last surface drawn
+void ClosePass()
+{
+    t_bounds.clear();
+    t_streams.clear();
+    t_passOpen = false;
+}
 std::atomic<long long> g_boundsShared{0}, g_boundsAsked{0};
 LogLimit g_boundsLog, g_boundsCheckLog;
 
 A_Err HookGetNumLayers(PR_RenderContextH rc, A_long* n)
 {
-    t_bounds.clear();  // a new pass
+    ClosePass();  // a new pass
+    t_passOpen = true;
+    if (g_profMode == 3) g_profTid = GetCurrentThreadId();  // RANDAMU_A3D_PROF=3: from the pass's start to its last draw
     return g_origGetNumLayers(rc, n);
 }
 
@@ -1041,6 +1064,84 @@ A_Err HookGetBounds(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_T
     return e;
 }
 
+// ---- the merge checkbox: one stream value per layer, stream and time in a pass. Advanced3D reads the layer's scale
+// and material options (AEGP_GetLayerStreamValue, its Stream Suite version 7) for every sub-layer; each read
+// evaluates the layer's property (keyframes, expressions). Within a pass (see HookGetNumLayers) a later read of
+// the same layer, stream, time mode, time and pre-expression flag of a layer with the merge on gets the first value.
+typedef A_Err (*GetLayerStreamValueFn)(AEGP_LayerH, AEGP_LayerStream, AEGP_LTimeMode, const A_Time*, A_Boolean,
+                                       AEGP_StreamVal2*, AEGP_StreamType*);
+GetLayerStreamValueFn g_origLayerStreamValue = nullptr;
+static_assert(sizeof(AEGP_StreamVal2) == 32, "Advanced3D reads 32 bytes of the value");
+std::atomic<long long> g_streamShared{0};
+LogLimit g_streamLog, g_streamCheckLog;
+
+A_Err HookLayerStreamValue(AEGP_LayerH L, AEGP_LayerStream which, AEGP_LTimeMode mode, const A_Time* t, A_Boolean pre,
+                           AEGP_StreamVal2* v, AEGP_StreamType* type)
+{
+    {
+        // RANDAMU_A3D_TIME=1: why reads are not shared (0 no pass, 1 not merged, 2 first of its kind, 3 shared)
+        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static std::atomic<long long> why[4];
+        if (s_time) {
+            const int k = !t_passOpen ? 0 : !MergeOnFor(L) ? 1 : 2;
+            const long long c = ++why[k];
+            static LogLimit nm;
+            if (k == 1 && nm.Take(12)) {
+                LayerKey lk = {};
+                const bool key = KeyOf(L, &lk);
+                RLog("merge: stream read not merged: layer %p key %d (%d/%d) mine %d seen %d stream %d", (void*)L, (int)key,
+                     lk.compItemId, lk.layerId, (int)IsMine(L), MergeSeenOf(L), (int)which);
+            }
+            if ((c & (c - 1)) == 0 && c >= 64)
+                RLog("merge: stream reads no-pass %lld not-merged %lld kept %lld (stream %d, time %d/%u)", why[0].load(),
+                     why[1].load(), why[2].load(), (int)which, t ? (int)t->value : -1, t ? (unsigned)t->scale : 0u);
+        }
+    }
+    if (!t_passOpen || !t || !v || !MergeOnFor(L)) return g_origLayerStreamValue(L, which, mode, t, pre, v, type);
+    static const bool s_check = [] {
+        char e[4] = {0};
+        return GetEnvironmentVariableA("RANDAMU_BOUNDS_SHARE", e, sizeof(e)) > 0 && e[0] == '0';
+    }();
+    for (const SharedStream& s : t_streams)
+        if (s.layer == L && s.which == which && s.mode == mode && s.t.value == t->value && s.t.scale == t->scale && s.pre == pre) {
+            if (s_check) {  // RANDAMU_BOUNDS_SHARE=0: compare instead of sharing
+                const A_Err e = g_origLayerStreamValue(L, which, mode, t, pre, v, type);
+                if (g_streamCheckLog.Take(2000))
+                    RLog("merge: stream %d %s", (int)which, !e && !std::memcmp(v, &s.v, sizeof(*v)) ? "same" : "DIFFERENT");
+                return e;
+            }
+            *v = s.v;
+            if (type) *type = s.type;
+            int n = 0;
+            if (g_streamLog.Take(3, true, &n)) RLog("merge: stream value shared %lld", ++g_streamShared);
+            else ++g_streamShared;
+            return A_Err_NONE;
+        }
+    AEGP_StreamType tp = AEGP_StreamType_NO_DATA;
+    const A_Err e = g_origLayerStreamValue(L, which, mode, t, pre, v, &tp);
+    if (type) *type = tp;
+    if (!e && t_streams.size() < 256) t_streams.push_back({L, which, mode, *t, pre, *v, tp});
+    return e;
+}
+
+void InstallStreamHook()
+{
+    void** t7 = nullptr;
+    AEGP_StreamSuite6* s6 = nullptr;
+    if (!g_pica || g_pica->AcquireSuite(kAEGPStreamSuite, 7, (const void**)&t7) || !t7 ||
+        g_pica->AcquireSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion6, (const void**)&s6) || !s6) {
+        RLog("merge: stream hook not installed (suites)");
+        return;
+    }
+    // slot 16 (+128) is AEGP_GetLayerStreamValue: the SDK's table has it there, and Advanced3D's sub_18000ABB0 calls
+    // version 7's +128 with its arguments (layer, stream, time mode, time, pre-expression, value, type). Version 7's
+    // entry is its own implementation (an older value type of the same 32 bytes), so the values are copied as is.
+    (void)s6;
+    g_origLayerStreamValue = (GetLayerStreamValueFn)t7[16];
+    const bool ok = WritePtr(&t7[16], (void*)&HookLayerStreamValue);
+    RLog("merge: stream hook %s", ok ? "installed" : "failed");
+}
+
 void InstallBoundsHook(void** t10)
 {
     // the v10 table's slots of the two functions, found by comparing with the SDK version's table
@@ -1074,6 +1175,7 @@ void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
     }
     g_canvas8 = t14;
     InstallBoundsHook(t10);
+    InstallStreamHook();
     void* fn = (void*)t14->AEGP_GetRenderDownsampleFactor;
     int slot = -1;
     for (int i = 0; i < 40; i++)
@@ -1201,8 +1303,6 @@ thread_local rnd::GpuAeSpanTimes t_gt;
 thread_local double t_gtAll = 0;
 thread_local int t_gtRows = 0;
 thread_local std::chrono::steady_clock::time_point t_iterIn, t_iterOut;
-std::atomic<DWORD> g_profTid{0};    // see ProfLoop
-int g_profMode = 0;                 // RANDAMU_A3D_PROF: 1 a copy's setup, 2 the drawing thread all the time
 thread_local double t_helperMs[4];  // see HookNewMatching etc.
 thread_local int t_helperN[4];
 LogLimit g_gpuLog;
@@ -1339,7 +1439,11 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             ~InDraw()
             {
                 --t_inA3dDraw, t_shareOn = prev;
-                if (*(int*)(ctx + a3d::kCtxProgressCount) >= *(int*)(ctx + a3d::kCtxProgressTotal)) DropSharedTextures();
+                if (*(int*)(ctx + a3d::kCtxProgressCount) >= *(int*)(ctx + a3d::kCtxProgressTotal)) {
+                    DropSharedTextures();
+                    ClosePass();
+                    if (g_profMode == 3) g_profTid = 0;
+                }
             }
         } inDraw(ctx, ours);
         // RANDAMU_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels

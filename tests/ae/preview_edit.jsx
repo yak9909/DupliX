@@ -6,6 +6,10 @@
 // (check_preview_edit.py). Writes step_done.txt at the end.
 (function () {
     var outDir = $.getenv("RANDAMU_TEST_DIR");
+    // the script arrived (run_preview.ps1 sends it again when this file does not appear; only the first runs)
+    var got = new File(outDir + "/script_got.txt");
+    if (got.exists) return;
+    got.open("w"); got.writeln("edit"); got.close();
     var f = new File(outDir + "/step_cmd.txt");
     f.encoding = "UTF-8"; f.open("r");
     var parts = f.readln().split(" ");
