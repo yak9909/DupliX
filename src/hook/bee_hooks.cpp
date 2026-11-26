@@ -1573,8 +1573,10 @@ bool CloneForCheck(uintptr_t self, uintptr_t ctx, const void* L, int sub, unsign
 // were a sub-layer (sub_180014470's steps on a list of our surfaces: AE's graph, AE's draw of each component)
 namespace a3d {
 constexpr uintptr_t kGraphRva = 0x2AA00, kPrepareRva = 0x127B0, kDrawOneRva = 0x14800, kDrawClusterRva = 0x13470,
-                    kAfterDrawRva = 0x151F0, kNewRva = 0x5FD58, kFreeRva = 0x5FBDC;
+                    kAfterDrawRva = 0x151F0, kNewRva = 0x5FD58, kFreeRva = 0x5FBDC,
+                    kMBufNewRva = 0x234F0;  // sub_1800234F0: AE's M buffer for a cluster (rect, bit depth, flags)
 }  // namespace a3d
+typedef uintptr_t (*MBufNewFn)(int* rect, short depth, unsigned char f133, unsigned char f136);
 typedef void* (*AeNewFn)(size_t);
 typedef void (*AeFreeFn)(void*, size_t);
 typedef void (*GraphFn)(void* list, void* comps);
@@ -1764,16 +1766,64 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
             if (*(const unsigned char*)(sf + 0x81)) ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(sf, target);
             drawn++;
         } else {
-            // AE's cluster drawing (sub_180013470) makes a capsule helper per surface too (it would wait forever):
-            // its surfaces drawn one by one in the component's order (not AE's pixels where they cross; the plan
-            // keeps copies that meet in 3D out of groups)
-            if (g_groupLog.Take(10)) RLog("group: a cluster of %llu copies drawn one by one", (unsigned long long)j[3]);
-            for (uintptr_t* q = (uintptr_t*)((uintptr_t*)j[2])[0]; q != (uintptr_t*)j[2]; q = (uintptr_t*)q[0]) {
-                struct {
-                    int kind;
-                    uintptr_t buf;
-                } kt{1, target};
-                DrawSurfaceDirect(ctx, q[2], &kt);
+            // a cluster (surfaces whose order AE's graph cannot decide): AE's cluster drawing, sub_180013470, step by
+            // step. Its surfaces go into AE's M buffer (fragments per pixel, sorted by depth when it is resolved into
+            // the target), so the pixels are AE's where they cross. sub_180013470 itself is not called: its draw of
+            // each surface (sub_180014800) makes a capsule helper, which waits forever for the representative's;
+            // DrawSurfaceDirect draws as it does without one. (11/27: drawn one after another before, bigS3271 had
+            // 9-12 pixels unlike AE's.) RANDAMU_GROUP_CLUSTER=1 (diagnostics): the old drawing, one after another.
+            static const int s_cl = [] {
+                char v[4] = {0};
+                return GetEnvironmentVariableA("RANDAMU_GROUP_CLUSTER", v, sizeof(v)) > 0 ? atoi(v) : 0;
+            }();
+            if (g_groupLog.Take(10)) RLog("group: a cluster of %llu copies (%s)", (unsigned long long)j[3], s_cl == 1 ? "one by one" : "M buffer");
+            const uintptr_t inner = j[2];
+            if (s_cl == 1) {
+                for (uintptr_t* q = (uintptr_t*)((uintptr_t*)inner)[0]; q != (uintptr_t*)inner; q = (uintptr_t*)q[0]) {
+                    struct {
+                        int kind;
+                        uintptr_t buf;
+                    } kt{1, target};
+                    DrawSurfaceDirect(ctx, q[2], &kt);
+                }
+            } else {
+                // the union of the surfaces' screen rectangles (floor / ceil of their bounds), within the frame
+                int r[4] = {0, 0, 0, 0};  // x0, y0, x1, y1
+                unsigned char f133 = 0, f136 = 0;
+                for (uintptr_t* q = (uintptr_t*)((uintptr_t*)inner)[0]; q != (uintptr_t*)inner; q = (uintptr_t*)q[0]) {
+                    const uintptr_t sf = q[2];
+                    const int x0 = (int)std::floor(*(const double*)(sf + 8)), y0 = (int)std::floor(*(const double*)(sf + 0x10));
+                    const int x1 = (int)std::ceil(*(const double*)(sf + 0x18)), y1 = (int)std::ceil(*(const double*)(sf + 0x20));
+                    if (x1 > x0 && y1 > y0) {
+                        if (r[2] <= r[0] || r[3] <= r[1]) r[0] = x0, r[1] = y0, r[2] = x1, r[3] = y1;
+                        else r[0] = std::min(r[0], x0), r[2] = std::max(r[2], x1), r[1] = std::min(r[1], y0), r[3] = std::max(r[3], y1);
+                    }
+                    f133 |= *(const unsigned char*)(sf + 133), f136 |= *(const unsigned char*)(sf + 136);
+                }
+                int rc[4] = {std::max(r[0], 0), std::max(r[1], 0), std::min(r[2], *(const int*)(ctx + 192)),
+                             std::min(r[3], *(const int*)(ctx + 196))};
+                const unsigned short depth = (*(unsigned short (**)(uintptr_t))(*(uintptr_t*)target + 8))(target);
+                const uintptr_t mb = ((MBufNewFn)(g_a3dLo + a3d::kMBufNewRva))(rc, depth, f133, f136);
+                // the copies before the cluster first (they are under it in the target)
+                FlushGroupJobs();
+                struct MbDel {
+                    uintptr_t mb;
+                    ~MbDel()
+                    {
+                        if (mb) (**(void (***)(uintptr_t, int))mb)(mb, 1);
+                    }
+                } del{mb};
+                for (uintptr_t* q = (uintptr_t*)((uintptr_t*)inner)[0]; q != (uintptr_t*)inner; q = (uintptr_t*)q[0]) {
+                    struct {
+                        int kind;
+                        uintptr_t buf;
+                    } kt{2, mb};
+                    DrawSurfaceDirect(ctx, q[2], &kt);
+                    if (*(const unsigned char*)(q[2] + 129)) ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(q[2], target);
+                }
+                FlushGroupJobs();  // (a cluster's draws go into the M buffer through AE's own row callback)
+                (*(void (**)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)mb + 24))(
+                    mb, *(const uintptr_t*)(ctx + 208), *(const uintptr_t*)(*(const uintptr_t*)ctx + 480), target);
             }
             drawn += (int)j[3], clusters++;
         }
