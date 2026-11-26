@@ -477,18 +477,21 @@ struct AeHost {
     CUcontext ctx = nullptr;
     CUstream stream = nullptr;
     CUmodule mod = nullptr;
-    CUfunction fn = nullptr, fnOrdered = nullptr, fnWalk = nullptr, fnTiles = nullptr;
+    CUfunction fn = nullptr, fnOrdered = nullptr, fnWalk = nullptr, fnTiles = nullptr, fnPixels = nullptr;
     CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0, states = 0;
     size_t texCap = 0, regionCap = 0, rowsCap = 0, statesCap = 0;
     unsigned long long texKey = ~0ull;
     std::vector<unsigned char> shadow;  // the pixels of the texture on the GPU (host copy)
     int shadowW = 0, shadowH = 0, shadowRb = 0;
+    double opaque = 0;  // the share of the texture's texels with alpha 0xFF (chooses the culling)
     float rcpHost[256] = {};
     bool rcpSet = false;
     unsigned char* stage = nullptr;  // pinned: the region on its way to and from the GPU
     size_t stageCap = 0;
 };
 AeHost g_ae;
+// the culling's threshold: the share of opaque texels (AeHost::opaque) from which it is on
+constexpr double kCullOpaque = 0.9;
 
 bool GrowHost(unsigned char** p, size_t* cap, size_t need)
 {
@@ -568,6 +571,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             if (!r) r = cu.moduleGetFunction(&g_ae.fnOrdered, g_ae.mod, "AeSpanRowsOrdered");
             if (!r && cu.moduleGetFunction(&g_ae.fnWalk, g_ae.mod, "AeSpanWalk")) g_ae.fnWalk = nullptr;
             if (!r && cu.moduleGetFunction(&g_ae.fnTiles, g_ae.mod, "AeSpanTiles")) g_ae.fnTiles = nullptr;
+            if (!r && cu.moduleGetFunction(&g_ae.fnPixels, g_ae.mod, "AeSpanPixels")) g_ae.fnPixels = nullptr;
             if (r) {
                 GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
                 g_ae.ctx = nullptr;
@@ -726,6 +730,14 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             }
             g_ae.shadow.assign(j.tex.data, j.tex.data + texBytes);
             g_ae.shadowW = j.tex.width, g_ae.shadowH = j.tex.height, g_ae.shadowRb = j.tex.rowbytes;
+            long long nOpaque = 0;
+            for (int y = 0; y < j.tex.height; y++) {
+                const unsigned char* p = j.tex.data + (size_t)y * j.tex.rowbytes;
+                for (int x = 0; x < j.tex.width; x++) nOpaque += p[4 * (size_t)x] == 0xFF;
+            }
+            g_ae.opaque = j.tex.width > 0 && j.tex.height > 0 ? (double)nOpaque / ((double)j.tex.width * j.tex.height) : 0;
+            static std::atomic<int> logged{0};
+            if (++logged <= 8) GpuLog("gpu ae span: texture %dx%d, %.1f%% opaque", j.tex.width, j.tex.height, 100.0 * g_ae.opaque);
         }
         g_ae.texKey = j.texKey;
         if (times) times->texMs = nowMs() - ta;
@@ -767,13 +779,16 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             void* wargs[] = {&coresD, &rowsD, &ns, &stD};
             lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
             const double k1 = s_kt && !cu.streamSync(st) ? nowMs() : 0;
-            // RANDAMU_GPU_CULL=0: no culling of the pixels covered by a later opaque span
+            // culling of the pixels covered by a later opaque span (exact: the same pixels either way): on for a
+            // mostly opaque texture (a photo: one sample where hundreds of copies overlap; 11/27, 1920x1080 x 3271
+            // copies 816 -> 10 ms), off for one with soft edges (AE's averaging seldom reaches 0xFF there, and the
+            // backward pass only costs: Test C's flower 15 -> 24 ms). RANDAMU_GPU_CULL=0 / 1 forces it off / on
+            // (diagnostics: 2 = no pixel drawn, only the spans' steps; 3 = both)
             static const int s_cull = [] {
                 char v[4] = {0};
-                // (diagnostics: 2 = no pixel drawn, only the spans' steps; 3 = both)
-                return GetEnvironmentVariableA("RANDAMU_GPU_CULL", v, sizeof(v)) > 0 ? atoi(v) : 0;
+                return GetEnvironmentVariableA("RANDAMU_GPU_CULL", v, sizeof(v)) > 0 ? atoi(v) : -1;
             }();
-            int cull = s_cull;
+            int cull = s_cull >= 0 ? s_cull : (g_ae.opaque >= kCullOpaque ? 1 : 0);
             // the tiles' span sets: the largest row's (words), at most 4096 words (16 KB; larger rows check every span)
             int bitsWords = 0;
             for (int q = 0; q < nGroups; q++) {
@@ -781,7 +796,17 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                 if ((long long)w * t <= 4096) bitsWords = std::max(bitsWords, w * t);
             }
             void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD, &cull, &bitsWords};
-            if (!lr) lr = cu.launch(g_ae.fnTiles, (unsigned)n, 1, 1, 64, 1, 1, (unsigned)bitsWords * 4, st, targs, nullptr);
+            // a thread per pixel (AeSpanPixels), or RANDAMU_GPU_PIXELS=0: per 8 pixels (AeSpanTiles). The same pixels;
+            // 11/27 in the viewer: a 1920x1080 image shrunk to 217 px, 380 single copies 656 -> 268 ms a frame;
+            // Test C's flower, 3271 copies in a group: the GPU 16 -> 19 ms
+            static const int s_pixels = [] {
+                char v[4] = {0};
+                return GetEnvironmentVariableA("RANDAMU_GPU_PIXELS", v, sizeof(v)) > 0 ? atoi(v) : 1;
+            }();
+            const bool pixels = g_ae.fnPixels && s_pixels != 0;
+            if (!lr)
+                lr = cu.launch(pixels ? g_ae.fnPixels : g_ae.fnTiles, (unsigned)n, 1, 1, pixels ? 128 : 64, 1, 1,
+                               (unsigned)bitsWords * 4, st, targs, nullptr);
             if (s_kt && !cu.streamSync(st)) GpuLog("gpu ae span: upload %.2f, walk %.2f, tiles %.2f ms", k0 - tg, k1 - k0, nowMs() - k1);
         } else {
             void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};

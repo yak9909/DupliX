@@ -234,19 +234,20 @@ static void GpuSpanCapture(const std::string& dir)
 // gpu_ae_batch: a group's copies drawn together on the GPU (GpuAeSpansBatch: overlapping copies in their order)
 // against the CPU reference (AeDrawSpan8, AE's arithmetic, one copy after another): every pixel equal. Many small
 // copies piled up (like Test C: about 180 spans per row), rotated, minified (area sampling) and in perspective.
-static void GpuAeBatch(int n, unsigned seed)
+// opaque: a large opaque texture (a photo: every texel alpha 0xFF; the GPU culls the covered pixels then)
+static void GpuAeBatch(int n, unsigned seed, int tw = 217, int th = 216, bool opaque = false)
 {
     static rnd::AeRcpTable rcp;
     rnd::AeFillRcpTable(&rcp);
     unsigned s = seed;
     auto r01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
-    const int W = 1920, H = 1080, tw = 217, th = 216;
+    const int W = 1920, H = 1080;
     std::vector<unsigned char> tex((size_t)tw * th * 4);
     for (int y = 0; y < th; y++)
         for (int x = 0; x < tw; x++) {
             unsigned char* p = &tex[((size_t)y * tw + x) * 4];
             const double d = std::hypot(x - tw / 2.0, y - th / 2.0) / (tw / 2.0);
-            p[0] = d > 1 ? 0 : (unsigned char)(255 * (1 - d * d * 0.7));  // A (ARGB), clear corners
+            p[0] = opaque ? 255 : d > 1 ? 0 : (unsigned char)(255 * (1 - d * d * 0.7));  // A (ARGB), clear corners
             p[1] = (unsigned char)(x * 255 / tw), p[2] = (unsigned char)(y * 255 / th), p[3] = (unsigned char)((x ^ y) & 255);
         }
     std::vector<unsigned char> frame((size_t)W * H * 4);
@@ -282,7 +283,7 @@ static void GpuAeBatch(int n, unsigned seed)
             rnd::AeDrawSpan8(j.p, t, j.rows[r + 1], j.rows[r + 2], j.rows[r], &cpu[(size_t)j.rows[r] * W * 4]);
     std::vector<rnd::GpuAeSpanJob> gj((size_t)n);
     for (int q = 0; q < n; q++) {
-        gj[q].core = rnd::AeCoreOf(js[q].p), gj[q].tex = t, gj[q].texKey = 77, gj[q].rcp = rcp.r;
+        gj[q].core = rnd::AeCoreOf(js[q].p), gj[q].tex = t, gj[q].texKey = opaque ? 78 : 77,gj[q].rcp = rcp.r;
         gj[q].target = gpu.data(), gj[q].targetRowbytes = W * 4, gj[q].rows = js[q].rows.data(), gj[q].nRows = (int)js[q].rows.size() / 3;
     }
     double ms = 0, best = 1e9;
@@ -303,7 +304,8 @@ static void GpuAeBatch(int n, unsigned seed)
             bad++;
         }
     }
-    std::printf("gpu_ae_batch: %d copies, %lld pixels changed, %lld differ, %.1f ms (best of 3)\n", n, touched, bad, best);
+    std::printf("gpu_ae_batch%s %dx%d: %d copies, %lld pixels changed, %lld differ, %.1f ms (best of 3)\n", opaque ? " opaque" : "",
+                tw, th, n, touched, bad, best);
     CHECK(touched > 0 && bad == 0);
 }
 
@@ -401,6 +403,7 @@ int main()
     }
     GpuAeBatch(300, 1);
     GpuAeBatch(2500, 2);
+    GpuAeBatch(300, 3, 960, 540, true);
     {
         char env[4096] = {0};
         if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {

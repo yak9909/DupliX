@@ -225,6 +225,123 @@ extern "C" __global__ void AeSpanTiles(const rnd::AeSpanCore* __restrict__ cores
     }
 }
 
+// The same drawing with a thread per pixel (11/27): the tiles' 8 pixels in 8 threads. A pixel's state is the kept
+// state at its tile's start (or the span's start) stepped to the pixel with the same additions, so every pixel is
+// the tiled drawing's, bit for bit. Faster where few spans are long and sampling is costly (a large texture shrunk:
+// AE averages every texel under the pixel), the tiles' thread drew 8 such pixels one after another.
+// span e's state at its pixel x (x0 <= x < x1), from the kept state at or before x
+__device__ void StateAtPixel(const rnd::AeSpanCore& p, const int* e, int x, const double* __restrict__ states,
+                             rnd::aeimpl::Samp& s)
+{
+    const int t = x / AE_TILE * AE_TILE, xs = e[1] > t ? e[1] : t;
+    StateAt(p, e, xs, states, s);
+    if (x == xs) return;
+    for (int k = xs; k < x; k++) {
+        s.U = (double)s.dUx + s.U;
+        s.V = (double)s.dVx + s.V;
+        if (s.dWx != 0.0f) s.W = (double)s.dWx + s.W;
+    }
+    if (s.dWx != 0.0f && s.persp) s.invW = 1.0 / s.W;
+}
+extern "C" __global__ void AeSpanPixels(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,
+                                        int texRowbytes, int texW, int texH, const float* __restrict__ rcp,
+                                        unsigned char* region, const int* __restrict__ sp, const int* __restrict__ gStart,
+                                        const int* __restrict__ gSpan, int nGroups, const double* __restrict__ states, int cull,
+                                        int bitsWords)
+{
+    using namespace rnd::aeimpl;
+    const int g = blockIdx.x;
+    if (g >= nGroups) return;
+    const int a = gStart[g], b = gStart[g + 1];
+    const int t0 = gSpan[2 * g] / AE_TILE, t1 = (gSpan[2 * g + 1] - 1) / AE_TILE;
+    rnd::AeTex8 tex;
+    tex.data = texData, tex.rowbytes = texRowbytes, tex.width = texW, tex.height = texH;
+    extern __shared__ unsigned bits[];
+    const int nW = (b - a + 31) / 32, nT = t1 - t0 + 1;
+    const bool useBits = (long long)nW * nT <= bitsWords;
+    if (useBits) {
+        for (int i = threadIdx.x; i < nW * nT; i += blockDim.x) bits[i] = 0;
+        __syncthreads();
+        for (int r = a + (int)threadIdx.x; r < b; r += blockDim.x) {
+            const int* e = sp + 8 * r;
+            if (e[2] <= e[1]) continue;
+            const int ta = e[1] / AE_TILE > t0 ? e[1] / AE_TILE : t0, tb = (e[2] - 1) / AE_TILE;
+            for (int tt = ta; tt <= tb; tt++) atomicOr(&bits[(tt - t0) * nW + (r - a) / 32], 1u << ((r - a) & 31));
+        }
+        __syncthreads();
+    }
+    for (int x = gSpan[2 * g] + (int)threadIdx.x; x < gSpan[2 * g + 1]; x += blockDim.x) {
+        const unsigned* tb = bits + (x / AE_TILE - t0) * nW;
+        // the spans holding pixel x, in order (f(r) returns false to stop)
+        auto forward = [&](auto&& f) {
+            if (useBits) {
+                for (int w = 0; w < nW; w++)
+                    for (unsigned m = tb[w]; m; m &= m - 1) {
+                        const int r = a + w * 32 + __ffs(m) - 1;
+                        const int* e = sp + 8 * r;
+                        if (e[1] <= x && x < e[2] && !f(r)) return;
+                    }
+            } else {
+                for (int r = a; r < b; r++) {
+                    const int* e = sp + 8 * r;
+                    if (e[1] <= x && x < e[2] && !f(r)) return;
+                }
+            }
+        };
+        auto backward = [&](auto&& f) {
+            if (useBits) {
+                for (int w = nW - 1; w >= 0; w--)
+                    for (unsigned m = tb[w]; m;) {
+                        const int bit = 31 - __clz(m);
+                        m &= ~(1u << bit);
+                        const int r = a + w * 32 + bit;
+                        const int* e = sp + 8 * r;
+                        if (e[1] <= x && x < e[2] && !f(r)) return;
+                    }
+            } else {
+                for (int r = b - 1; r >= a; r--) {
+                    const int* e = sp + 8 * r;
+                    if (e[1] <= x && x < e[2] && !f(r)) return;
+                }
+            }
+        };
+        int from = a;  // the first span to draw (after the last covering one)
+        if (cull & 1) {
+            backward([&](int r) {
+                const int* e = sp + 8 * r;
+                const rnd::AeSpanCore p = cores[e[5]];
+                const unsigned char op = OpacityByte(p.opacity);
+                if (op != 0xFF) return true;
+                Samp s;
+                StateAtPixel(p, e, x, states, s);
+                const float iw = (float)s.invW;
+                const int u = (int)floorf((float)s.U * iw), v = (int)floorf((float)s.V * iw);
+                if (u >= 0 && v >= 0 && u < texW && v < texH && texData[(long long)v * texRowbytes + 4 * u] == 0xFF) {
+                    unsigned char px[4];
+                    SamplePixel(p, s, tex, px);
+                    if (XferAlpha(px, op) == 0xFF) {
+                        // the covering sample replaces the target (XferInFront8 with alpha 0xFF)
+                        unsigned char* d = region + e[4] + 4 * (long long)(x - e[3]);
+                        d[0] = px[0], d[1] = px[1], d[2] = px[2], d[3] = px[3];
+                        from = r + 1;
+                        return false;
+                    }
+                }
+                return true;
+            });
+        }
+        forward([&](int r) {
+            if (r < from) return true;
+            const int* e = sp + 8 * r;
+            const rnd::AeSpanCore p = cores[e[5]];
+            Samp s;
+            StateAtPixel(p, e, x, states, s);
+            if (!(cull & 2)) DrawPixel(p, s, tex, OpacityByte(p.opacity), rcp, region + e[4] + 4 * (long long)(x - e[3]));
+            return true;
+        });
+    }
+}
+
 // One block = one target row: its spans gStart[g] .. gStart[g + 1] - 1, in AE's drawing order, one after another
 // (spans of one row may overlap; rows never touch each other's pixels). One launch draws every surface of a group.
 extern "C" __global__ void AeSpanRowsOrdered(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,

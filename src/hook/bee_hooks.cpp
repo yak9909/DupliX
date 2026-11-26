@@ -813,7 +813,9 @@ struct SharedTex {
     bool hasV2, hasRect;
     AEGP_WorldH master;  // ours (a copy of AE's first texture)
     double m3[9];
+    unsigned long long serial;  // unique per master (a later master may reuse a freed one's address)
 };
+std::atomic<unsigned long long> g_masterSerial{0};
 thread_local std::vector<SharedTex> t_shared;
 thread_local int t_inGroup = 0;  // inside a group's drawing (its surfaces' draws are ordinary copies)
 thread_local bool t_inGroupIter = false;  // RANDAMU_GROUP_TRACE: the draw of a group's surface
@@ -901,21 +903,27 @@ struct TexOrigin {
     const unsigned char* base = nullptr;
     AEGP_WorldH master = nullptr;
     long long gen = -1;
+    unsigned long long serial = 0;
 };
 thread_local TexOrigin t_texOrigin;
-void NoteTexOrigin(AEGP_WorldH w, AEGP_WorldH master)
+void NoteTexOrigin(AEGP_WorldH w, AEGP_WorldH master, unsigned long long serial)
 {
     AEGP_WorldSuite3* ws = WorldSuite();
     PF_Pixel8* p = nullptr;
     AEGP_WorldType type = AEGP_WorldType_NONE;
     t_texOrigin = TexOrigin();
     if (!ws || !w || ws->AEGP_GetType(w, &type) || type != AEGP_WorldType_8 || ws->AEGP_GetBaseAddr8(w, &p) || !p) return;
-    t_texOrigin = {(const unsigned char*)p, master, (long long)g_texGen.load()};
+    t_texOrigin = {(const unsigned char*)p, master, (long long)g_texGen.load(), serial};
 }
 // the master of the texture at base (null if unknown)
 AEGP_WorldH TexMasterOf(const unsigned char* base)
 {
     return base && base == t_texOrigin.base && t_texOrigin.gen == (long long)g_texGen.load() ? t_texOrigin.master : nullptr;
+}
+// the serial of the master whose pixels the texture at base has (0 if unknown): the GPU keeps one upload per master
+unsigned long long TexSerialOf(const unsigned char* base)
+{
+    return TexMasterOf(base) ? t_texOrigin.serial : 0;
 }
 // every thread's live masters (a dispose may come on any thread)
 std::mutex g_mastersMu;
@@ -971,7 +979,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
                     *world = (void*)c;
                     std::memcpy(m3, s.m3, sizeof(s.m3));
                     g_texGen++;  // a new world (maybe at a freed one's address): the GPU copy is uploaded again
-                    NoteTexOrigin(c, s.master);
+                    NoteTexOrigin(c, s.master, s.serial);
                     int n = 0;
                     if (g_texShareLog.Take(3, true, &n))
                         RLog("merge: texture shared %lld (fetched %lld)", ++g_texShared, g_texFetched.load());
@@ -989,11 +997,12 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         if (rect) std::memcpy(s.rect, rect, sizeof(s.rect));
         std::memcpy(s.m3, m3, sizeof(s.m3));
         s.master = CopyOfWorld((AEGP_WorldH)*world);
+        s.serial = ++g_masterSerial;
         if (s.master) t_shared.push_back(s), AddSharedMaster(s.master), ++g_texFetched;
     }
     g_texGen++;
     if (shareLayer && !r && *world && !t_shared.empty() && t_shared.back().layer == shareLayer)
-        NoteTexOrigin((AEGP_WorldH)*world, t_shared.back().master);
+        NoteTexOrigin((AEGP_WorldH)*world, t_shared.back().master, t_shared.back().serial);
     LogTexTime(trace, "tex", t0);
     if (!r) LogTexArgs(trace, u, v2, rect, world, m3);
     if (!r) SwapGroupTexture(trace, world, m3, "tex");
@@ -2473,8 +2482,13 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         rnd::GpuAeSpanJob gj;
         gj.core = rnd::AeCoreOf(job.p);
         gj.tex = job.tex;
-        gj.texKey = ((unsigned long long)(uintptr_t)job.tex.data * 1000003ull) ^ (g_texGen.load() << 1) ^
-                    ((unsigned long long)job.tex.width << 40) ^ (unsigned long long)job.tex.height;
+        // a shared master's pixels (every copy of the layer this frame): its serial, so the GPU neither uploads nor
+        // compares the texture again for each copy (8 MB for 1920x1080). Else a key that changes with every fetch.
+        const unsigned long long serial = TexSerialOf(job.tex.data);
+        gj.texKey = serial ? (1ull << 63) | serial
+                           : (((unsigned long long)(uintptr_t)job.tex.data * 1000003ull) ^ (g_texGen.load() << 1) ^
+                              ((unsigned long long)job.tex.width << 40) ^ (unsigned long long)job.tex.height) &
+                                 ~(1ull << 63);
         gj.rcp = g_rcp.r, gj.target = job.tdata, gj.targetRowbytes = job.trb;
         gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
         // a group's copies: kept, drawn together at the end of the group (FlushGroupJobs) in this order

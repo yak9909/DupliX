@@ -83,6 +83,34 @@
             variant("pv_fast" + n, function (c, T, f) { f.property(2).setValue(n); f.property(15).setValue(1); T.threeDLayer = false; });
         })(counts[ci]);
         variant("pv_none", function (c, T, f) { T.enabled = false; });
+        // a large image as the copied layer (RANDAMU_PV_BIG = path of e.g. a 1920x1080 PNG), each count of
+        // RANDAMU_PV_COUNTS (else 380): pv_bigS<n> scaled so that it shows as large as the original layer (a large
+        // texture, the same pixels on screen), pv_bigL<n> at the layer's scale (more pixels on screen too)
+        var bigPath = $.getenv("RANDAMU_PV_BIG") || "";
+        if (bigPath) {
+            var bigInfo = [];
+            var big = P.importFile(new ImportOptions(new File(bigPath)));
+            var bigCounts = [];
+            for (var bi = 0; bi < more.length; bi++) if (parseInt(more[bi], 10) > 0) bigCounts.push(parseInt(more[bi], 10));
+            if (!bigCounts.length) bigCounts.push(380);
+            for (var bc = 0; bc < bigCounts.length; bc++) (function (n) {
+                function bigVariant(name, shrink) {
+                    variant(name, function (c, T, f) {
+                        var w0 = T.source.width, h0 = T.source.height;
+                        T.replaceSource(big, false);
+                        var sp = tg(T).property("ADBE Scale"), s = sp.value, k = shrink ? w0 / big.width : 1;
+                        if (sp.numKeys === 0) sp.setValue(s.length > 2 ? [s[0] * k, s[1] * k, s[2] * k] : [s[0] * k, s[1] * k]);
+                        // RANDAMU_PV_BIG_MERGE=0: the merge off (AE draws every copy: the reference pixels)
+                        f.property(2).setValue(n); f.property(MERGE).setValue($.getenv("RANDAMU_PV_BIG_MERGE") === "0" ? 0 : 1);
+                        bigInfo.push(name + ": " + w0 + "x" + h0 + " -> " + big.width + "x" + big.height + " scale x" + k +
+                                   " comp " + c.width + "x" + c.height);
+                    });
+                }
+                bigVariant("pv_bigS" + n, true);
+                bigVariant("pv_bigL" + n, false);
+            })(bigCounts[bc]);
+            write("big.txt", bigInfo.join("\n") + "\n");
+        }
         // the layer's pixels change every frame (a Fill before DupliX whose color follows the time): a texture kept
         // from another frame would show
         function animFill(T) {
