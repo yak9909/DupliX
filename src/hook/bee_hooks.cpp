@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "core/ae_pair.h"
 #include "core/ae_span.h"
 #include "gpu/gpu_raster.h"
 #include "core/fast_plane.h"
@@ -1487,6 +1488,11 @@ constexpr uintptr_t kDrawParamsRva = 0x50FD0;
 // What sub_180014800 does for a surface without motion blur, without its BEE_ArtisanLayerCapsuleParamsHelper (the
 // representative's is alive for the same layer; a second one for it waits forever): the draw parameters
 // (sub_180050FD0) and the surface's draw (vtable slot 1). False: not drawn this way (motion blur path).
+// RANDAMU_A3D_TIME (diagnostics): a group's draws, summed: AE's draw parameters, AE's draw up to its row callback,
+// the row callback (ours), AE's draw after it
+thread_local std::chrono::steady_clock::time_point t_gIterIn, t_gIterOut;
+thread_local double t_gAcc[4];
+thread_local int t_gIters;
 bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
 {
     if (!*(const unsigned char*)(sf + 128)) return true;  // nothing to draw
@@ -1494,8 +1500,28 @@ bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
     const bool still = *(const int*)(sf + 184) == *(const int*)(sf + 176) || *(const int*)(sf + 188) == *(const int*)(sf + 180);
     if (!still || *(const unsigned char*)(prep + 296)) return false;
     alignas(16) unsigned char params[192];
+    const auto tg0 = std::chrono::steady_clock::now();
     ((DrawParamsFn)(g_a3dLo + a3d::kDrawParamsRva))(params, ctx, *(const unsigned short*)(sf + 56), sf + 56,
                                                     *(const uintptr_t*)(sf + 160), *(const int*)(sf + 168));
+    const auto tg1 = std::chrono::steady_clock::now();
+    t_gIterIn = t_gIterOut = tg1;
+    struct Acc {
+        std::chrono::steady_clock::time_point a, b;
+        ~Acc()
+        {
+            auto ms = [](std::chrono::steady_clock::time_point x, std::chrono::steady_clock::time_point y) {
+                return std::chrono::duration<double, std::milli>(y - x).count();
+            };
+            const auto c = std::chrono::steady_clock::now();
+            t_gAcc[0] += ms(a, b);
+            if (t_gIterIn > b) {
+                t_gAcc[1] += ms(b, t_gIterIn), t_gAcc[2] += ms(t_gIterIn, t_gIterOut), t_gAcc[3] += ms(t_gIterOut, c);
+                t_gIters++;
+            } else {
+                t_gAcc[1] += ms(b, c);
+            }
+        }
+    } acc{tg0, tg1};
     const uintptr_t cam = ctx + 8 * (*(const unsigned char*)(sf + 135) ? 7 : 9);
     const auto draw = *(SurfDrawFn*)(*(uintptr_t*)sf + 8);
     static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
@@ -1604,6 +1630,8 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
     tGraph = gms(tg0) - tBuild;
     if (s_time && built.size() > 500) RLog("group time: graph %.2f of it AE's sort, %.2f the surfaces' preparation", tSort, tGraph - tSort);
     const auto tDraw0 = std::chrono::steady_clock::now();
+    for (double& v : t_gAcc) v = 0;
+    t_gIters = 0;
     const int savedCount = *(int*)(ctx + a3d::kCtxProgressCount);
     const uintptr_t target = *(uintptr_t*)(a7 + 8);
     struct InGroup {  // also when AE throws (its error codes) out of a draw: the kept jobs are dropped then
@@ -1675,7 +1703,9 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
 #undef GTRACE
     static LogLimit tl;
     if (s_time && tl.Take(200))
-        RLog("group time: %d copies: build %.2f graph %.2f draw %.2f all %.2f ms", n, tBuild, tGraph, tDraw, gms(tg0));
+        RLog("group time: %d copies: build %.2f graph %.2f draw %.2f all %.2f ms (draws: params %.2f, AE before the rows %.2f, "
+             "rows %.2f, AE after %.2f; %d row loops)",
+             n, tBuild, tGraph, tDraw, gms(tg0), t_gAcc[0], t_gAcc[1], t_gAcc[2], t_gAcc[3], t_gIters);
     int nn = 0;
     if (g_groupLog.Take(8, true, &nn))
         RLog("group: drew %d of %d copies (%zu surfaces, %d clusters) at copy %d", drawn, n, built.size(), clusters, rep);
@@ -1912,10 +1942,47 @@ std::atomic<long long> g_edgeChecks{0}, g_edgeMismatch{0};
 thread_local double t_edgePairMs = 0;  // diagnostics: the last build's pair tests
 thread_local size_t t_edgeCand = 0;
 LogLimit g_edgeLog;
+// sub_18002B040 with core/ae_pair (the same answers: tests/unit ae_pair_matches_advanced3d calls AE's own on millions of
+// cases). Samples it does not take (no samples, more than 64 vertices): AE's own test.
+thread_local bool t_pairNoAe = false;  // a worker thread of BuildEdgesFast: AE's test is left to the caller (*f1 = 2)
+void PairOurs(uintptr_t A, uintptr_t B, unsigned char* f1, unsigned char* f2)
+{
+    *f1 = *f2 = 0;
+    if (!rnd::AePairBoxes((const double*)(A + 8), (const double*)(B + 8))) return;
+    const int nA = *(const int*)(A + 0xD0), nB = *(const int*)(B + 0xD0), n = std::max(nA, nB);
+    auto ae = [&] {
+        if (t_pairNoAe) {
+            *f1 = 2, *f2 = 0;
+            return;
+        }
+        ((PairTestFn)(g_a3dLo + a3d::kPairTestRva))(A, B, f1, f2);
+    };
+    if (nA <= 0 || nB <= 0) return ae();
+    auto sample = [](uintptr_t S, int idx, rnd::AePairSample* out) {
+        const unsigned char* r = *(const unsigned char* const*)(S + 0xC8) + 192 * (size_t)idx;
+        const double* b = *(const double* const*)r;
+        const double* e = *(const double* const*)(r + 8);
+        if (b == e) return false;
+        out->v = b, out->n = (int)((e - b) / 4);
+        std::memcpy(&out->a, r + 0x18, 32);
+        return true;
+    };
+    for (int k = 0; k < n; k++) {
+        rnd::AePairSample sa, sb;
+        if (!sample(A, std::min(k, nA - 1), &sa) || !sample(B, std::min(k, nB - 1), &sb)) continue;
+        if (!rnd::AePairSamples(sa, sb, f1, f2)) return (void)(*f1 = *f2 = 0), ae();
+        if (*f1 && *f2) return;
+    }
+}
 void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
 {
     const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
-    const auto pair = (PairTestFn)(g_a3dLo + a3d::kPairTestRva);
+    // RANDAMU_PAIR_OURS=0: AE's own pair test
+    static const bool s_aePair = [] {
+        char v[4] = {0};
+        return GetEnvironmentVariableA("RANDAMU_PAIR_OURS", v, sizeof(v)) > 0 && v[0] == '0';
+    }();
+    const auto pair = s_aePair ? (PairTestFn)(g_a3dLo + a3d::kPairTestRva) : &PairOurs;
     ((ClearNodesFn)(g_a3dLo + a3d::kClearNodesRva))(a2, *a2);
     uintptr_t* head = (uintptr_t*)*a2;
     head[0] = head[1] = (uintptr_t)head;
@@ -1955,12 +2022,35 @@ void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
             cand.push_back({std::min(A.i, Bb.i), std::max(A.i, Bb.i)});
         }
     }
-    // AE's pair test on them, in AE's order (on several threads it was no faster: 11/26, Test C 67000 pairs about
-    // 160 ms on 1 or 8 threads, its work memory allocations take turns)
+    // the pair tests. Ours (core/ae_pair) only reads the two surfaces: many at once on several threads. AE's own was
+    // no faster on several threads (11/26: its work memory allocations take turns), so it runs on this thread.
     std::vector<unsigned char> flags(cand.size() * 2, 0);
     const auto tp0 = std::chrono::steady_clock::now();
-    for (size_t k = 0; k < cand.size(); k++)
-        pair(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k], &flags[2 * k + 1]);
+    const int nt = s_aePair || cand.size() < 4096 ? 1 : std::max(1, std::min(8, (int)std::thread::hardware_concurrency()));
+    auto work = [&](size_t from, size_t to) {
+        for (size_t k = from; k < to; k++)
+            pair(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k], &flags[2 * k + 1]);
+    };
+    if (nt <= 1) {
+        work(0, cand.size());
+    } else {
+        // ours falls back to AE's test for samples it does not take: rare; AE's errors would throw on a worker, so
+        // those pairs are retried here (PairOurs on the workers never calls AE: see t_pairNoAe)
+        std::vector<std::thread> ts;
+        const size_t per = (cand.size() + nt - 1) / nt;
+        for (int t = 1; t < nt; t++)
+            ts.emplace_back([&, t] {
+                t_pairNoAe = true;
+                work(std::min(cand.size(), per * t), std::min(cand.size(), per * (t + 1)));
+            });
+        work(0, std::min(cand.size(), per));
+        for (std::thread& t : ts) t.join();
+        for (size_t k = 0; k < cand.size(); k++)
+            if (flags[2 * k] == 2)  // a worker's pair left to AE
+                flags[2 * k] = flags[2 * k + 1] = 0,
+                ((PairTestFn)(g_a3dLo + a3d::kPairTestRva))(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k],
+                                                             &flags[2 * k + 1]);
+    }
     t_edgePairMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp0).count();
     t_edgeCand = cand.size();
     std::vector<std::vector<int>> partners((size_t)n);
@@ -2237,10 +2327,10 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
     static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr && t_inGroupIter) RLog("group trace: nested iterate (%llu rows)", (unsigned long long)n);
-    t_iterIn = std::chrono::steady_clock::now();
+    t_iterIn = t_gIterIn = std::chrono::steady_clock::now();
     if (g_profMode == 1) g_profTid = 0;
     struct Out {
-        ~Out() { t_iterOut = std::chrono::steady_clock::now(); }
+        ~Out() { t_iterOut = t_gIterOut = std::chrono::steady_clock::now(); }
     } out;
     a3d::SpanJob job;
     const char* why = "row path";
