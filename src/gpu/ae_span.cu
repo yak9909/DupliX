@@ -8,23 +8,23 @@
 
 #define AE_MAX_CHUNKS 256
 
-// The pixels of row r: rows[6 r .. 6 r + 5] = y, x0, x1, the x of the packed segment holding it, the segment's byte
-// offset in region (the target's touched row segments packed one after another), the row's surface (cores[]).
-// Rows of one launch never touch the same pixel (the caller launches overlapping surfaces in order).
-extern "C" __global__ void AeSpanRowsPacked(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,
-                                            int texRowbytes, int texW, int texH, const float* __restrict__ rcp,
-                                            unsigned char* region, const int* __restrict__ rows, int n)
+// The pixels of row span r: rows[6 r .. 6 r + 5] = y, x0, x1, the x of the packed segment holding it, the segment's
+// byte offset in region (the target's touched row segments packed one after another), the span's surface (cores[]).
+// Drawn by the whole block (thread 0 walks the span, then every thread draws chunks).
+__device__ void DrawPackedSpan(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,
+                               int texRowbytes, int texW, int texH, const float* __restrict__ rcp, unsigned char* region,
+                               const int* __restrict__ rows, int r, double* sU, double* sV, double* sW)
 {
     using namespace rnd::aeimpl;
-    const int r = blockIdx.x;
-    if (r >= n) return;
     const rnd::AeSpanCore p = cores[rows[6 * r + 5]];
     const int y = rows[6 * r], x0 = rows[6 * r + 1], x1 = rows[6 * r + 2], segX = rows[6 * r + 3], segOff = rows[6 * r + 4];
     const int len = x1 - x0;
     if (len <= 0) return;
-    __shared__ double sU[AE_MAX_CHUNKS], sV[AE_MAX_CHUNKS], sW[AE_MAX_CHUNKS];
+    // chunks of c pixels, one per thread: as many threads busy as the span allows (spans of small copies are short)
     int c = (len + AE_MAX_CHUNKS - 1) / AE_MAX_CHUNKS;
-    if (c < 16) c = 16;
+    const int cMin = (len + blockDim.x - 1) / blockDim.x;
+    if (c < cMin) c = cMin;
+    if (c < 1) c = 1;
     if (threadIdx.x == 0) {
         Samp s;
         InitRow(s, p, SpanStart(x0), SpanStart(y));
@@ -51,6 +51,22 @@ extern "C" __global__ void AeSpanRowsPacked(const rnd::AeSpanCore* __restrict__ 
             DrawPixel(p, s, tex, op, rcp, row + 4 * i);
             Step(s);
         }
+    }
+}
+
+// One block = one target row: its spans gStart[g] .. gStart[g + 1] - 1, in AE's drawing order, one after another
+// (spans of one row may overlap; rows never touch each other's pixels). One launch draws every surface of a group.
+extern "C" __global__ void AeSpanRowsOrdered(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,
+                                             int texRowbytes, int texW, int texH, const float* __restrict__ rcp,
+                                             unsigned char* region, const int* __restrict__ rows,
+                                             const int* __restrict__ gStart, int nGroups)
+{
+    const int g = blockIdx.x;
+    if (g >= nGroups) return;
+    __shared__ double sU[AE_MAX_CHUNKS], sV[AE_MAX_CHUNKS], sW[AE_MAX_CHUNKS];
+    for (int r = gStart[g]; r < gStart[g + 1]; r++) {
+        DrawPackedSpan(cores, texData, texRowbytes, texW, texH, rcp, region, rows, r, sU, sV, sW);
+        __syncthreads();  // this span's pixels and the shared chunk starts are done before the next span
     }
 }
 

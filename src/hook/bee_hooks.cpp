@@ -1817,6 +1817,78 @@ void HookGraph(void* list, void* comps)
     }
 }
 
+// The call at site (E8 rel32, checked by the caller) made to go to fn through a stub within 2 GB of it
+// (mov rax, fn; jmp rax). At plug-in setup, before any render.
+bool RedirectCall(uintptr_t lo, const unsigned char* site, void* fn, const char** why)
+{
+    unsigned char* stub = nullptr;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity;
+    for (uintptr_t d = gran; d < 0x70000000 && !stub; d += gran) {
+        for (const uintptr_t a : {(lo & ~(gran - 1)) - d, ((lo + 0x200000) & ~(gran - 1)) + d}) {
+            stub = (unsigned char*)VirtualAlloc((void*)a, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+            if (stub) {
+                const long long off = (long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5);
+                if (off > -0x78000000LL && off < 0x78000000LL) break;
+                VirtualFree(stub, 0, MEM_RELEASE);
+                stub = nullptr;
+            }
+        }
+    }
+    if (!stub) return *why = "no memory near Advanced3D", false;
+    stub[0] = 0x48, stub[1] = 0xB8;
+    std::memcpy(stub + 2, &fn, 8);
+    stub[10] = 0xFF, stub[11] = 0xE0;
+    DWORD old = 0;
+    VirtualProtect(stub, 4096, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), stub, 16);
+    const int newRel = (int)((long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5));
+    if (!VirtualProtect((void*)(site + 1), 4, PAGE_EXECUTE_READWRITE, &old)) return *why = "VirtualProtect failed", false;
+    std::memcpy((void*)(site + 1), &newRel, 4);
+    VirtualProtect((void*)(site + 1), 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    return true;
+}
+
+// ---- RANDAMU_GRAPH_PROF=1 (diagnostics): AE's pair test in its graph (sub_18002AB40 +0x2ACEA calls sub_18002A630)
+// counted and timed: all pairs, pairs whose screen boxes overlap (surface +8 .. +0x20), and the time in each
+typedef void (*PairTestFn)(uintptr_t a, uintptr_t b, unsigned char* aFront, unsigned char* bFront);
+PairTestFn g_origPairTest = nullptr;
+std::atomic<long long> g_pairN{0}, g_pairBox{0}, g_pairTicks{0}, g_pairBoxTicks{0};
+void HookPairTest(uintptr_t a, uintptr_t b, unsigned char* f1, unsigned char* f2)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_origPairTest(a, b, f1, f2);
+    QueryPerformanceCounter(&t1);
+    const double* A = (const double*)(a + 8);
+    const double* B = (const double*)(b + 8);
+    const bool box = std::min(A[2], B[2]) > std::max(A[0], B[0]) && std::min(A[3], B[3]) > std::max(A[1], B[1]);
+    g_pairN++, g_pairTicks += t1.QuadPart - t0.QuadPart;
+    if (box) g_pairBox++, g_pairBoxTicks += t1.QuadPart - t0.QuadPart;
+}
+void LogPairTests()
+{
+    if (!g_origPairTest) return;
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    RLog("graph prof: %lld pair tests %.2f ms, of them %lld with overlapping boxes %.2f ms", g_pairN.exchange(0),
+         g_pairTicks.exchange(0) * 1000.0 / f.QuadPart, g_pairBox.exchange(0), g_pairBoxTicks.exchange(0) * 1000.0 / f.QuadPart);
+}
+void InstallPairTestProf(uintptr_t lo)
+{
+    const unsigned char* site = (const unsigned char*)(lo + 0x2ACEA);
+    const int rel = site[0] == 0xE8 ? *(const int*)(site + 1) : 0;
+    const char* why = "the call site does not match";
+    if (site[0] != 0xE8 || (uintptr_t)(site + 5 + rel) != lo + 0x2A630) {
+        RLog("graph prof: not installed (%s)", why);
+        return;
+    }
+    g_origPairTest = (PairTestFn)(lo + 0x2A630);
+    RLog("graph prof: %s", RedirectCall(lo, site, (void*)&HookPairTest, &why) ? "installed" : why);
+}
+
 void InstallGraphHook(HMODULE a3d)
 {
     const uintptr_t lo = (uintptr_t)a3d;
@@ -1834,44 +1906,14 @@ void InstallGraphHook(HMODULE a3d)
         RLog("group: reorder hook not installed (the call site does not match)");
         return;
     }
-    // a stub within 2 GB of the call: mov rax, HookGraph; jmp rax
-    unsigned char* stub = nullptr;
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    const uintptr_t gran = si.dwAllocationGranularity;
-    for (uintptr_t d = gran; d < 0x70000000 && !stub; d += gran) {
-        for (const uintptr_t a : {(lo & ~(gran - 1)) - d, ((lo + 0x200000) & ~(gran - 1)) + d}) {
-            stub = (unsigned char*)VirtualAlloc((void*)a, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            if (stub) {
-                const long long off = (long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5);
-                if (off > -0x78000000LL && off < 0x78000000LL) break;
-                VirtualFree(stub, 0, MEM_RELEASE);
-                stub = nullptr;
-            }
-        }
-    }
-    if (!stub) {
-        RLog("group: reorder hook not installed (no memory near Advanced3D)");
-        return;
-    }
-    stub[0] = 0x48, stub[1] = 0xB8;
-    void* fn = (void*)&HookGraph;
-    std::memcpy(stub + 2, &fn, 8);
-    stub[10] = 0xFF, stub[11] = 0xE0;
-    DWORD old = 0;
-    VirtualProtect(stub, 4096, PAGE_EXECUTE_READ, &old);
-    FlushInstructionCache(GetCurrentProcess(), stub, 16);
     g_origGraph = (GraphFn)(lo + a3d::kGraphRva);
-    const int newRel = (int)((long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5));
-    if (!VirtualProtect((void*)(site + 1), 4, PAGE_EXECUTE_READWRITE, &old)) {
-        RLog("group: reorder hook not installed (VirtualProtect failed)");
+    const char* why = nullptr;
+    if (!RedirectCall(lo, site, (void*)&HookGraph, &why)) {
+        RLog("group: reorder hook not installed (%s)", why);
         return;
     }
-    std::memcpy((void*)(site + 1), &newRel, 4);  // at plug-in setup, before any render
-    VirtualProtect((void*)(site + 1), 4, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), site, 5);
     g_graphHooked = true;
-    RLog("group: reorder hook installed (stub %p)", (void*)stub);
+    RLog("group: reorder hook installed");
 }
 
 // ---- DupliX draws a copy's pixels with AE's own arithmetic (core/ae_span): AE's draw runs (its raster state and

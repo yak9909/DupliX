@@ -477,7 +477,7 @@ struct AeHost {
     CUcontext ctx = nullptr;
     CUstream stream = nullptr;
     CUmodule mod = nullptr;
-    CUfunction fn = nullptr, fnPacked = nullptr;
+    CUfunction fn = nullptr, fnOrdered = nullptr;
     CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0;
     size_t texCap = 0, regionCap = 0, rowsCap = 0;
     unsigned long long texKey = ~0ull;
@@ -538,7 +538,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             CUresult r = !scope.pushed ? 1 : cu.streamCreate(&g_ae.stream, 1 /* CU_STREAM_NON_BLOCKING */);
             if (!r) r = cu.moduleLoadData(&g_ae.mod, kAeSpanPtx);
             if (!r) r = cu.moduleGetFunction(&g_ae.fn, g_ae.mod, "AeSpanRows");
-            if (!r) r = cu.moduleGetFunction(&g_ae.fnPacked, g_ae.mod, "AeSpanRowsPacked");
+            if (!r) r = cu.moduleGetFunction(&g_ae.fnOrdered, g_ae.mod, "AeSpanRowsOrdered");
             if (r) {
                 GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
                 g_ae.ctx = nullptr;
@@ -562,72 +562,80 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                 if (std::memcmp(js[q].tex.data + (size_t)y * j.tex.rowbytes, j.tex.data + (size_t)y * j.tex.rowbytes,
                                 (size_t)j.tex.width * 4))
                     return false;
-    // the target's touched pixels: every row's spans (all jobs) merged into segments, packed one after another
+    // every row span of every job grouped by target row (a counting sort by y: within a row, the jobs' order = AE's)
     struct Seg {
         int y, x0, x1, off;
     };
-    std::vector<Seg> segs;
+    int yMin = INT_MAX, yMax = INT_MIN;
     size_t allRows = 0;
-    for (int q = 0; q < nj; q++) {
-        allRows += (size_t)js[q].nRows;
+    for (int q = 0; q < nj; q++)
         for (int i = 0; i < js[q].nRows; i++) {
             const int* r = js[q].rows + 3 * i;
-            if (r[2] > r[1]) segs.push_back({r[0], r[1], r[2], 0});
+            if (r[2] <= r[1]) continue;
+            yMin = std::min(yMin, r[0]), yMax = std::max(yMax, r[0]);
+            allRows++;
         }
-    }
-    if (segs.empty()) return true;  // nothing to draw
-    std::sort(segs.begin(), segs.end(), [](const Seg& a, const Seg& b) { return a.y != b.y ? a.y < b.y : a.x0 < b.x0; });
-    size_t m = 0;
-    for (size_t i = 1; i < segs.size(); i++) {
-        if (segs[i].y == segs[m].y && segs[i].x0 <= segs[m].x1) segs[m].x1 = std::max(segs[m].x1, segs[i].x1);
-        else segs[++m] = segs[i];
-    }
-    segs.resize(m + 1);
-    size_t regionBytes = 0;
-    for (Seg& sg : segs) sg.off = (int)regionBytes, regionBytes += (size_t)(sg.x1 - sg.x0) * 4;
-    // levels: a job after jobs it may overlap (bounding boxes) goes one level later; the jobs of one level never touch
-    // the same pixel and are drawn by one launch, the levels in order (AE's order where jobs overlap)
-    std::vector<int> level(nj, 0);
+    if (!allRows) return true;  // nothing to draw
+    const int nY = yMax - yMin + 1;
+    std::vector<int> start((size_t)nY + 1, 0);
+    for (int q = 0; q < nj; q++)
+        for (int i = 0; i < js[q].nRows; i++) {
+            const int* r = js[q].rows + 3 * i;
+            if (r[2] > r[1]) start[(size_t)(r[0] - yMin) + 1]++;
+        }
+    for (int k = 0; k < nY; k++) start[(size_t)k + 1] += start[k];
+    // (y, x0, x1, segment x, segment offset, job) per span
+    std::vector<int> packed(allRows * 6);
     {
-        std::vector<int> bx0(nj, 1 << 30), bx1(nj, -(1 << 30)), by0(nj, 1 << 30), by1(nj, -(1 << 30));
+        std::vector<int> fill(start.begin(), start.end() - 1);
         for (int q = 0; q < nj; q++)
             for (int i = 0; i < js[q].nRows; i++) {
                 const int* r = js[q].rows + 3 * i;
                 if (r[2] <= r[1]) continue;
-                bx0[q] = std::min(bx0[q], r[1]), bx1[q] = std::max(bx1[q], r[2]);
-                by0[q] = std::min(by0[q], r[0]), by1[q] = std::max(by1[q], r[0] + 1);
+                int* o = &packed[(size_t)fill[r[0] - yMin]++ * 6];
+                o[0] = r[0], o[1] = r[1], o[2] = r[2], o[3] = 0, o[4] = 0, o[5] = q;
             }
-        for (int q = 0; q < nj; q++)
-            for (int p = 0; p < q; p++)
-                if (bx0[p] < bx1[q] && bx0[q] < bx1[p] && by0[p] < by1[q] && by0[q] < by1[p]) level[q] = std::max(level[q], level[p] + 1);
     }
-    const int nLevels = nj ? *std::max_element(level.begin(), level.end()) + 1 : 0;
-    // each row with its segment and surface (y, x0, x1, segment x, segment offset, job), by level
-    std::vector<int> packed;
-    packed.reserve(allRows * 6);
-    std::vector<int> levelStart(nLevels + 1, 0);
-    for (int L = 0; L < nLevels; L++) {
-        levelStart[L] = (int)(packed.size() / 6);
-        for (int q = 0; q < nj; q++) {
-            if (level[q] != L) continue;
-            for (int i = 0; i < js[q].nRows; i++) {
-                const int* r = js[q].rows + 3 * i;
-                if (r[2] <= r[1]) continue;
-                auto it = std::upper_bound(segs.begin(), segs.end(), Seg{r[0], r[1], 0, 0},
-                                           [](const Seg& a, const Seg& b) { return a.y != b.y ? a.y < b.y : a.x0 < b.x0; });
-                const Seg& sg = *(it - 1);  // the segment starting at or before x0 on row y holds the span
-                const int o[6] = {r[0], r[1], r[2], sg.x0, sg.off, q};
-                packed.insert(packed.end(), o, o + 6);
+    // the target's touched pixels: each row's spans merged into segments, packed one after another; a block per row
+    std::vector<Seg> segs;
+    std::vector<int> gStart;
+    size_t regionBytes = 0;
+    std::vector<std::pair<int, int>> iv;
+    for (int k = 0; k < nY; k++) {
+        const int a = start[k], b = start[(size_t)k + 1];
+        if (a == b) continue;
+        gStart.push_back(a);
+        iv.clear();
+        for (int e = a; e < b; e++) iv.push_back({packed[(size_t)e * 6 + 1], packed[(size_t)e * 6 + 2]});
+        std::sort(iv.begin(), iv.end());
+        const size_t s0 = segs.size();
+        for (const auto& v : iv) {
+            if (segs.size() > s0 && v.first <= segs.back().x1) segs.back().x1 = std::max(segs.back().x1, v.second);
+            else segs.push_back({k + yMin, v.first, v.second, 0});
+        }
+        for (size_t s = s0; s < segs.size(); s++) segs[s].off = (int)regionBytes, regionBytes += (size_t)(segs[s].x1 - segs[s].x0) * 4;
+        for (int e = a; e < b; e++) {
+            int* o = &packed[(size_t)e * 6];
+            // the row's segment starting at or before x0 holds the span
+            size_t lo = s0, hi = segs.size();
+            while (hi - lo > 1) {
+                const size_t mid = (lo + hi) / 2;
+                if (segs[mid].x0 <= o[1]) lo = mid;
+                else hi = mid;
             }
+            o[3] = segs[lo].x0, o[4] = segs[lo].off;
         }
     }
-    levelStart[nLevels] = (int)(packed.size() / 6);
+    const int nGroups = (int)gStart.size();
+    gStart.push_back((int)allRows);
     std::vector<AeSpanCore> cores((size_t)nj);
     for (int q = 0; q < nj; q++) cores[q] = js[q].core;
-    const size_t rowsBytes = packed.size() * 4, coresBytes = cores.size() * sizeof(AeSpanCore);
+    const size_t rowsBytes = packed.size() * 4, coresBytes = cores.size() * sizeof(AeSpanCore),
+                 gBytes = gStart.size() * 4;
     const size_t texBytes = (size_t)j.tex.rowbytes * j.tex.height;
-    if (!GrowDev(&g_ae.region, &g_ae.regionCap, regionBytes) || !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes + coresBytes) ||
-        !GrowHost(&g_ae.stage, &g_ae.stageCap, regionBytes + rowsBytes + coresBytes)) {
+    if (!GrowDev(&g_ae.region, &g_ae.regionCap, regionBytes) ||
+        !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes + coresBytes + gBytes) ||
+        !GrowHost(&g_ae.stage, &g_ae.stageCap, regionBytes + rowsBytes + coresBytes + gBytes)) {
         GpuLog("gpu ae span: buffers not allocated (%zu bytes): this copy on the CPU", regionBytes);
         return false;
     }
@@ -666,18 +674,18 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                     (size_t)(sg.x1 - sg.x0) * 4);
     std::memcpy(g_ae.stage + regionBytes, packed.data(), rowsBytes);
     std::memcpy(g_ae.stage + regionBytes + rowsBytes, cores.data(), coresBytes);
+    std::memcpy(g_ae.stage + regionBytes + rowsBytes + coresBytes, gStart.data(), gBytes);
     const double tg = nowMs();
     if (cu.htodAsync(g_ae.region, g_ae.stage, regionBytes, st) ||
-        cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes + coresBytes, st))
+        cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes + coresBytes + gBytes, st))
         return false;
-    // one launch per level, in order on one stream
-    for (int L = 0; L < nLevels; L++) {
-        CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rcpD = g_ae.rcp, regD = g_ae.region,
-                    rowsD = g_ae.rows + (size_t)levelStart[L] * 24;
-        int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = levelStart[L + 1] - levelStart[L];
-        if (n <= 0) continue;
-        void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &n};
-        if (cu.launch(g_ae.fnPacked, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr)) {
+    // one launch: a block per target row, its spans in order
+    {
+        CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rcpD = g_ae.rcp, regD = g_ae.region, rowsD = g_ae.rows,
+                    gD = g_ae.rows + rowsBytes + coresBytes;
+        int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = nGroups;
+        void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};
+        if (cu.launch(g_ae.fnOrdered, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr)) {
             g_failed = true;
             GpuLog("gpu ae span: launch failed: copies drawn on the CPU from now on");
             return false;
@@ -698,9 +706,9 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         if (++logged <= 12) {
             LARGE_INTEGER tq;
             QueryPerformanceCounter(&tq);
-            GpuLog("gpu ae span batch: %d jobs %d levels %zu rows %zu segments %.0f KB: before staging %.2f, staging %.2f, "
+            GpuLog("gpu ae span batch: %d jobs %d target rows %zu spans %zu segments %.0f KB: before staging %.2f, staging %.2f, "
                    "gpu %.2f, back %.2f ms",
-                   nj, nLevels, allRows, segs.size(), regionBytes / 1024.0, tsA - (double)t0.QuadPart * 1000.0 / (double)qf.QuadPart,
+                   nj, nGroups, allRows, segs.size(), regionBytes / 1024.0, tsA - (double)t0.QuadPart * 1000.0 / (double)qf.QuadPart,
                    tg - tsA, tsB - tg, nowMs() - tsB);
         }
     }

@@ -118,6 +118,7 @@ MergePlan BuildSingleGroupPlan(const MergeSceneInput& in)
 
 MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     MergePlan plan;
     plan.cam = in.cam;
     // every other surface on screen (an unbounded plane, a plane crossing the camera's plane or a box: everywhere)
@@ -168,6 +169,7 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
             cs.push_back(c);
         }
     }
+    const auto tPairs = std::chrono::steady_clock::now();
     // components of copies overlapping on screen (any layer); a component is a group when every copy in it is ok
     // and of one layer
     std::vector<int> parent(cs.size());
@@ -177,20 +179,38 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
     for (size_t i = 0; i < cs.size(); i++) byX[i] = (int)i;
     std::sort(byX.begin(), byX.end(), [&](int a, int b) { return cs[a].minX < cs[b].minX; });
     std::vector<int> meet;
+    // the bounding boxes in x order, packed (the sweep reads them for every candidate pair)
+    struct Box {
+        double x0, x1, y0, y1;
+    };
+    std::vector<Box> boxes(byX.size());
+    for (size_t a = 0; a < byX.size(); a++) {
+        const C& c = cs[byX[a]];
+        boxes[a] = c.q.valid ? Box{c.minX, c.maxX, c.minY, c.maxY} : Box{c.minX, -1e300, 1e300, -1e300};
+    }
+    const double g = 2 * marginPx;
     for (size_t a = 0; a < byX.size(); a++) {
         const C& A = cs[byX[a]];
         if (!A.q.valid) continue;
-        for (size_t b = a + 1; b < byX.size() && cs[byX[b]].minX <= A.maxX + 2 * marginPx; b++) {
+        const Box ba = boxes[a];
+        for (size_t b = a + 1; b < byX.size() && boxes[b].x0 <= ba.x1 + g; b++) {
+            const Box& bb = boxes[b];
+            plan.ms[2]++;  // diagnostics: candidate pairs
+            if (bb.y0 > ba.y1 + g || ba.y0 > bb.y1 + g) continue;  // also an invalid B (an empty box)
             const C& B = cs[byX[b]];
-            if (!B.q.valid || B.minY > A.maxY + 2 * marginPx || A.minY > B.maxY + 2 * marginPx) continue;
             if (QuadsOverlap(A.q, B.q, marginPx)) {
+                plan.ms[3]++;  // diagnostics: overlapping pairs
                 parent[root(byX[a])] = root(byX[b]);
                 // copies meeting in 3D: AE draws them as one cluster (a fragment table), which the group drawing
                 // does not reproduce: their component is drawn one by one
-                if (QuadsIntersect3D(A.corners, B.corners)) meet.push_back(byX[a]);
+                // (quads apart in camera depth cannot meet: every point of a quad is within its z range)
+                if (A.q.zMax >= B.q.zMin && B.q.zMax >= A.q.zMin && QuadsIntersect3D(A.corners, B.corners))
+                    meet.push_back(byX[a]);
             }
         }
     }
+    plan.ms[0] = std::chrono::duration<double, std::milli>(tPairs - t0).count();
+    plan.ms[1] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tPairs).count();
     // a copy that cannot be placed on screen (behind the camera) overlaps everything it may: its whole layer is
     // left one by one
     std::vector<char> compOk(cs.size(), 1), layerBad(in.layers.size(), 0);

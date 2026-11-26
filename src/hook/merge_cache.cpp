@@ -121,13 +121,30 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     // every transform); one entry per comp keeps the latest frame
     // the log generation (changes only when a test switches logs): each test render builds and logs its own plan
     const unsigned long long h = HashMergeScene(in) ^ ((unsigned long long)RLogGeneration() * 0x9E3779B97F4A7C15ull);
-    auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
+    auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in, comp] {
         // the earlier group planes (RANDAMU_MERGE_OLD=1) or the group drawing (isolated copies drawn by AE's functions)
         char ov[4] = {0};
         const bool old = GetEnvironmentVariableA("RANDAMU_MERGE_OLD", ov, sizeof(ov)) > 0 && ov[0] == '1';
         const auto tPlan = std::chrono::steady_clock::now();
-        const bool fb = !old && FrontBackGroupsOn();
+        // a comp whose front/back plan ran over its budget: the next frames go straight to the isolated groups (the
+        // same result as running out again), trying the front/back plan again every 16th frame
+        static std::mutex s_overMu;
+        static std::map<int, std::pair<size_t, int>> s_over;  // comp -> (copies when over budget, frames since)
+        size_t nCopies = 0;
+        for (const MergeLayerInput& l : in.layers) nCopies += (size_t)std::max(l.p.count, 0);
+        bool skipFb = false;
+        {
+            std::lock_guard<std::mutex> lk(s_overMu);
+            auto it = s_over.find(comp);
+            if (it != s_over.end() && nCopies >= it->second.first * 9 / 10 && ++it->second.second % 16 != 0) skipFb = true;
+        }
+        const bool fb = !old && FrontBackGroupsOn() && !skipFb;
         MergePlan p = old ? BuildMergePlan(in) : fb ? BuildFrontBackGroupPlan(in) : BuildIsolatedGroupPlan(in);
+        if (fb) {
+            std::lock_guard<std::mutex> lk(s_overMu);
+            if (p.fb[12]) s_over[comp] = {nCopies, 0};
+            else s_over.erase(comp);
+        }
         static LogLimit fbl;
         if (fb && p.fb[12] && fbl.Take(40)) RLog("group: front/back plan over budget: isolated groups only");
         else if (fb && fbl.Take(40))
@@ -137,7 +154,9 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
         static LogLimit lg;
         if (s_time && lg.Take(200))
-            RLog("group time: plan %.2f ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tPlan).count());
+            RLog("group time: plan %.2f ms (isolated plan: copies %.2f, pairs %.2f ms; %.0f candidates, %.0f overlapping)",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tPlan).count(), p.ms[0], p.ms[1],
+                 p.ms[2], p.ms[3]);
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
         char fv[96] = {0};
         double wp[3];
