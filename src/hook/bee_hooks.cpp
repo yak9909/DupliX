@@ -2477,10 +2477,11 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
             pj.gj.tex = pj.tex;
             t_groupJobs.push_back(std::move(pj));
             g_oursDraws++;
+            // the progress AE's row callback reports: once, at the copy's last row (it was every 4th row: about
+            // 40000 calls into AE a frame in Test C; the progress only feeds AE's progress display)
             const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
-            for (int row = 0; row < count; row++)
-                if ((row & 3) == 0 || row == count)
-                    (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)row, (unsigned)count);
+            if (count > 0)
+                (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)(count - 1), (unsigned)count);
             return 0;
         }
         double ms = 0;

@@ -378,13 +378,28 @@ RND_HD void SampleQ1(const Samp& s, const AeTex8& t, unsigned char* out)
 RND_HD unsigned char OpacityByte(double opacity) { return (unsigned char)CvttD(opacity * 255.0 + 0.5); }
 
 // One pixel of a span with the state s at that pixel (the caller steps s afterwards)
+// The pixel a span draws at state s (before the transfer)
+RND_HD void SamplePixel(const AeSpanCore& p, const Samp& s, const AeTex8& tex, unsigned char* px)
+{
+    if (p.quality) SampleQ1(s, tex, px);
+    else SampleNearest(s, tex, px);
+    if (p.colorMode == 2) px[1] = px[2] = px[3] = 0xFF;
+}
+// The transfer's alpha of a sampled pixel (XferInFront8: 0xFF replaces the target pixel by the sample)
+RND_HD unsigned XferAlpha(const unsigned char* px, unsigned char op)
+{
+    unsigned sa = px[0];
+    if (op != 0xFF) {
+        const unsigned e = sa * op + 128;
+        sa = ((e >> 8) + e) >> 8;
+    }
+    return sa & 0xFF;
+}
 RND_HD void DrawPixel(const AeSpanCore& p, const Samp& s, const AeTex8& tex, unsigned char op, const float* rcp,
                       unsigned char* dst)
 {
     unsigned char px[4];
-    if (p.quality) SampleQ1(s, tex, px);
-    else SampleNearest(s, tex, px);
-    if (p.colorMode == 2) px[1] = px[2] = px[3] = 0xFF;
+    SamplePixel(p, s, tex, px);
     if (px[0]) XferInFront8(px, op, rcp, dst);
 }
 

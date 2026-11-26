@@ -591,6 +591,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                 if (std::memcmp(js[q].tex.data + (size_t)y * j.tex.rowbytes, j.tex.data + (size_t)y * j.tex.rowbytes,
                                 (size_t)j.tex.width * 4))
                     return false;
+    const double hp0 = nowMs();
     // every row span of every job grouped by target row (a counting sort by y: within a row, the jobs' order = AE's)
     struct Seg {
         int y, x0, x1, off;
@@ -625,36 +626,59 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                 o[0] = r[0], o[1] = r[1], o[2] = r[2], o[3] = 0, o[4] = 0, o[5] = q, o[6] = 0, o[7] = 0;
             }
     }
+    const double hp1 = nowMs();
     // the target's touched pixels: each row's spans merged into segments, packed one after another; a block per row
+    // rows on several threads (each its own segments), then the offsets in row order, then the spans' segments
+    std::vector<std::vector<Seg>> rowSegs((size_t)nY);
+    auto mergeRows = [&](int k0, int k1) {
+        std::vector<std::pair<int, int>> iv;
+        for (int k = k0; k < k1; k++) {
+            const int a = start[k], b = start[(size_t)k + 1];
+            if (a == b) continue;
+            iv.clear();
+            for (int e = a; e < b; e++) iv.push_back({packed[(size_t)e * 8 + 1], packed[(size_t)e * 8 + 2]});
+            std::sort(iv.begin(), iv.end());
+            std::vector<Seg>& rs = rowSegs[k];
+            for (const auto& v : iv) {
+                if (!rs.empty() && v.first <= rs.back().x1) rs.back().x1 = std::max(rs.back().x1, v.second);
+                else rs.push_back({k + yMin, v.first, v.second, 0});
+            }
+        }
+    };
+    const int nth = allRows >= 20000 ? std::max(1, std::min(8, (int)std::thread::hardware_concurrency())) : 1;
+    auto parallel = [&](auto&& f) {
+        if (nth == 1) return f(0, nY);
+        std::vector<std::thread> ts;
+        for (int t = 1; t < nth; t++) ts.emplace_back(f, nY * t / nth, nY * (t + 1) / nth);
+        f(0, nY / nth);
+        for (std::thread& t : ts) t.join();
+    };
+    parallel(mergeRows);
     std::vector<Seg> segs;
     std::vector<int> gStart;
     size_t regionBytes = 0;
-    std::vector<std::pair<int, int>> iv;
     for (int k = 0; k < nY; k++) {
-        const int a = start[k], b = start[(size_t)k + 1];
-        if (a == b) continue;
-        gStart.push_back(a);
-        iv.clear();
-        for (int e = a; e < b; e++) iv.push_back({packed[(size_t)e * 8 + 1], packed[(size_t)e * 8 + 2]});
-        std::sort(iv.begin(), iv.end());
-        const size_t s0 = segs.size();
-        for (const auto& v : iv) {
-            if (segs.size() > s0 && v.first <= segs.back().x1) segs.back().x1 = std::max(segs.back().x1, v.second);
-            else segs.push_back({k + yMin, v.first, v.second, 0});
-        }
-        for (size_t s = s0; s < segs.size(); s++) segs[s].off = (int)regionBytes, regionBytes += (size_t)(segs[s].x1 - segs[s].x0) * 4;
-        for (int e = a; e < b; e++) {
-            int* o = &packed[(size_t)e * 8];
-            // the row's segment starting at or before x0 holds the span
-            size_t lo = s0, hi = segs.size();
-            while (hi - lo > 1) {
-                const size_t mid = (lo + hi) / 2;
-                if (segs[mid].x0 <= o[1]) lo = mid;
-                else hi = mid;
-            }
-            o[3] = segs[lo].x0, o[4] = segs[lo].off;
-        }
+        if (start[k] == start[(size_t)k + 1]) continue;
+        gStart.push_back(start[k]);
+        for (Seg& sg : rowSegs[k]) sg.off = (int)regionBytes, regionBytes += (size_t)(sg.x1 - sg.x0) * 4, segs.push_back(sg);
     }
+    parallel([&](int k0, int k1) {
+        for (int k = k0; k < k1; k++) {
+            const std::vector<Seg>& rs = rowSegs[k];
+            for (int e = start[k]; e < start[(size_t)k + 1]; e++) {
+                int* o = &packed[(size_t)e * 8];
+                // the row's segment starting at or before x0 holds the span
+                size_t lo = 0, hi = rs.size();
+                while (hi - lo > 1) {
+                    const size_t mid = (lo + hi) / 2;
+                    if (rs[mid].x0 <= o[1]) lo = mid;
+                    else hi = mid;
+                }
+                o[3] = rs[lo].x0, o[4] = rs[lo].off;
+            }
+        }
+    });
+    const double hp2 = nowMs();
     const int nGroups = (int)gStart.size();
     gStart.push_back((int)allRows);
     // the tiled drawing: each span's kept states (every x0 < x < x1 with x % 8 == 0) and each row's x range
@@ -683,6 +707,8 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         return false;
     }
     if (times) times->regionPx = (long long)(regionBytes / 4);
+    if (GetEnvironmentVariableA("RANDAMU_GPU_KTIME", nullptr, 0) > 0)
+        GpuLog("gpu ae span host: checks %.2f, sort %.2f, segments %.2f, states and buffers %.2f ms", hp0 - (double)t0.QuadPart * 1000.0 / (double)qf.QuadPart, hp1 - hp0, hp2 - hp1, nowMs() - hp2);
     if (g_ae.texKey != j.texKey || !g_ae.tex) {
         const double ta = nowMs();
         // the same pixels as the texture on the GPU (the copies of one layer share one texture): no upload
@@ -741,8 +767,21 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             void* wargs[] = {&coresD, &rowsD, &ns, &stD};
             lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
             const double k1 = s_kt && !cu.streamSync(st) ? nowMs() : 0;
-            void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD};
-            if (!lr) lr = cu.launch(g_ae.fnTiles, (unsigned)n, 1, 1, 64, 1, 1, 0, st, targs, nullptr);
+            // RANDAMU_GPU_CULL=0: no culling of the pixels covered by a later opaque span
+            static const int s_cull = [] {
+                char v[4] = {0};
+                // (diagnostics: 2 = no pixel drawn, only the spans' steps; 3 = both)
+                return GetEnvironmentVariableA("RANDAMU_GPU_CULL", v, sizeof(v)) > 0 ? atoi(v) : 0;
+            }();
+            int cull = s_cull;
+            // the tiles' span sets: the largest row's (words), at most 4096 words (16 KB; larger rows check every span)
+            int bitsWords = 0;
+            for (int q = 0; q < nGroups; q++) {
+                const int w = (gStart[(size_t)q + 1] - gStart[q] + 31) / 32, t = (gSpan[2 * (size_t)q + 1] - 1) / 8 - gSpan[2 * (size_t)q] / 8 + 1;
+                if ((long long)w * t <= 4096) bitsWords = std::max(bitsWords, w * t);
+            }
+            void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD, &cull, &bitsWords};
+            if (!lr) lr = cu.launch(g_ae.fnTiles, (unsigned)n, 1, 1, 64, 1, 1, (unsigned)bitsWords * 4, st, targs, nullptr);
             if (s_kt && !cu.streamSync(st)) GpuLog("gpu ae span: upload %.2f, walk %.2f, tiles %.2f ms", k0 - tg, k1 - k0, nowMs() - k1);
         } else {
             void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};

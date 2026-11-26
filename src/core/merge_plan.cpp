@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <future>
+#include <thread>
 
 #include "core/merge_geom.h"
 
@@ -189,24 +190,49 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
         boxes[a] = c.q.valid ? Box{c.minX, c.maxX, c.minY, c.maxY} : Box{c.minX, -1e300, 1e300, -1e300};
     }
     const double g = 2 * marginPx;
-    for (size_t a = 0; a < byX.size(); a++) {
-        const C& A = cs[byX[a]];
-        if (!A.q.valid) continue;
-        const Box ba = boxes[a];
-        for (size_t b = a + 1; b < byX.size() && boxes[b].x0 <= ba.x1 + g; b++) {
-            const Box& bb = boxes[b];
-            plan.ms[2]++;  // diagnostics: candidate pairs
-            if (bb.y0 > ba.y1 + g || ba.y0 > bb.y1 + g) continue;  // also an invalid B (an empty box)
-            const C& B = cs[byX[b]];
-            if (QuadsOverlap(A.q, B.q, marginPx)) {
-                plan.ms[3]++;  // diagnostics: overlapping pairs
-                parent[root(byX[a])] = root(byX[b]);
+    // the overlapping pairs (and whether they meet in 3D) on several threads: each a range of the sweep, its pairs
+    // in sweep order; then joined in that order (the components do not depend on it)
+    struct Pair {
+        int a, b;
+        bool meets;
+    };
+    const int nt = byX.size() >= 1024 ? std::max(1, std::min(8, (int)std::thread::hardware_concurrency())) : 1;
+    std::vector<std::vector<Pair>> found((size_t)nt);
+    std::vector<double> counted((size_t)nt * 2, 0);
+    auto sweep = [&](int t) {
+        const size_t from = byX.size() * t / nt, to = byX.size() * (t + 1) / nt;
+        for (size_t a = from; a < to; a++) {
+            const C& A = cs[byX[a]];
+            if (!A.q.valid) continue;
+            const Box ba = boxes[a];
+            for (size_t b = a + 1; b < byX.size() && boxes[b].x0 <= ba.x1 + g; b++) {
+                const Box& bb = boxes[b];
+                counted[2 * t]++;  // diagnostics: candidate pairs
+                if (bb.y0 > ba.y1 + g || ba.y0 > bb.y1 + g) continue;  // also an invalid B (an empty box)
+                const C& B = cs[byX[b]];
+                if (!QuadsOverlap(A.q, B.q, marginPx)) continue;
+                counted[2 * t + 1]++;  // diagnostics: overlapping pairs
                 // copies meeting in 3D: AE draws them as one cluster (a fragment table), which the group drawing
                 // does not reproduce: their component is drawn one by one
                 // (quads apart in camera depth cannot meet: every point of a quad is within its z range)
-                if (A.q.zMax >= B.q.zMin && B.q.zMax >= A.q.zMin && QuadsIntersect3D(A.corners, B.corners))
-                    meet.push_back(byX[a]);
+                const bool m = A.q.zMax >= B.q.zMin && B.q.zMax >= A.q.zMin && QuadsIntersect3D(A.corners, B.corners);
+                found[t].push_back({byX[a], byX[b], m});
             }
+        }
+    };
+    if (nt == 1) {
+        sweep(0);
+    } else {
+        std::vector<std::thread> ts;
+        for (int t = 1; t < nt; t++) ts.emplace_back(sweep, t);
+        sweep(0);
+        for (std::thread& t : ts) t.join();
+    }
+    for (int t = 0; t < nt; t++) {
+        plan.ms[2] += counted[2 * t], plan.ms[3] += counted[2 * t + 1];
+        for (const Pair& p : found[t]) {
+            parent[root(p.a)] = root(p.b);
+            if (p.meets) meet.push_back(p.a);
         }
     }
     plan.ms[0] = std::chrono::duration<double, std::milli>(tPairs - t0).count();
