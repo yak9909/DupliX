@@ -92,6 +92,9 @@ struct MergeCluster {
     std::vector<int> copies;  // copy indices of the layer, in their order
     double depth;             // camera-space z of the group plane (d)
     double rect[4];           // the group's screen rect: full-resolution comp px, aligned to kMergeAlign
+    // the group drawing: where the group is drawn. 0 at its representative's place in AE's order; +1 after every
+    // surface of the frame (a front group); -1 before every surface (a back group)
+    int place = 0;
 };
 // One sub-layer AE draws: an individual copy (copy >= 0) or a group plane (cluster >= 0).
 struct MergeSub {
@@ -108,6 +111,11 @@ struct MergePlan {
     bool overBudget = false;  // the budget ran out: nothing merges this frame
     bool ambiguous = false;   // a copy and another surface straddle each other's planes: nothing merges this frame
     double ms[4] = {0, 0, 0, 0};  // diagnostics: time in sides / neighbours / grouping / depths
+    // diagnostics (BuildFrontBackGroupPlan): copies that may be grouped, in front groups, in back groups, and the
+    // others: with an unsure pair (margin band, sliver, crossing, level), between surfaces (something in front and
+    // something behind), alone in their group (a group of one is drawn one by one); then the unsure pairs of two
+    // copies and of a copy and another surface, each by its reason: a sliver, no depth there, level or crossing
+    int fb[12] = {};
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
     // diagnostics (RANDAMU_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
@@ -131,6 +139,17 @@ MergePlan BuildSingleGroupPlan(const MergeSceneInput& in);
 // and has AE order and draw them (as AE would if they were sub-layers): nothing else overlaps them, so the result is
 // AE's. A layer with a copy that cannot be placed on screen (behind the camera) is drawn one by one.
 MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx = 3);
+
+// The front and back groups (11/26): a layer's front group is its copies each of which is clearly in front of every
+// surface it overlaps on screen outside the group (other layers, other layers' copies and groups, the layer's
+// copies drawn one by one); its back group likewise clearly behind. A front group is drawn after every surface of
+// the frame, a back group before every surface (MergeCluster::place): what each copy overlaps is then drawn on the
+// same side of it as in AE's order. "Clearly": the quads overlap by more than a sliver and, at every corner of the
+// overlap of the quads grown by marginPx, the depths differ in the same direction (1/z is linear on the screen for a
+// plane, so the corners decide the whole overlap). Pairs inside a group are clear too (AE's order between them is
+// then its graph's edge, the same in the group's own list as in the frame's). Copies overlapping nothing join the
+// front group. The same exclusions as BuildIsolatedGroupPlan (boxes, unbounded planes, behind the camera).
+MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx = 3);
 
 struct MergeOptions {
     double marginPx = 3;          // screen overlap tests grow every quad by this much (edge filtering)

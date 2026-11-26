@@ -13,6 +13,8 @@ enum class HookStatus { NotInstalled, Installed, MissingSymbols };
 // hooks never call AEGP on it (doing so from inside BEE virtuals hung AE in the spike).
 HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId);
 HookStatus GetHookStatus();
+// The front and back groups of the group drawing may be planned (their reorder hook is in and they are switched on)
+bool FrontBackGroupsOn();
 bool IsMainThread();  // the thread that ran InstallHooks (GLOBAL_SETUP)
 // Finds BEE's internal type key of this effect (not the AEGP installed key) once per process:
 // `layer` has this effect at AEGP index `effectIndex`. Call from the effect's own render commands.

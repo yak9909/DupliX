@@ -126,7 +126,13 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         char ov[4] = {0};
         const bool old = GetEnvironmentVariableA("RANDAMU_MERGE_OLD", ov, sizeof(ov)) > 0 && ov[0] == '1';
         const auto tPlan = std::chrono::steady_clock::now();
-        MergePlan p = old ? BuildMergePlan(in) : BuildIsolatedGroupPlan(in);
+        const bool fb = !old && FrontBackGroupsOn();
+        MergePlan p = old ? BuildMergePlan(in) : fb ? BuildFrontBackGroupPlan(in) : BuildIsolatedGroupPlan(in);
+        static LogLimit fbl;
+        if (fb && fbl.Take(40))
+            RLog("group: front/back plan: %d copies may group, %d front, %d back; not grouped: %d unsure, %d between, %d alone; "
+                 "unsure pairs (sliver/no depth/level) copies %d/%d/%d, with other surfaces %d/%d/%d",
+                 p.fb[0], p.fb[1], p.fb[2], p.fb[3], p.fb[4], p.fb[5], p.fb[6], p.fb[7], p.fb[8], p.fb[9], p.fb[10], p.fb[11]);
         static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
         static LogLimit lg;
         if (s_time && lg.Take(200))

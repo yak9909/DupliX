@@ -1389,6 +1389,172 @@ TEST(merge_plan_speed)
     PlanSpeed("merge_plan_speed (free)", 5000, 0, 20, 100, true);
 }
 
+// ---- BuildFrontBackGroupPlan (11/26)
+// The plan's subs and groups agree: one sub per group (its representative, in the group), the rest one by one, every
+// copy once; a front group's place is +1, a back group's -1.
+static bool FbPlanWellFormed(const rnd::MergeLayerPlan& lp, int count)
+{
+    std::vector<int> seen(count, 0);
+    std::vector<int> subsOf(lp.clusters.size(), 0);
+    for (const auto& s : lp.subs) {
+        if (s.copy < 0 || s.copy >= count) return false;
+        if (s.cluster < 0) {
+            seen[s.copy]++;
+            continue;
+        }
+        if (s.cluster >= (int)lp.clusters.size()) return false;
+        subsOf[s.cluster]++;
+        const auto& c = lp.clusters[s.cluster].copies;
+        if (std::find(c.begin(), c.end(), s.copy) == c.end()) return false;
+    }
+    for (size_t g = 0; g < lp.clusters.size(); g++) {
+        if (subsOf[g] != 1 || lp.clusters[g].copies.size() < 2 || !lp.clusters[g].place) return false;
+        for (int c : lp.clusters[g].copies) seen[c]++;
+    }
+    for (int v : seen)
+        if (v != 1) return false;
+    return true;
+}
+static int FbPlace(const rnd::MergeLayerPlan& lp, int copy)
+{
+    const int g = GroupOf(lp, copy);
+    return g < 0 ? 0 : lp.clusters[g].place;
+}
+static bool InQuad(const rnd::ScreenQuad& q, double x, double y)
+{
+    int pos = 0, neg = 0;
+    for (int k = 0; k < 4; k++) {
+        const int n = (k + 1) % 4;
+        const double c = (q.x[n] - q.x[k]) * (y - q.y[k]) - (q.y[n] - q.y[k]) * (x - q.x[k]);
+        pos += c > 0, neg += c < 0;
+    }
+    return !pos || !neg;
+}
+
+TEST(fb_wall_front_back)
+{
+    // a wall covering the screen at world z 500; copies 0..19 in front of it, 20..39 behind, apart from each other
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 2000, 2000, 0));
+    std::vector<PlanCopy> cs;
+    for (int i = 0; i < 40; i++) cs.push_back({30.0 + (i % 8) * 48, 30.0 + (i / 8) * 55, i < 20 ? 300.0 + i * 5 : 550.0 + i * 3, 30, 0});
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildFrontBackGroupPlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(FbPlanWellFormed(lp, 40));
+    CHECK(lp.clusters.size() == 2 && lp.subs.size() == 2);
+    for (int i = 0; i < 40; i++) CHECK(FbPlace(lp, i) == (i < 20 ? 1 : -1));
+}
+
+TEST(fb_between_crossing_band)
+{
+    // copy 0 between two walls (a near one over its left half, the far one everywhere): not grouped. Copy 1 crosses
+    // the far wall (turned 60 degrees through it): not grouped. Copies 2 and 3 are 2 px apart (the margin band, no
+    // edge in AE): not grouped. Copies 4..7 in front of the far wall, apart: the front group.
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 2000, 2000, 0));
+    in.planes.push_back(PlanWall(60, 60, 100, 40, 40, 0));
+    std::vector<PlanCopy> cs = {{60, 60, 300, 40, 0}, {200, 60, 500, 60, 60}, {100, 200, 300, 40, 0},
+                                {142, 200, 300, 40, 0}, {300, 60, 300, 30, 0}, {350, 60, 300, 30, 0},
+                                {300, 230, 300, 30, 0}, {350, 230, 300, 30, 0}};
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildFrontBackGroupPlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(FbPlanWellFormed(lp, 8));
+    for (int i = 0; i < 4; i++) CHECK(FbPlace(lp, i) == 0);
+    for (int i = 4; i < 8; i++) CHECK(FbPlace(lp, i) == 1);
+    CHECK(p.fb[3] == 3 && p.fb[4] == 1);  // unsure: crossing and the band pair; between: copy 0
+    CHECK(p.fb[6] == 1 && p.fb[11] == 1);  // the band pair (two copies), the crossing (a copy and the wall)
+}
+
+TEST(fb_two_layers_and_blocked)
+{
+    // two merge layers over the same wall; a blocked layer's copies are outside surfaces for the others
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 2000, 2000, 0));
+    in.layers.push_back(PlanLayer(7, {{60, 60, 300, 40, 0}, {160, 60, 300, 40, 0}, {60, 200, 600, 40, 0}, {160, 200, 600, 40, 0}}));
+    // layer 8: copy 0 overlaps layer 7's copy 0 from behind it (both in front of the wall); copy 1 apart
+    in.layers.push_back(PlanLayer(8, {{80, 70, 350, 40, 0}, {300, 60, 300, 40, 0}, {300, 200, 300, 40, 0}}));
+    in.layers.push_back(PlanLayer(9, {{300, 120, 200, 40, 0}, {340, 260, 200, 40, 0}}, rnd::MB_LIGHTS));
+    rnd::MergePlan p = rnd::BuildFrontBackGroupPlan(in);
+    const auto& a = p.layers.at(rnd::MergeLayerKey(1, 7));
+    const auto& b = p.layers.at(rnd::MergeLayerKey(1, 8));
+    const auto& c = p.layers.at(rnd::MergeLayerKey(1, 9));
+    CHECK(FbPlanWellFormed(a, 4) && FbPlanWellFormed(b, 3) && FbPlanWellFormed(c, 2));
+    CHECK(c.clusters.empty());
+    CHECK(FbPlace(a, 0) == 1 && FbPlace(a, 1) == 1 && FbPlace(a, 2) == -1 && FbPlace(a, 3) == -1);
+    CHECK(FbPlace(b, 0) == 0);  // in front of the wall, behind layer 7's copy 0 (outside its group): between
+}
+
+// A random field of n copies around two walls: every grouped copy is, wherever it shares a point of the screen with
+// anything outside its group, nearer than it (front) or farther (back)
+static void FbOrdersHold(const char* name, int n, unsigned seed)
+{
+    rnd::MergeSceneInput in;
+    in.cam = PlanCam();
+    in.planes.push_back(PlanWall(200, 150, 500, 300, 200, 20));
+    in.planes.push_back(PlanWall(120, 100, 250, 80, 60, -30));
+    std::vector<PlanCopy> cs;
+    unsigned s = seed;
+    auto rnd01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
+    for (int i = 0; i < n; i++) cs.push_back({rnd01() * 400, rnd01() * 300, 100 + rnd01() * 700, 10 + rnd01() * 30, rnd01() * 120 - 60});
+    in.layers.push_back(PlanLayer(7, cs));
+    rnd::MergePlan p = rnd::BuildFrontBackGroupPlan(in);
+    const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+    CHECK(FbPlanWellFormed(lp, n));
+    CHECK(p.fb[1] + p.fb[2] > 0);
+    struct S {
+        double w[16];
+        rnd::ScreenQuad q;
+        int place;  // 0 for walls and copies one by one
+        int group;
+    };
+    std::vector<S> ss;
+    for (int i = 0; i < n; i++) {
+        S x;
+        std::memcpy(x.w, &in.layers[0].explicitCopies[(size_t)i * 16], sizeof(x.w));
+        x.q = rnd::ProjectRect(in.cam, x.w, in.layers[0].srcRect);
+        x.group = GroupOf(lp, i), x.place = FbPlace(lp, i);
+        ss.push_back(x);
+    }
+    for (const auto& w : in.planes) {
+        S x;
+        std::memcpy(x.w, w.toWorld, sizeof(x.w));
+        x.q = rnd::ProjectRect(in.cam, x.w, w.rect);
+        x.group = -2 - (int)ss.size(), x.place = 0;
+        ss.push_back(x);
+    }
+    int checked = 0, bad = 0;
+    for (size_t i = 0; i < (size_t)n; i++) {
+        if (!ss[i].place) continue;
+        for (size_t j = 0; j < ss.size(); j++) {
+            if (j == i || ss[j].group == ss[i].group) continue;
+            for (int gy = 0; gy <= 150; gy++)
+                for (int gx = 0; gx <= 200; gx++) {
+                    const double x = gx * 2.0, y = gy * 2.0;
+                    if (!InQuad(ss[i].q, x, y) || !InQuad(ss[j].q, x, y)) continue;
+                    double zi = 0, zj = 0;
+                    if (!rnd::PlaneDepthAt(in.cam, ss[i].w, x, y, &zi) || !rnd::PlaneDepthAt(in.cam, ss[j].w, x, y, &zj)) continue;
+                    checked++;
+                    if (ss[i].place > 0 ? !(zi < zj) : !(zi > zj)) bad++;
+                }
+        }
+    }
+    printf("  %s: %d front, %d back, %d unsure, %d between; %d shared points checked, %d wrong\n", name, p.fb[1], p.fb[2],
+           p.fb[3], p.fb[4], checked, bad);
+    CHECK(checked > 0 && bad == 0);
+}
+
+TEST(fb_orders_hold)
+{
+    FbOrdersHold("fb_orders_hold (dense)", 300, 12345);
+    FbOrdersHold("fb_orders_hold (sparse)", 80, 777);
+    FbOrdersHold("fb_orders_hold (sparse 2)", 80, 4242);
+}
+
 // The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in
 // ScatterParams' padding (the saved sequence data keeps its size); it is off by default.
 TEST(params_merge_last)

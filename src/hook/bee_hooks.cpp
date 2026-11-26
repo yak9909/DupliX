@@ -385,6 +385,17 @@ bool GroupDrawOn()
     return !(GetEnvironmentVariableA("RANDAMU_GROUP", v, sizeof(v)) > 0 && v[0] == '0');
 }
 
+// The front and back groups (BuildFrontBackGroupPlan): on unless RANDAMU_GROUP_FB=0, and only while the hook that
+// moves their representatives in AE's order is in (HookGraph)
+std::atomic<bool> g_graphHooked{false};
+}  // namespace
+bool FrontBackGroupsOn()
+{
+    char v[4] = {0};
+    return g_graphHooked.load() && !(GetEnvironmentVariableA("RANDAMU_GROUP_FB", v, sizeof(v)) > 0 && v[0] == '0');
+}
+namespace {
+
 std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
                                              const MergeLayerPlan** lp)
 {
@@ -1676,6 +1687,182 @@ NthLayerFn g_nthLayer = nullptr;
 LogLimit g_a3dDrawLog;
 std::atomic<long> g_a3dDrawSeq{0};
 
+// The layer and sub-layer index of a surface drawn through ctx (the surface's +224: its render layer index).
+bool SurfaceLayer(uintptr_t ctx, uintptr_t sf, const void** L, int* sub)
+{
+    void* rf = nullptr;
+    void* tr = nullptr;
+    void** rcx = *(void***)(ctx + a3d::kCtxRenderContext);
+    if (!g_extractRefcon || !g_nthLayer || g_extractRefcon(rcx, &rf) ||
+        g_nthLayer(rf, *(int*)(sf + a3d::kSurfLayerIndex), &tr) || !tr)
+        return false;
+    char* v = *(char**)((char*)tr + bee::kTraceArtLayer);
+    if (!v) return false;
+    *L = *(void**)(v + bee::kArtLayerToLayer), *sub = *(int*)(v + bee::kArtLayerToSubIndex);
+    return *L && *sub >= 0;
+}
+
+// ---- the front and back groups: AE's order moved. sub_180014470 builds its list of surfaces, has its graph
+// (sub_18002AA00, called from +0x14630 only) make the list of components in drawing order (std::list nodes: next,
+// prev, the component's own list of surfaces, its size), then draws them in that order. The call goes through
+// HookGraph: after AE's graph, the component of a front group's representative is moved to the end of the list
+// (drawn after every surface), a back group's to the start. The surfaces moved are remembered per pass (ctx) so that
+// the draw knows the group is at its place.
+namespace a3d {
+constexpr uintptr_t kGraphCallRva = 0x14630;
+constexpr ptrdiff_t kCompsToCtx = 0x28;  // sub_180014470: comps at rsp+0x68, its draw context at rbp-0x70 = rsp+0x90
+}  // namespace a3d
+GraphFn g_origGraph = nullptr;
+struct MovedSurface {
+    uintptr_t ctx, sf;
+};
+thread_local std::vector<MovedSurface> t_moved;
+LogLimit g_moveLog;
+bool WasMoved(uintptr_t ctx, uintptr_t sf)
+{
+    for (const MovedSurface& m : t_moved)
+        if (m.ctx == ctx && m.sf == sf) return true;
+    return false;
+}
+
+void HookGraph(void* list, void* comps)
+{
+    g_origGraph(list, comps);
+    const uintptr_t ctx = (uintptr_t)comps + a3d::kCompsToCtx;
+    // a pass at this stack depth before is over (a nested pass, deeper on the stack, keeps the outer one's)
+    t_moved.erase(std::remove_if(t_moved.begin(), t_moved.end(), [&](const MovedSurface& m) { return m.ctx <= ctx; }),
+                  t_moved.end());
+    if (t_moved.size() > 4096) t_moved.clear();
+    if (!GroupDrawOn() || !FrontBackGroupsOn() || OldMerge()) return;
+    try {
+        uintptr_t* head = *(uintptr_t**)comps;
+        // the plans of the layers met (a frame has few merge layers)
+        struct Seen {
+            const void* L;
+            std::shared_ptr<const MergePlan> plan;
+            const MergeLayerPlan* lp;
+        };
+        std::vector<Seen> seen;
+        auto planOf = [&](const void* L) -> const MergeLayerPlan* {
+            for (const Seen& s : seen)
+                if (s.L == L) return s.lp;
+            Seen s{L, nullptr, nullptr};
+            int ms = MergeSeenOf(L);
+            ParamSnapshot ps;
+            if (ms != 0 && IsMine(L)) {
+                LayerKey k;
+                const int* tm = KeyOf(L, &k) ? ArtTimeOf(k) : nullptr;
+                if (tm && ParamsFor(L, tm, &ps) && ps.p.merge) s.plan = MergePlanOf(L, tm, ps, false, &s.lp);
+            }
+            seen.push_back(s);
+            return s.lp;
+        };
+        // the place a surface's draw has in a group (0: none)
+        auto placeOf = [&](uintptr_t sf) {
+            const void* L = nullptr;
+            int sb = -1;
+            if (!SurfaceLayer(ctx, sf, &L, &sb)) return 0;
+            const MergeLayerPlan* lp = planOf(L);
+            if (!lp || sb >= (int)lp->subs.size() || lp->subs[sb].cluster < 0 ||
+                lp->subs[sb].cluster >= (int)lp->clusters.size())
+                return 0;
+            return lp->clusters[lp->subs[sb].cluster].place;
+        };
+        std::vector<uintptr_t*> front, back;
+        int n = 0, inCluster = 0;
+        for (uintptr_t* j = (uintptr_t*)head[0]; j != head; j = (uintptr_t*)j[0], n++) {
+            uintptr_t* inner = (uintptr_t*)j[2];
+            if (j[3] == 1) {
+                const uintptr_t sf = ((uintptr_t*)inner[0])[2];
+                const int p = placeOf(sf);
+                if (p > 0) front.push_back(j);
+                else if (p < 0) back.push_back(j);
+                if (p) t_moved.push_back({ctx, sf});
+            } else {
+                // a representative inside AE's cluster: the plan's sides were wrong (it is left where it is)
+                for (uintptr_t* q = (uintptr_t*)inner[0]; q != inner; q = (uintptr_t*)q[0])
+                    if (placeOf(q[2])) inCluster++;
+            }
+        }
+        if (inCluster) RLog("group: %d front/back representatives in AE's clusters (not moved; the plan is wrong)", inCluster);
+        auto unlink = [](uintptr_t* j) {
+            uintptr_t* nx = (uintptr_t*)j[0];
+            uintptr_t* pv = (uintptr_t*)j[1];
+            pv[0] = (uintptr_t)nx, nx[1] = (uintptr_t)pv;
+        };
+        auto insertAfter = [](uintptr_t* at, uintptr_t* j) {
+            uintptr_t* nx = (uintptr_t*)at[0];
+            j[0] = (uintptr_t)nx, j[1] = (uintptr_t)at;
+            at[0] = (uintptr_t)j, nx[1] = (uintptr_t)j;
+        };
+        for (uintptr_t* j : front) unlink(j), insertAfter((uintptr_t*)head[1], j);  // each at the end, in order
+        uintptr_t* at = head;
+        for (uintptr_t* j : back) unlink(j), insertAfter(at, j), at = j;  // at the start, in order
+        int ln = 0;
+        if ((front.size() || back.size()) && g_moveLog.Take(10, true, &ln))
+            RLog("group: moved %zu front and %zu back groups (of %d components)", front.size(), back.size(), n);
+    } catch (...) {
+        RLog("group: the reorder threw (the order is AE's)");
+    }
+}
+
+void InstallGraphHook(HMODULE a3d)
+{
+    const uintptr_t lo = (uintptr_t)a3d;
+    const unsigned char* site = (const unsigned char*)(lo + a3d::kGraphCallRva);
+    // the call and the frame it relies on: lea rdx,[rsp+68h]; lea rcx,[rsp+50h]; call; the prologue's
+    // lea rbp,[rsp-0B0h]; sub rsp,1B0h; and lea rcx,[rbp-70h] (the draw context) before sub_18000FD40
+    static const unsigned char kBefore[] = {0x48, 0x8D, 0x54, 0x24, 0x68, 0x48, 0x8D, 0x4C, 0x24, 0x50};
+    static const unsigned char kProlog[] = {0x48, 0x8D, 0xAC, 0x24, 0x50, 0xFF, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0xB0, 0x01, 0x00, 0x00};
+    static const unsigned char kCtxLea[] = {0x48, 0x8D, 0x4D, 0x90};
+    const int rel = site[0] == 0xE8 ? *(const int*)(site + 1) : 0;
+    if (std::memcmp(site - sizeof(kBefore), kBefore, sizeof(kBefore)) ||
+        std::memcmp((const void*)(lo + 0x14488), kProlog, sizeof(kProlog)) ||
+        std::memcmp((const void*)(lo + 0x144FD), kCtxLea, sizeof(kCtxLea)) || site[0] != 0xE8 ||
+        (uintptr_t)(site + 5 + rel) != lo + a3d::kGraphRva) {
+        RLog("group: reorder hook not installed (the call site does not match)");
+        return;
+    }
+    // a stub within 2 GB of the call: mov rax, HookGraph; jmp rax
+    unsigned char* stub = nullptr;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity;
+    for (uintptr_t d = gran; d < 0x70000000 && !stub; d += gran) {
+        for (const uintptr_t a : {(lo & ~(gran - 1)) - d, ((lo + 0x200000) & ~(gran - 1)) + d}) {
+            stub = (unsigned char*)VirtualAlloc((void*)a, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+            if (stub) {
+                const long long off = (long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5);
+                if (off > -0x78000000LL && off < 0x78000000LL) break;
+                VirtualFree(stub, 0, MEM_RELEASE);
+                stub = nullptr;
+            }
+        }
+    }
+    if (!stub) {
+        RLog("group: reorder hook not installed (no memory near Advanced3D)");
+        return;
+    }
+    stub[0] = 0x48, stub[1] = 0xB8;
+    void* fn = (void*)&HookGraph;
+    std::memcpy(stub + 2, &fn, 8);
+    stub[10] = 0xFF, stub[11] = 0xE0;
+    DWORD old = 0;
+    VirtualProtect(stub, 4096, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), stub, 16);
+    g_origGraph = (GraphFn)(lo + a3d::kGraphRva);
+    const int newRel = (int)((long long)(uintptr_t)stub - (long long)(uintptr_t)(site + 5));
+    if (!VirtualProtect((void*)(site + 1), 4, PAGE_EXECUTE_READWRITE, &old)) {
+        RLog("group: reorder hook not installed (VirtualProtect failed)");
+        return;
+    }
+    std::memcpy((void*)(site + 1), &newRel, 4);  // at plug-in setup, before any render
+    VirtualProtect((void*)(site + 1), 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    g_graphHooked = true;
+    RLog("group: reorder hook installed (stub %p)", (void*)stub);
+}
+
 // ---- DupliX draws a copy's pixels with AE's own arithmetic (core/ae_span): AE's draw runs (its raster state and
 // row spans), and only the row callback of its pixel loop (sub_180016900) is ours.
 namespace a3d {
@@ -2020,7 +2207,12 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             if (lp && sb >= 0 && sb < (int)lp->subs.size() && lp->subs[sb].cluster >= 0 &&
                 lp->subs[sb].cluster < (int)lp->clusters.size()) {
                 t_aeGpu = true;
-                if (DrawGroup(self, ctx, a7, L, gs, lp->clusters[lp->subs[sb].cluster], lp->subs[sb].copy)) {
+                const MergeCluster& gc = lp->clusters[lp->subs[sb].cluster];
+                if (gc.place && !WasMoved(ctx, self)) {
+                    static LogLimit nm;
+                    if (nm.Take(20)) RLog("group: a %s group's representative was not moved (drawn at its place)", gc.place > 0 ? "front" : "back");
+                }
+                if (DrawGroup(self, ctx, a7, L, gs, gc, lp->subs[sb].copy)) {
                     // what the representative's own draw does last: the progress count
                     const int pn = ++*(int*)(ctx + a3d::kCtxProgressCount);
                     void*** pr = *(void****)(ctx + a3d::kCtxProgress);
@@ -2530,6 +2722,7 @@ void InstallA3dDrawHook(HMODULE a3d)
     g_origA3dDraw = (A3dDrawFn)vt[1];
     const bool ok = WritePtr(&vt[1], (void*)&HookA3dDraw);
     RLog("a3d draw hook: %s (refcon %p nth %p)", ok ? "installed" : "failed", (void*)g_extractRefcon, (void*)g_nthLayer);
+    if (ok && g_extractRefcon && g_nthLayer) InstallGraphHook(a3d);
 }
 
 // ---- the group drawing: every layer entry keeps the depth-bias index it has when no copy is grouped. sub_180008710

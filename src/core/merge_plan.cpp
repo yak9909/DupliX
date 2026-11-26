@@ -206,6 +206,281 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
 
 namespace {
 
+struct Pt2 {
+    double x, y;
+};
+
+double Cross2(const Pt2& o, const Pt2& a, const Pt2& b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
+
+// Convex polygon `subject` clipped by convex polygon `clip` (Sutherland-Hodgman; any winding), as in ae_order.cpp.
+std::vector<Pt2> ClipConvex(const std::vector<Pt2>& subject, const std::vector<Pt2>& clip)
+{
+    double area = 0;
+    for (size_t k = 0; k < clip.size(); k++) {
+        const Pt2& a = clip[k];
+        const Pt2& b = clip[(k + 1) % clip.size()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    const double s = area >= 0 ? 1 : -1;
+    std::vector<Pt2> out = subject;
+    for (size_t k = 0; k < clip.size() && !out.empty(); k++) {
+        const Pt2& a = clip[k];
+        const Pt2& b = clip[(k + 1) % clip.size()];
+        std::vector<Pt2> in;
+        in.swap(out);
+        Pt2 prev = in.back();
+        bool prevIn = s * Cross2(a, b, prev) >= 0;
+        for (const Pt2& cur : in) {
+            const bool curIn = s * Cross2(a, b, cur) >= 0;
+            if (curIn != prevIn) {
+                const double d1x = cur.x - prev.x, d1y = cur.y - prev.y, d2x = b.x - a.x, d2y = b.y - a.y;
+                const double den = d1x * d2y - d1y * d2x;
+                const double t = den != 0 ? ((a.x - prev.x) * d2y - (a.y - prev.y) * d2x) / den : 0;
+                out.push_back({prev.x + t * d1x, prev.y + t * d1y});
+            }
+            if (curIn) out.push_back(cur);
+            prev = cur;
+            prevIn = curIn;
+        }
+    }
+    return out;
+}
+
+double PolyArea2(const std::vector<Pt2>& p)
+{
+    double a = 0;
+    for (size_t k = 0; k < p.size(); k++) a += p[k].x * p[(k + 1) % p.size()].y - p[(k + 1) % p.size()].x * p[k].y;
+    return std::fabs(a) / 2;
+}
+
+std::vector<Pt2> QuadPts(const ScreenQuad& q) { return {{q.x[0], q.y[0]}, {q.x[1], q.y[1]}, {q.x[2], q.y[2]}, {q.x[3], q.y[3]}}; }
+
+// The convex quad q grown by m: every edge moved outward by m, the corners where the moved edges meet (a superset of
+// every point within m of q). Empty if q is degenerate.
+std::vector<Pt2> GrowQuad(const ScreenQuad& q, double m)
+{
+    double a = 0;
+    for (int k = 0; k < 4; k++) a += q.x[k] * q.y[(k + 1) % 4] - q.x[(k + 1) % 4] * q.y[k];
+    if (!(std::fabs(a) / 2 > 1e-6)) return {};
+    const double s = a > 0 ? 1 : -1;
+    Pt2 p[4], d[4];
+    for (int k = 0; k < 4; k++) {
+        const int n = (k + 1) % 4;
+        double dx = q.x[n] - q.x[k], dy = q.y[n] - q.y[k];
+        const double len = std::sqrt(dx * dx + dy * dy);
+        if (!(len > 1e-9)) return {};
+        dx /= len, dy /= len;
+        d[k] = {dx, dy};
+        p[k] = {q.x[k] + s * dy * m, q.y[k] - s * dx * m};  // outward: (dy, -dx) for a positive area
+    }
+    std::vector<Pt2> out(4);
+    for (int k = 0; k < 4; k++) {
+        const int b = (k + 3) % 4;  // the edge ending at corner k
+        const double den = d[b].x * d[k].y - d[b].y * d[k].x;
+        if (std::fabs(den) < 1e-12) {
+            out[k] = p[k];
+            continue;
+        }
+        const double t = ((p[k].x - p[b].x) * d[k].y - (p[k].y - p[b].y) * d[k].x) / den;
+        out[k] = {p[b].x + t * d[b].x, p[b].y + t * d[b].y};
+    }
+    return out;
+}
+
+constexpr int kApart = 0, kUnsure = 2;  // a pair's order: apart, +1 a in front, -1 b in front, unsure
+
+// The order of two planar quads where they overlap on screen (wa, wb: their planes' layer px -> world).
+int JudgePair(const CameraView& cam, const ScreenQuad& qa, const double wa[16], const ScreenQuad& qb, const double wb[16],
+              double m, int* why)
+{
+    *why = 0;
+    if (!QuadsOverlap(qa, qb, m)) return kApart;
+    // AE's pair test (sub_18002B040 -> sub_18002B350) makes an edge wherever the two screen polygons meet (edge
+    // crossings and corners inside the other) and the depths differ by more than 1e-12 there: any overlap orders
+    // them. Only the margin band (no overlap, a few px apart) has no edge, and AE's order is then its walk's, while
+    // antialiased edges may share a pixel: unsure.
+    if (PolyArea2(ClipConvex(QuadPts(qa), QuadPts(qb))) < 0.01) return *why = 0, kUnsure;
+    const std::vector<Pt2> ga = GrowQuad(qa, m), gb = GrowQuad(qb, m);
+    if (ga.empty() || gb.empty()) return *why = 1, kUnsure;
+    const std::vector<Pt2> ov = ClipConvex(ga, gb);
+    if (ov.size() < 3) return *why = 1, kUnsure;
+    bool aFront = true, bFront = true;
+    for (const Pt2& p : ov) {
+        double za = 0, zb = 0;
+        if (!PlaneDepthAt(cam, wa, p.x, p.y, &za) || !PlaneDepthAt(cam, wb, p.x, p.y, &zb)) return *why = 1, kUnsure;
+        const double tol = 1e-5 * std::max(za, zb);
+        if (!(za < zb - tol)) aFront = false;
+        if (!(zb < za - tol)) bFront = false;
+    }
+    return aFront ? 1 : bFront ? -1 : (*why = 2, kUnsure);
+}
+
+}  // namespace
+
+MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx)
+{
+    MergePlan plan;
+    plan.cam = in.cam;
+    // items: every copy of every merge layer, then every other plane (an unbounded plane, a plane crossing the
+    // camera's plane or a box: everywhere, nothing is grouped)
+    struct It {
+        int layer, copy;  // layer -1: another surface
+        ScreenQuad q;
+        double toW[16];
+        double minX, minY, maxX, maxY, area;
+        bool ok;
+    };
+    std::vector<It> its;
+    bool everywhere = !in.boxes.empty();
+    std::vector<char> layerBad(in.layers.size(), 0);
+    auto bounds = [](It& t) {
+        t.minX = t.minY = 1e300, t.maxX = t.maxY = -1e300, t.area = 0;
+        for (int k = 0; k < 4; k++) {
+            t.minX = std::min(t.minX, t.q.x[k]), t.maxX = std::max(t.maxX, t.q.x[k]);
+            t.minY = std::min(t.minY, t.q.y[k]), t.maxY = std::max(t.maxY, t.q.y[k]);
+            const int n = (k + 1) % 4;
+            t.area += t.q.x[k] * t.q.y[n] - t.q.x[n] * t.q.y[k];
+        }
+        t.area = std::fabs(t.area) / 2;
+    };
+    for (int li = 0; li < (int)in.layers.size(); li++) {
+        const MergeLayerInput& l = in.layers[li];
+        for (int i = 0; i < std::max(l.p.count, 0); i++) {
+            It t;
+            t.layer = li, t.copy = i;
+            double op = 0;
+            CopyToWorld(l, i, t.toW, &op);
+            t.q = ProjectRect(in.cam, t.toW, l.srcRect);
+            t.ok = !l.block && t.q.valid;
+            if (!t.q.valid) layerBad[li] = 1;
+            bounds(t);
+            its.push_back(t);
+        }
+    }
+    const size_t nCopies = its.size();
+    for (const ScenePlane& sp : in.planes) {
+        if (sp.unbounded) {
+            everywhere = true;
+            continue;
+        }
+        It t;
+        t.layer = -1, t.copy = -1;
+        std::memcpy(t.toW, sp.toWorld, sizeof(t.toW));
+        t.q = ProjectRect(in.cam, sp.toWorld, sp.rect);
+        t.ok = false;
+        if (!t.q.valid) {
+            everywhere = true;
+            continue;
+        }
+        bounds(t);
+        its.push_back(t);
+    }
+    for (size_t i = 0; i < nCopies; i++)
+        if (everywhere || layerBad[its[i].layer]) its[i].ok = false;
+    // every overlapping pair with a copy in it: per copy, (the other item, the order seen from the copy)
+    struct Nb {
+        int other, order;
+    };
+    std::vector<std::vector<Nb>> nbs(nCopies);
+    std::vector<int> byX(its.size());
+    for (size_t i = 0; i < its.size(); i++) byX[i] = (int)i;
+    std::sort(byX.begin(), byX.end(), [&](int a, int b) { return its[a].minX < its[b].minX; });
+    for (size_t a = 0; a < byX.size(); a++) {
+        const It& A = its[byX[a]];
+        if (!A.q.valid) continue;
+        for (size_t b = a + 1; b < byX.size() && its[byX[b]].minX <= A.maxX + 2 * marginPx; b++) {
+            const It& B = its[byX[b]];
+            if (!B.q.valid || B.minY > A.maxY + 2 * marginPx || A.minY > B.maxY + 2 * marginPx) continue;
+            if (A.layer < 0 && B.layer < 0) continue;
+            int uw = 0;
+            const int o = JudgePair(in.cam, A.q, A.toW, B.q, B.toW, marginPx, &uw);
+            if (o == kApart) continue;
+            if (o == kUnsure) plan.fb[6 + uw + (A.layer < 0 || B.layer < 0 ? 3 : 0)]++;
+            if (A.layer >= 0) nbs[byX[a]].push_back({byX[b], o == kUnsure ? kUnsure : o});
+            if (B.layer >= 0) nbs[byX[b]].push_back({byX[a], o == kUnsure ? kUnsure : -o});
+        }
+    }
+    // the largest sets: a copy leaves its set while a pair breaks the rule (side +1: front, -1: back); a copy that
+    // leaves is outside for the copies of its layer still in the set, which are checked again
+    std::vector<int> side(nCopies, 0);  // the copy's group: +1 front, -1 back, 0 none
+    for (const int want : {1, -1}) {
+        std::vector<int> work;
+        for (size_t i = 0; i < nCopies; i++)
+            if (its[i].ok && !side[i]) side[i] = want, work.push_back((int)i);
+        while (!work.empty()) {
+            const int x = work.back();
+            work.pop_back();
+            if (side[x] != want) continue;
+            bool bad = false;
+            for (const Nb& nb : nbs[x]) {
+                const bool mate = nb.other < (int)nCopies && side[nb.other] == want && its[nb.other].layer == its[x].layer;
+                bad = nb.order == kUnsure || (!mate && nb.order != want);
+                if (bad) break;
+            }
+            if (!bad) continue;
+            side[x] = 0;
+            for (const Nb& nb : nbs[x])
+                if (nb.other < (int)nCopies && side[nb.other] == want && its[nb.other].layer == its[x].layer)
+                    work.push_back(nb.other);
+        }
+    }
+    size_t at = 0;
+    for (int li = 0; li < (int)in.layers.size(); li++) {
+        const MergeLayerInput& l = in.layers[li];
+        const int n = std::max(l.p.count, 0);
+        MergeLayerPlan lp;
+        lp.in = l;
+        MergeCluster g[2];  // front, back
+        int rep[2] = {-1, -1};
+        double repArea[2] = {-1, -1};
+        for (int i = 0; i < n; i++) {
+            const It& t = its[at + i];
+            if (t.ok) plan.fb[0]++;
+            const int s = side[at + i];
+            if (!s) {
+                bool unsure = false;
+                for (const Nb& nb : nbs[at + i]) unsure = unsure || nb.order == kUnsure;
+                if (t.ok) plan.fb[unsure ? 3 : 4]++;
+                continue;
+            }
+            const int k = s > 0 ? 0 : 1;
+            g[k].copies.push_back(i);
+            if (t.area > repArea[k]) repArea[k] = t.area, rep[k] = i;
+        }
+        int clusterOf[2] = {-1, -1};
+        for (int k = 0; k < 2; k++) {
+            g[k].depth = 0, g[k].place = k ? -1 : 1;
+            g[k].rect[0] = g[k].rect[1] = g[k].rect[2] = g[k].rect[3] = 0;
+            if (g[k].copies.size() >= 2) {
+                clusterOf[k] = (int)lp.clusters.size();
+                plan.fb[k ? 2 : 1] += (int)g[k].copies.size();
+                lp.clusters.push_back(g[k]);
+            } else {
+                plan.fb[5] += (int)g[k].copies.size();
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            const int s = side[at + i];
+            const int k = s > 0 ? 0 : 1;
+            const int c = s ? clusterOf[k] : -1;
+            MergePlan::DebugCopy dc;
+            const It& t = its[at + i];
+            dc.layer = li, dc.copy = i, dc.group = c;
+            for (int q = 0; q < 4; q++) dc.x[q] = t.q.x[q], dc.y[q] = t.q.y[q];
+            dc.zMin = t.q.zMin, dc.zMax = t.q.zMax;
+            RectCorners(t.toW, l.srcRect, dc.corners);
+            plan.debugCopies.push_back(dc);
+            if (c < 0) lp.subs.push_back({i, -1});
+            else if (i == rep[k]) lp.subs.push_back({rep[k], c});  // the group: AE draws it as its representative
+        }
+        plan.layers[MergeLayerKey(l.compItemId, l.layerId)] = std::move(lp);
+        at += n;
+    }
+    return plan;
+}
+
+namespace {
+
 constexpr int kUnknown = 2;  // an order not computed yet
 
 // A copy of a merge-on layer.
