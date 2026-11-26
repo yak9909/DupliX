@@ -1477,6 +1477,7 @@ typedef void (*AfterDrawFn)(uintptr_t surface, uintptr_t targetBuffer);
 uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7);
 void FlushGroupJobs();
 void DropGroupJobs();
+void LogPairTests();
 LogLimit g_groupLog;
 typedef void (*DrawParamsFn)(void* out, uintptr_t ctx, unsigned short a3, uintptr_t a4, uintptr_t a5, int a6);
 typedef uintptr_t (*SurfDrawFn)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
@@ -1595,10 +1596,13 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
     }
     GTRACE("group trace: graph");
     ((GraphFn)(g_a3dLo + a3d::kGraphRva))(&list, &comps);
+    LogPairTests();
     GTRACE("group trace: graph done (%zu components)", comps.size);
+    const double tSort = gms(tg0) - tBuild;
     for (uintptr_t sf : built) ((SurfFn)(g_a3dLo + a3d::kPrepareRva))(sf);
     GTRACE("group trace: prepared");
     tGraph = gms(tg0) - tBuild;
+    if (s_time && built.size() > 500) RLog("group time: graph %.2f of it AE's sort, %.2f the surfaces' preparation", tSort, tGraph - tSort);
     const auto tDraw0 = std::chrono::steady_clock::now();
     const int savedCount = *(int*)(ctx + a3d::kCtxProgressCount);
     const uintptr_t target = *(uintptr_t*)(a7 + 8);
@@ -1728,6 +1732,7 @@ bool WasMoved(uintptr_t ctx, uintptr_t sf)
 void HookGraph(void* list, void* comps)
 {
     g_origGraph(list, comps);
+    LogPairTests();
     const uintptr_t ctx = (uintptr_t)comps + a3d::kCompsToCtx;
     // a pass at this stack depth before is over (a nested pass, deeper on the stack, keeps the outer one's)
     t_moved.erase(std::remove_if(t_moved.begin(), t_moved.end(), [&](const MovedSurface& m) { return m.ctx <= ctx; }),
@@ -1870,7 +1875,7 @@ void HookPairTest(uintptr_t a, uintptr_t b, unsigned char* f1, unsigned char* f2
 }
 void LogPairTests()
 {
-    if (!g_origPairTest) return;
+    if (!g_origPairTest || g_pairN.load() < 1000) return;
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     RLog("graph prof: %lld pair tests %.2f ms, of them %lld with overlapping boxes %.2f ms", g_pairN.exchange(0),
@@ -1887,6 +1892,165 @@ void InstallPairTestProf(uintptr_t lo)
     }
     g_origPairTest = (PairTestFn)(lo + 0x2A630);
     RLog("graph prof: %s", RedirectCall(lo, site, (void*)&HookPairTest, &why) ? "installed" : why);
+}
+
+// ---- AE's graph edges without its O(n^2) enumeration. sub_18002AA00 calls sub_18002AB40 (+0x2AAD1), which makes a
+// node (0x30 bytes: next, prev, +16 the surface, +24 its edge list's head, +32 the edge count, +40 a word 0) for
+// every surface of the list in order, then for every pair (earlier i, later j) calls the pair test
+// sub_18002A630(surface i, surface j, &f1, &f2): f1 appends to j's edge list a node whose value is &node_i[2], f2
+// to i's list &node_j[2]. Each node's edge list is therefore in its partners' list order. The pair test answers
+// nothing for surfaces whose screen boxes (+8 x0, +0x10 y0, +0x18 x1, +0x20 y1) do not overlap strictly
+// (sub_18002B040's first checks): HookBuildEdges calls it only for the pairs whose boxes overlap (a sweep in x)
+// and builds the same lists. A box with a NaN: AE's own enumeration.
+typedef void (*BuildEdgesFn)(uintptr_t** surfaces, uintptr_t* nodes);
+BuildEdgesFn g_origBuildEdges = nullptr;
+namespace a3d {
+constexpr uintptr_t kBuildEdgesCallRva = 0x2AAD1, kBuildEdgesRva = 0x2AB40, kClearNodesRva = 0x2A640, kPairTestRva = 0x2A630;
+}
+typedef void (*ClearNodesFn)(uintptr_t* list, uintptr_t first);
+std::atomic<long long> g_edgeChecks{0}, g_edgeMismatch{0};
+thread_local double t_edgePairMs = 0;  // diagnostics: the last build's pair tests
+thread_local size_t t_edgeCand = 0;
+LogLimit g_edgeLog;
+void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
+{
+    const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
+    const auto pair = (PairTestFn)(g_a3dLo + a3d::kPairTestRva);
+    ((ClearNodesFn)(g_a3dLo + a3d::kClearNodesRva))(a2, *a2);
+    uintptr_t* head = (uintptr_t*)*a2;
+    head[0] = head[1] = (uintptr_t)head;
+    a2[1] = 0;
+    std::vector<uintptr_t*> nodes;
+    for (uintptr_t* i = (uintptr_t*)(*surfaces)[0]; i != *surfaces; i = (uintptr_t*)i[0]) {
+        uintptr_t* adj = (uintptr_t*)aeNew(0x18);
+        adj[0] = adj[1] = (uintptr_t)adj;
+        uintptr_t* v = (uintptr_t*)aeNew(0x30);
+        v[2] = i[2], v[3] = (uintptr_t)adj, v[4] = 0;
+        *(unsigned short*)((unsigned char*)v + 40) = 0;
+        *(int*)((unsigned char*)v + 44) = 0;
+        uintptr_t* last = (uintptr_t*)head[1];
+        v[0] = (uintptr_t)head, v[1] = (uintptr_t)last;
+        head[1] = (uintptr_t)v, last[0] = (uintptr_t)v;
+        a2[1]++;
+        nodes.push_back(v);
+    }
+    const int n = (int)nodes.size();
+    struct B {
+        double x0, y0, x1, y1;
+        int i;
+    };
+    std::vector<B> bs((size_t)n);
+    for (int k = 0; k < n; k++) {
+        const double* b = (const double*)(nodes[k][2] + 8);
+        bs[k] = {b[0], b[1], b[2], b[3], k};
+    }
+    std::sort(bs.begin(), bs.end(), [](const B& a, const B& b) { return a.x0 < b.x0; });
+    // the pairs whose boxes overlap (earlier, later in the list)
+    std::vector<std::pair<int, int>> cand;
+    for (int a = 0; a < n; a++) {
+        const B& A = bs[a];
+        for (int b = a + 1; b < n && bs[b].x0 < A.x1; b++) {
+            const B& Bb = bs[b];
+            if (!(std::min(A.y1, Bb.y1) > std::max(A.y0, Bb.y0))) continue;
+            cand.push_back({std::min(A.i, Bb.i), std::max(A.i, Bb.i)});
+        }
+    }
+    // AE's pair test on them, in AE's order (on several threads it was no faster: 11/26, Test C 67000 pairs about
+    // 160 ms on 1 or 8 threads, its work memory allocations take turns)
+    std::vector<unsigned char> flags(cand.size() * 2, 0);
+    const auto tp0 = std::chrono::steady_clock::now();
+    for (size_t k = 0; k < cand.size(); k++)
+        pair(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k], &flags[2 * k + 1]);
+    t_edgePairMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp0).count();
+    t_edgeCand = cand.size();
+    std::vector<std::vector<int>> partners((size_t)n);
+    for (size_t k = 0; k < cand.size(); k++) {
+        if (flags[2 * k]) partners[cand[k].second].push_back(cand[k].first);
+        if (flags[2 * k + 1]) partners[cand[k].first].push_back(cand[k].second);
+    }
+    for (int k = 0; k < n; k++) {
+        std::vector<int>& p = partners[k];
+        std::sort(p.begin(), p.end());
+        uintptr_t* adj = (uintptr_t*)nodes[k][3];
+        for (int q : p) {
+            uintptr_t* e = (uintptr_t*)aeNew(0x18);
+            uintptr_t* last = (uintptr_t*)adj[1];
+            e[2] = (uintptr_t)(nodes[q] + 2);
+            e[0] = (uintptr_t)adj, e[1] = (uintptr_t)last;
+            adj[1] = (uintptr_t)e, last[0] = (uintptr_t)e;
+            nodes[k][4]++;
+        }
+    }
+}
+// The edges of a node list as partner indices (for the check)
+std::vector<std::vector<int>> EdgesOf(uintptr_t* a2)
+{
+    uintptr_t* head = (uintptr_t*)*a2;
+    std::vector<uintptr_t*> nodes;
+    for (uintptr_t* v = (uintptr_t*)head[0]; v != head; v = (uintptr_t*)v[0]) nodes.push_back(v);
+    std::vector<std::vector<int>> out(nodes.size());
+    for (size_t k = 0; k < nodes.size(); k++) {
+        uintptr_t* adj = (uintptr_t*)nodes[k][3];
+        for (uintptr_t* e = (uintptr_t*)adj[0]; e != adj; e = (uintptr_t*)e[0]) {
+            const uintptr_t target = e[2] - 16;
+            const auto it = std::find(nodes.begin(), nodes.end(), (uintptr_t*)target);
+            out[k].push_back(it == nodes.end() ? -1 : (int)(it - nodes.begin()));
+        }
+    }
+    return out;
+}
+void HookBuildEdges(uintptr_t** surfaces, uintptr_t* a2)
+{
+    // RANDAMU_GRAPH_FAST=0: AE's own enumeration
+    static const bool s_off = [] {
+        char v[4] = {0};
+        return GetEnvironmentVariableA("RANDAMU_GRAPH_FAST", v, sizeof(v)) > 0 && v[0] == '0';
+    }();
+    bool nan = false;
+    for (uintptr_t* i = (uintptr_t*)(*surfaces)[0]; i != *surfaces && !nan; i = (uintptr_t*)i[0]) {
+        const double* b = (const double*)(i[2] + 8);
+        nan = b[0] != b[0] || b[1] != b[1] || b[2] != b[2] || b[3] != b[3];
+    }
+    if (s_off || nan) return g_origBuildEdges(surfaces, a2);
+    const auto te0 = std::chrono::steady_clock::now();
+    BuildEdgesFast(surfaces, a2);
+    {
+        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static LogLimit el;
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - te0).count();
+        if (s_time && a2[1] > 500 && el.Take(50))
+            RLog("graph time: edges of %llu surfaces %.2f ms (pair tests %zu, %.2f ms)", (unsigned long long)a2[1], ms, t_edgeCand,
+                 t_edgePairMs);
+    }
+    // RANDAMU_GRAPH_CHECK=1 (tests): AE's own edges too, into a list of our own, compared
+    static const bool s_check = GetEnvironmentVariableA("RANDAMU_GRAPH_CHECK", nullptr, 0) > 0;
+    if (!s_check) return;
+    const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
+    const auto aeFree = (AeFreeFn)(g_a3dLo + a3d::kFreeRva);
+    uintptr_t* h = (uintptr_t*)aeNew(0x30);
+    h[0] = h[1] = (uintptr_t)h;
+    uintptr_t ref[2] = {(uintptr_t)h, 0};
+    g_origBuildEdges(surfaces, ref);
+    const bool same = EdgesOf(a2) == EdgesOf(ref);
+    ((ClearNodesFn)(g_a3dLo + a3d::kClearNodesRva))(ref, ref[0]);
+    aeFree((void*)ref[0], 0x30);
+    const long long c = ++g_edgeChecks, m = same ? g_edgeMismatch.load() : ++g_edgeMismatch;
+    if (!same || g_edgeLog.Take(20)) RLog("graph check: edges %s (%lld of %lld differ)", same ? "same" : "DIFFER", m, c);
+}
+void InstallBuildEdgesHook(uintptr_t lo)
+{
+    const unsigned char* site = (const unsigned char*)(lo + a3d::kBuildEdgesCallRva);
+    const int rel = site[0] == 0xE8 ? *(const int*)(site + 1) : 0;
+    const unsigned char* pt = (const unsigned char*)(lo + 0x2ACEA);  // the pair test's call in sub_18002AB40
+    const int prel = pt[0] == 0xE8 ? *(const int*)(pt + 1) : 0;
+    const char* why = "the call site does not match";
+    if (site[0] != 0xE8 || (uintptr_t)(site + 5 + rel) != lo + a3d::kBuildEdgesRva || pt[0] != 0xE8 ||
+        (uintptr_t)(pt + 5 + prel) != lo + a3d::kPairTestRva) {
+        RLog("graph edges hook: not installed (%s)", why);
+        return;
+    }
+    g_origBuildEdges = (BuildEdgesFn)(lo + a3d::kBuildEdgesRva);
+    RLog("graph edges hook: %s", RedirectCall(lo, site, (void*)&HookBuildEdges, &why) ? "installed" : why);
 }
 
 void InstallGraphHook(HMODULE a3d)
@@ -1914,6 +2078,8 @@ void InstallGraphHook(HMODULE a3d)
     }
     g_graphHooked = true;
     RLog("group: reorder hook installed");
+    if (GetEnvironmentVariableA("RANDAMU_GRAPH_PROF", nullptr, 0) > 0) InstallPairTestProf(lo);
+    InstallBuildEdgesHook(lo);
 }
 
 // ---- DupliX draws a copy's pixels with AE's own arithmetic (core/ae_span): AE's draw runs (its raster state and
