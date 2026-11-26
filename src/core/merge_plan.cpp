@@ -80,6 +80,130 @@ MergePlan BuildSingleGroupPlan(const MergeSceneInput& in)
     return plan;
 }
 
+MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
+{
+    MergePlan plan;
+    plan.cam = in.cam;
+    // every other surface on screen (an unbounded plane, a plane crossing the camera's plane or a box: everywhere)
+    std::vector<ScreenQuad> others;
+    bool everywhere = !in.boxes.empty();
+    for (const ScenePlane& sp : in.planes) {
+        if (sp.unbounded) {
+            everywhere = true;
+            continue;
+        }
+        ScreenQuad q = ProjectRect(in.cam, sp.toWorld, sp.rect);
+        if (!q.valid) everywhere = true;
+        else others.push_back(q);
+    }
+    // every copy of every merge layer
+    struct C {
+        int layer, copy;
+        ScreenQuad q;
+        double minX, minY, maxX, maxY, area;
+        double corners[4][3];
+        bool ok;
+    };
+    std::vector<C> cs;
+    for (int li = 0; li < (int)in.layers.size(); li++) {
+        const MergeLayerInput& l = in.layers[li];
+        for (int i = 0; i < std::max(l.p.count, 0); i++) {
+            C c;
+            c.layer = li, c.copy = i;
+            double toW[16], op = 0;
+            CopyToWorld(l, i, toW, &op);
+            c.q = ProjectRect(in.cam, toW, l.srcRect);
+            RectCorners(toW, l.srcRect, c.corners);
+            c.ok = !l.block && c.q.valid && !everywhere;
+            c.minX = c.minY = 1e300, c.maxX = c.maxY = -1e300, c.area = 0;
+            for (int k = 0; k < 4; k++) {
+                c.minX = std::min(c.minX, c.q.x[k]), c.maxX = std::max(c.maxX, c.q.x[k]);
+                c.minY = std::min(c.minY, c.q.y[k]), c.maxY = std::max(c.maxY, c.q.y[k]);
+                const int n = (k + 1) % 4;
+                c.area += c.q.x[k] * c.q.y[n] - c.q.x[n] * c.q.y[k];
+            }
+            c.area = std::fabs(c.area) / 2;
+            if (c.ok)
+                for (const ScreenQuad& o : others)
+                    if (QuadsOverlap(c.q, o, marginPx)) {
+                        c.ok = false;
+                        break;
+                    }
+            cs.push_back(c);
+        }
+    }
+    // components of copies overlapping on screen (any layer); a component is a group when every copy in it is ok
+    // and of one layer
+    std::vector<int> parent(cs.size());
+    for (size_t i = 0; i < cs.size(); i++) parent[i] = (int)i;
+    std::function<int(int)> root = [&](int i) { return parent[i] == i ? i : parent[i] = root(parent[i]); };
+    std::vector<int> byX(cs.size());
+    for (size_t i = 0; i < cs.size(); i++) byX[i] = (int)i;
+    std::sort(byX.begin(), byX.end(), [&](int a, int b) { return cs[a].minX < cs[b].minX; });
+    std::vector<int> meet;
+    for (size_t a = 0; a < byX.size(); a++) {
+        const C& A = cs[byX[a]];
+        if (!A.q.valid) continue;
+        for (size_t b = a + 1; b < byX.size() && cs[byX[b]].minX <= A.maxX + 2 * marginPx; b++) {
+            const C& B = cs[byX[b]];
+            if (!B.q.valid || B.minY > A.maxY + 2 * marginPx || A.minY > B.maxY + 2 * marginPx) continue;
+            if (QuadsOverlap(A.q, B.q, marginPx)) {
+                parent[root(byX[a])] = root(byX[b]);
+                // copies meeting in 3D: AE draws them as one cluster (a fragment table), which the group drawing
+                // does not reproduce: their component is drawn one by one
+                if (QuadsIntersect3D(A.corners, B.corners)) meet.push_back(byX[a]);
+            }
+        }
+    }
+    // a copy that cannot be placed on screen (behind the camera) overlaps everything it may: its whole layer is
+    // left one by one
+    std::vector<char> compOk(cs.size(), 1), layerBad(in.layers.size(), 0);
+    std::vector<int> compLayer(cs.size(), -1);
+    for (size_t i = 0; i < cs.size(); i++) {
+        if (!cs[i].q.valid) layerBad[cs[i].layer] = 1;
+        const int r = root((int)i);
+        if (!cs[i].ok) compOk[r] = 0;
+        if (compLayer[r] < 0) compLayer[r] = cs[i].layer;
+        else if (compLayer[r] != cs[i].layer) compOk[r] = 0;
+    }
+    for (int i : meet) compOk[root(i)] = 0;
+    size_t at = 0;
+    for (int li = 0; li < (int)in.layers.size(); li++) {
+        const MergeLayerInput& l = in.layers[li];
+        const int n = std::max(l.p.count, 0);
+        MergeLayerPlan lp;
+        lp.in = l;
+        MergeCluster g;
+        g.depth = 0;
+        g.rect[0] = g.rect[1] = g.rect[2] = g.rect[3] = 0;
+        int rep = -1;
+        double repArea = -1;
+        for (int i = 0; i < n; i++) {
+            const C& c = cs[at + i];
+            if (layerBad[li] || !compOk[root((int)(at + i))]) continue;
+            g.copies.push_back(i);
+            if (c.area > repArea) repArea = c.area, rep = i;
+        }
+        const bool group = g.copies.size() >= 2;
+        for (int i = 0; i < n; i++) {
+            const bool grouped = group && std::binary_search(g.copies.begin(), g.copies.end(), i);
+            MergePlan::DebugCopy dc;
+            const C& c = cs[at + i];
+            dc.layer = li, dc.copy = i, dc.group = grouped ? 0 : -1;
+            for (int k = 0; k < 4; k++) dc.x[k] = c.q.x[k], dc.y[k] = c.q.y[k];
+            dc.zMin = c.q.zMin, dc.zMax = c.q.zMax;
+            std::memcpy(dc.corners, c.corners, sizeof(dc.corners));
+            plan.debugCopies.push_back(dc);
+            if (!grouped) lp.subs.push_back({i, -1});
+            else if (i == rep) lp.subs.push_back({rep, 0});  // the group: AE draws it as its representative copy
+        }
+        if (group) lp.clusters.push_back(g);
+        plan.layers[MergeLayerKey(l.compItemId, l.layerId)] = std::move(lp);
+        at += n;
+    }
+    return plan;
+}
+
 namespace {
 
 constexpr int kUnknown = 2;  // an order not computed yet

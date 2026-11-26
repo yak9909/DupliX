@@ -378,12 +378,19 @@ bool OldMerge()
     return GetEnvironmentVariableA("RANDAMU_MERGE_OLD", v, sizeof(v)) > 0 && v[0] == '1';
 }
 
+// The group drawing (BuildIsolatedGroupPlan): RANDAMU_GROUP=1 while it is being built (off: every copy one by one)
+bool GroupDrawOn()
+{
+    char v[4] = {0};
+    return GetEnvironmentVariableA("RANDAMU_GROUP", v, sizeof(v)) > 0 && v[0] == '1';
+}
+
 std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
                                              const MergeLayerPlan** lp)
 {
     *lp = nullptr;
-    if (!OldMerge()) return nullptr;
-    if (!s.p.merge || !tm || !g_texHooked.load() || GetCurrentThreadId() == g_mainThread) return nullptr;
+    if (!OldMerge() && !GroupDrawOn()) return nullptr;
+    if (!s.p.merge || !tm || (OldMerge() && !g_texHooked.load()) || GetCurrentThreadId() == g_mainThread) return nullptr;
     const int* ti = (const int*)tm;
     A_Time t = {ti[0], (A_u_long)(unsigned)ti[1]};
     if (t.scale == 0) t.scale = 1;
@@ -638,12 +645,14 @@ uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, ui
     return g_origIsLayerType(a, b, c, d, e, f, g, h);
 }
 
+thread_local double t_lastBaseOpacity = 1.0;
 double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
 {
     DbgScope ds("ArtOpacity", g_dbgOp);
     Prof pf(PF_OPAC);
     long long t0 = TimingNow();
     double op = g_origArtOpacity(ctx, trace, t, bag);
+    t_lastBaseOpacity = op;  // the group drawing builds the copies' opacities from it (AE's value times the copy's)
     if (!trace) return op;
     char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
     if (!v) return op;
@@ -777,6 +786,8 @@ struct SharedTex {
     double m3[9];
 };
 thread_local std::vector<SharedTex> t_shared;
+thread_local int t_inGroup = 0;  // inside a group's drawing (its surfaces' draws are ordinary copies)
+thread_local bool t_inGroupIter = false;  // RANDAMU_GROUP_TRACE: the draw of a group's surface
 thread_local int t_inA3dDraw = 0;           // inside HookA3dDraw on this thread
 thread_local bool t_shareOn = false;        // the drawn surface's layer has the merge on
 thread_local uintptr_t t_shareCtx = 0;      // the drawing context the shared textures belong to
@@ -847,6 +858,8 @@ bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned
 
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
+    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    if (s_gtr && t_inGroupIter) RLog("group trace: texture request (shared %zu)", t_shared.size());
     const auto t0 = std::chrono::steady_clock::now();
     const void* shareLayer = nullptr;
     if (t_inA3dDraw && t_shareOn && trace && world && m3) {
@@ -920,7 +933,7 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     uintptr_t ra = (uintptr_t)_ReturnAddress();
     if (err || !q || ra < g_a3dLo || ra >= g_a3dHi || GetCurrentThreadId() == g_mainThread) return err;
     const void* layer = (const void*)L;
-    if (!IsMine(layer)) return err;
+    if (!IsMine(layer) || !OldMerge()) return err;  // draft only for the earlier group planes (their own textures)
     int n = 0;
     const bool firstCalls = g_qCalls.Take(8, false, &n);
     LayerKey k;
@@ -999,8 +1012,25 @@ struct SharedStream {  // see HookLayerStreamValue
 };
 thread_local std::vector<SharedStream> t_streams;
 thread_local bool t_passOpen = false;  // between a pass's AEGP_GetNumLayersToRender and its last surface drawn
+// RANDAMU_A3D_TIME=1: a pass's preparation (its start to its first surface drawn) and drawing (to its last)
+thread_local std::chrono::steady_clock::time_point t_passStart, t_passFirstDraw;
+thread_local int t_passDraws = 0;
+// the group drawing's depth-bias indices in a pass (HookGetLayerIndex)
+thread_local int t_biasShift = 0, t_biasLayerSubs = 0, t_biasBase = 0;
+thread_local const void* t_biasLayer = nullptr;
 void ClosePass()
 {
+    t_biasShift = 0, t_biasLayerSubs = 0, t_biasBase = 0, t_biasLayer = nullptr;
+    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    if (s_time && t_passOpen && t_passDraws > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        static LogLimit lg;
+        if (lg.Take(400))
+            RLog("pass time: prep %.2f ms draw %.2f ms surfaces %d",
+                 std::chrono::duration<double, std::milli>(t_passFirstDraw - t_passStart).count(),
+                 std::chrono::duration<double, std::milli>(now - t_passFirstDraw).count(), t_passDraws);
+    }
+    t_passDraws = 0;
     t_bounds.clear();
     t_streams.clear();
     t_passOpen = false;
@@ -1012,6 +1042,7 @@ A_Err HookGetNumLayers(PR_RenderContextH rc, A_long* n)
 {
     ClosePass();  // a new pass
     t_passOpen = true;
+    t_passStart = std::chrono::steady_clock::now();
     if (g_profMode == 3) g_profTid = GetCurrentThreadId();  // RANDAMU_A3D_PROF=3: from the pass's start to its last draw
     return g_origGetNumLayers(rc, n);
 }
@@ -1142,6 +1173,53 @@ void InstallStreamHook()
     RLog("merge: stream hook %s", ok ? "installed" : "failed");
 }
 
+// ---- RANDAMU_XF_CHECK=1 (diagnostics, the group drawing's inputs): the world matrix AE gets for a copy
+// (AEGP_GetRenderLayerToWorldXform) compared bit by bit with the copy's matrix (as the Rects hook gave it) times
+// the layer's world matrix (AEGP_GetLayerToWorldXform), both orders, multiplied with AE's M_Matrix4::operator*= (U.dll)
+typedef A_Err (*GetRenderXformFn)(PR_RenderContextH, AEGP_RenderLayerContextH, const A_Time*, A_Matrix4*);
+typedef void* (*M4MulFn)(void*, const void*);
+GetRenderXformFn g_origRenderXform = nullptr;
+M4MulFn g_m4Mul = nullptr;
+typedef void (*M4ScaleFn)(void*, double, double, double);
+M4ScaleFn g_m4Scale = nullptr;
+LogLimit g_xfLog;
+std::atomic<long long> g_xfN{0}, g_xfEq1{0}, g_xfEq2{0};
+
+A_Err HookRenderXform(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_Time* t, A_Matrix4* out)
+{
+    const A_Err e = g_origRenderXform(rc, lc, t, out);
+    AEGP_LayerH L = nullptr;
+    AEGP_SubLayerIndex sub = -1;
+    if (e || !t || !out || !g_m4Mul || !g_canvas8 || g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) ||
+        !L || sub < 0 || !IsMine(L))
+        return e;
+    ParamSnapshot s;
+    const int tm[2] = {(int)t->value, (int)t->scale};
+    if (!ParamsFor(L, tm, &s)) return e;
+    Suite<AEGP_LayerSuite9> ls(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    A_Matrix4 B;
+    if (!ls || ls->AEGP_GetLayerToWorldXform(L, t, &B)) return e;
+    CopyXform x;
+    ComputeCopy(s.p, (int)sub, s.anchorX, s.anchorY, &x);
+    double G[16], M[16];
+    WorldM4(s.world, s.anchorX, s.anchorY, G);
+    Mul4(x.m4, G, M);
+    double c1[16], c2[16];
+    std::memcpy(c1, M, sizeof(c1));
+    g_m4Mul(c1, &B);
+    std::memcpy(c2, &B, sizeof(c2));
+    g_m4Mul(c2, M);
+    const bool eq1 = !std::memcmp(c1, out, sizeof(c1)), eq2 = !std::memcmp(c2, out, sizeof(c2));
+    double d1 = 0, d2 = 0;
+    for (int k = 0; k < 16; k++)
+        d1 = std::max(d1, std::fabs(c1[k] - (&out->mat[0][0])[k])), d2 = std::max(d2, std::fabs(c2[k] - (&out->mat[0][0])[k]));
+    const long long n = ++g_xfN, a = eq1 ? ++g_xfEq1 : g_xfEq1.load(), b = eq2 ? ++g_xfEq2 : g_xfEq2.load();
+    if (g_xfLog.Take(20, true))
+        RLog("xf check: sub %d M*B %s (max %.3g) B*M %s (max %.3g); so far %lld: %lld / %lld equal", (int)sub, eq1 ? "EQUAL" : "differs",
+             d1, eq2 ? "EQUAL" : "differs", d2, n, a, b);
+    return e;
+}
+
 void InstallBoundsHook(void** t10)
 {
     // the v10 table's slots of the two functions, found by comparing with the SDK version's table
@@ -1159,6 +1237,20 @@ void InstallBoundsHook(void** t10)
     g_origGetBounds = (GetBoundsFn)t10[sb];
     const bool ok = WritePtr(&t10[sn], (void*)&HookGetNumLayers) && WritePtr(&t10[sb], (void*)&HookGetBounds);
     RLog("merge: bounds hook %s (v10 slots %d %d)", ok ? "installed" : "failed", sn, sb);
+    char ev[4] = {0};
+    {
+        HMODULE u = GetModuleHandleA("U.dll");
+        g_m4Mul = u ? (M4MulFn)GetProcAddress(u, "??XM_Matrix4@@QEAAAEAV0@AEBV0@@Z") : nullptr;
+        g_m4Scale = u ? (M4ScaleFn)GetProcAddress(u, "?Scale@M_Matrix4@@QEAAXNNN@Z") : nullptr;
+        RLog("merge: U.dll matrix functions %p %p", (void*)g_m4Mul, (void*)g_m4Scale);
+    }
+    if (GetEnvironmentVariableA("RANDAMU_XF_CHECK", ev, sizeof(ev)) > 0 && ev[0] == '1') {
+        int sx = -1;
+        for (int i = 0; i < 60; i++)
+            if (t10[i] == (void*)g_canvas8->AEGP_GetRenderLayerToWorldXform) { sx = i; break; }
+        if (sx >= 0) g_origRenderXform = (GetRenderXformFn)t10[sx], WritePtr(&t10[sx], (void*)&HookRenderXform);
+        RLog("xf check: hook slot %d, M_Matrix4::operator*= %p", sx, (void*)g_m4Mul);
+    }
 }
 
 void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
@@ -1202,6 +1294,379 @@ constexpr uintptr_t kTRLayerVtRva = 0x80438, kTRLayerSlot0Rva = 0x11240, kTRLaye
 constexpr ptrdiff_t kSurfLayerIndex = 224;
 constexpr ptrdiff_t kCtxRenderContext = 8, kCtxProgressCount = 252, kCtxProgressTotal = 248, kCtxProgress = 208;
 }  // namespace a3d
+// ---- the group drawing's building blocks (11/26): a copy's surface built by Advanced3D's own functions from a
+// layer entry (the 192-byte record sub_180008710 makes per sub-layer, in ctx[0] + 432) whose world matrices are the
+// copy's. sub_180013160 initializes a SY_TRLayer, then sub_1800159A0 fills it from the entry and the camera.
+namespace a3d {
+constexpr uintptr_t kBuildSurfaceRva = 0x159A0, kSurfaceLightsRva = 0x15340, kSurfInit1Rva = 0x805E0,
+                    kSurfInit2Rva = 0x80600;
+constexpr ptrdiff_t kPrepEntries = 432, kPrepEntryCount = 440, kEntrySize = 192, kSurfaceSize = 232;
+}  // namespace a3d
+typedef bool (*BuildSurfaceFn)(uintptr_t entry, double zBias, uintptr_t entry2, uintptr_t cam, unsigned char flag,
+                               uintptr_t motion, double zero, const double* viewRect, uintptr_t zero2, unsigned char one,
+                               uintptr_t surface);
+typedef void (*SurfaceLightsFn)(uintptr_t entry, uintptr_t lights, uintptr_t surface);
+
+// A copy's layer entry: the template's (the same layer: scale, bounds, material, lights) with the copy's world matrix
+// (the copy's matrix times the layer's, as BEE makes it: checked equal with RANDAMU_XF_CHECK), scaled as sub_180008710
+// does (M_Matrix4::Scale(s, 1, 1)), the copy's opacity (AE's layer opacity times the copy's) and the index its depth
+// bias is made from (+0x34: index * 1e-7 in sub_180013160). +0x30 stays the template's: the render layer the
+// surface's texture and draw parameters are fetched for (the surface's +56).
+// m4 must hold 128 bytes; false: not built (the caller draws as before).
+bool CopyEntry(uintptr_t tmpl, const double copyM4[16], const A_Matrix4& layerW, double scaleX, double opacity, int index,
+               unsigned char* out, double* m4)
+{
+    if (!g_m4Mul || !g_m4Scale || *(int*)(tmpl + 8) != 1) return false;  // one motion sample only
+    std::memcpy(out, (const void*)tmpl, a3d::kEntrySize);
+    std::memcpy(m4, copyM4, 128);
+    g_m4Mul(m4, &layerW);
+    g_m4Scale(m4, scaleX, 1.0, 1.0);
+    *(double**)out = m4;
+    *(double*)(out + 0x40) = opacity;
+    *(int*)(out + 0x34) = index;
+    return true;
+}
+
+// Initializes surface (232 bytes) as sub_180013160 does and fills it from entry (index: the entry's render index).
+// False: AE culls it (nothing to draw); the surface holds nothing to free then.
+bool BuildSurface(uintptr_t ctx, uintptr_t entry, int index, unsigned char* s)
+{
+    std::memset(s, 0, a3d::kSurfaceSize);
+    *(uintptr_t*)s = g_a3dLo + a3d::kTRLayerVtRva;
+    std::memcpy(s + 0x08, (const void*)(g_a3dLo + a3d::kSurfInit1Rva), 16);
+    std::memcpy(s + 0x18, (const void*)(g_a3dLo + a3d::kSurfInit2Rva), 16);
+    std::memcpy(s + 0x28, (const void*)(g_a3dLo + a3d::kSurfInit1Rva), 8);
+    std::memcpy(s + 0x30, (const void*)(g_a3dLo + a3d::kSurfInit2Rva), 8);
+    std::memcpy(s + 0x38, (const void*)(entry + 0x30), 0x60);
+    *(uint64_t*)(s + 0x98) = *(const uint64_t*)(entry + 0x90);
+    *(uint64_t*)(s + 0xC0) = *(const uint64_t*)(entry + 0xB8);
+    *(int*)(s + 0xE0) = index;
+    const uintptr_t cam = ctx + (*(const unsigned char*)(entry + 0x7F) ? 0x38 : 0x48);
+    const double view[4] = {0.0, 0.0, (double)*(const int*)(ctx + 0xC0), (double)*(const int*)(ctx + 0xC4)};
+    const double zBias = (double)*(const int*)(entry + 0x34) * 1e-7;  // qword_180080558
+    const auto build = (BuildSurfaceFn)(g_a3dLo + a3d::kBuildSurfaceRva);
+    if (!build(entry, zBias, entry, cam, *(const unsigned char*)(ctx + 0x68), *(uintptr_t*)ctx + 0x128, 0.0, view, 0, 1,
+               (uintptr_t)s)) {
+        (**(void (***)(void*, int))s)(s, 0);  // what sub_180013160 does with a culled surface
+        return false;
+    }
+    ((SurfaceLightsFn)(g_a3dLo + a3d::kSurfaceLightsRva))(entry, ctx + 0x28, (uintptr_t)s);
+    return true;
+}
+void FreeSurface(unsigned char* s) { (**(void (***)(void*, int))s)(s, 0); }
+
+// RANDAMU_GROUP_CLONE=1 (diagnostics): every copy drawn by DupliX is drawn from a surface rebuilt as above; the rebuilt
+// surface is compared with AE's (its 232 bytes and its sample records) and the differences are logged
+LogLimit g_cloneLog;
+std::atomic<long long> g_cloneN{0}, g_cloneSame{0};
+bool CloneForCheck(uintptr_t self, uintptr_t ctx, const void* L, int sub, unsigned char* clone, unsigned char* entryBuf,
+                   double* m4)
+{
+    const uintptr_t prep = *(uintptr_t*)ctx;
+    const int idx = *(int*)(self + a3d::kSurfLayerIndex);
+    if (!prep || idx < 0 || idx >= *(int*)(prep + a3d::kPrepEntryCount)) return false;
+    const uintptr_t entry = *(uintptr_t*)(prep + a3d::kPrepEntries) + (uintptr_t)idx * a3d::kEntrySize;
+    A_Time t = {0, 1}, step = {0, 1};
+    void* rc = *(void**)(ctx + a3d::kCtxRenderContext);
+    if (!g_canvas8 || g_canvas8->AEGP_GetCompRenderTime((PR_RenderContextH)rc, &t, &step)) return false;
+    ParamSnapshot s;
+    const int tm[2] = {(int)t.value, (int)t.scale};
+    Suite<AEGP_LayerSuite9> ls(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    A_Matrix4 B;
+    if (!ParamsFor(L, tm, &s) || !ls || ls->AEGP_GetLayerToWorldXform((AEGP_LayerH)L, &t, &B)) return false;
+    CopyXform x;
+    ComputeCopy(s.p, sub, s.anchorX, s.anchorY, &x);
+    double G[16], M[16];
+    WorldM4(s.world, s.anchorX, s.anchorY, G);
+    Mul4(x.m4, G, M);
+    const double opacity = t_lastBaseOpacity * x.opacity;
+    if (!CopyEntry(entry, M, B, 1.0, opacity, *(int*)(entry + 0x34), entryBuf, m4)) return false;
+    // the entry compared with AE's (its world matrix and the rest)
+    const bool m4Same = !std::memcmp(m4, *(const double**)entry, 128);
+    int entryDiff = -1;
+    for (int k = 8; k < a3d::kEntrySize; k += 8)
+        if (std::memcmp(entryBuf + k, (const void*)(entry + k), 8)) { entryDiff = k; break; }
+    if (!BuildSurface(ctx, (uintptr_t)entryBuf, idx, clone)) {
+        if (g_cloneLog.Take(20)) RLog("clone: sub %d culled by AE's builder (AE drew it)", sub);
+        return false;
+    }
+    char diffs[256] = {0};
+    int nd = 0;
+    for (int k = 8; k < a3d::kSurfaceSize; k += 8) {
+        if (k == 0xA0 || k == 0xC8) continue;  // vectors: compared below
+        if (std::memcmp(clone + k, (const void*)(self + k), 8) && nd < 12) {
+            const size_t l = strlen(diffs);
+            snprintf(diffs + l, sizeof(diffs) - l, " +%X", k);
+            nd++;
+        }
+    }
+    const int ns = *(int*)(self + 0xD0), nc = *(int*)(clone + 0xD0);
+    // a sample record: +0, +8, +0x10 point to 128-byte matrices (compared by their contents), the rest is values
+    bool samples = ns == nc && ns > 0 && *(uintptr_t*)(self + 0xC8) && *(uintptr_t*)(clone + 0xC8);
+    for (int i = 0; samples && i < ns; i++) {
+        const unsigned char* a = *(const unsigned char**)(self + 0xC8) + 192 * i;
+        const unsigned char* b = *(const unsigned char**)(clone + 0xC8) + 192 * i;
+        for (int k = 0; samples && k < 0x18; k += 8) {
+            const void* pa = *(const void* const*)(a + k);
+            const void* pb = *(const void* const*)(b + k);
+            samples = (!pa && !pb) || (pa && pb && !std::memcmp(pa, pb, 128));
+        }
+        samples = samples && !std::memcmp(a + 0x18, b + 0x18, 192 - 0x18);
+    }
+    if (!samples && ns == nc && ns > 0 && *(uintptr_t*)(self + 0xC8) && *(uintptr_t*)(clone + 0xC8)) {
+        static LogLimit sl;
+        const unsigned char* a = *(const unsigned char**)(self + 0xC8);
+        const unsigned char* b = *(const unsigned char**)(clone + 0xC8);
+        char line[512] = {0};
+        for (int k = 0; k < 192; k += 8)
+            if (k < 0x18 ? (*(const void* const*)(a + k) && *(const void* const*)(b + k) &&
+                            std::memcmp(*(const void* const*)(a + k), *(const void* const*)(b + k), 128))
+                         : std::memcmp(a + k, b + k, 8) != 0) {
+                const size_t l = strlen(line);
+                snprintf(line + l, sizeof(line) - l, " +%X(%016llx/%016llx %g/%g)", k, *(const unsigned long long*)(a + k),
+                         *(const unsigned long long*)(b + k), *(const double*)(a + k), *(const double*)(b + k));
+            }
+        if (sl.Take(6)) {
+            RLog("clone: sample differs at%s", line);
+            for (int k = 8; k < 0x18; k += 8) {
+                const double* ma = *(const double* const*)(a + k);
+                const double* mb = *(const double* const*)(b + k);
+                if (!ma || !mb) continue;
+                char t[1024] = {0};
+                for (int q = 0; q < 16; q++) {
+                    const size_t l = strlen(t);
+                    snprintf(t + l, sizeof(t) - l, " %.17g/%.17g", ma[q], mb[q]);
+                }
+                RLog("clone:   +%X ae/ours%s", k, t);
+            }
+        }
+    }
+    const int nb = *(int*)(self + 0xA8);
+    const bool lights = nb == *(int*)(clone + 0xA8);
+    const long long n = ++g_cloneN, same = (m4Same && entryDiff < 0 && !nd && samples && lights) ? ++g_cloneSame : g_cloneSame.load();
+    if (g_cloneLog.Take(30, true))
+        RLog("clone: sub %d world %s entry diff %d surface diffs%s samples %s (%d) lights %d; same %lld of %lld", sub,
+             m4Same ? "same" : "DIFFERS", entryDiff, nd ? diffs : " none", samples ? "same" : "DIFFER", ns, nb, same, n);
+    return true;
+}
+
+// ---- the group drawing: at the representative's draw, every copy of the group is drawn as AE would draw it if it
+// were a sub-layer (sub_180014470's steps on a list of our surfaces: AE's graph, AE's draw of each component)
+namespace a3d {
+constexpr uintptr_t kGraphRva = 0x2AA00, kPrepareRva = 0x127B0, kDrawOneRva = 0x14800, kDrawClusterRva = 0x13470,
+                    kAfterDrawRva = 0x151F0, kNewRva = 0x5FD58, kFreeRva = 0x5FBDC;
+}  // namespace a3d
+typedef void* (*AeNewFn)(size_t);
+typedef void (*AeFreeFn)(void*, size_t);
+typedef void (*GraphFn)(void* list, void* comps);
+typedef void (*SurfFn)(uintptr_t);
+typedef void (*DrawOneFn)(uintptr_t ctx, uintptr_t surface, void* target, int a4, uintptr_t a5);
+typedef void (*DrawClusterFn)(uintptr_t ctx, void* comp, uintptr_t targetBuffer);
+typedef void (*AfterDrawFn)(uintptr_t surface, uintptr_t targetBuffer);
+uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7);
+void FlushGroupJobs();
+void DropGroupJobs();
+LogLimit g_groupLog;
+typedef void (*DrawParamsFn)(void* out, uintptr_t ctx, unsigned short a3, uintptr_t a4, uintptr_t a5, int a6);
+typedef uintptr_t (*SurfDrawFn)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+namespace a3d {
+constexpr uintptr_t kDrawParamsRva = 0x50FD0;
+}
+// What sub_180014800 does for a surface without motion blur, without its BEE_ArtisanLayerCapsuleParamsHelper (the
+// representative's is alive for the same layer; a second one for it waits forever): the draw parameters
+// (sub_180050FD0) and the surface's draw (vtable slot 1). False: not drawn this way (motion blur path).
+bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
+{
+    if (!*(const unsigned char*)(sf + 128)) return true;  // nothing to draw
+    const uintptr_t prep = *(uintptr_t*)ctx;
+    const bool still = *(const int*)(sf + 184) == *(const int*)(sf + 176) || *(const int*)(sf + 188) == *(const int*)(sf + 180);
+    if (!still || *(const unsigned char*)(prep + 296)) return false;
+    alignas(16) unsigned char params[192];
+    ((DrawParamsFn)(g_a3dLo + a3d::kDrawParamsRva))(params, ctx, *(const unsigned short*)(sf + 56), sf + 56,
+                                                    *(const uintptr_t*)(sf + 160), *(const int*)(sf + 168));
+    const uintptr_t cam = ctx + 8 * (*(const unsigned char*)(sf + 135) ? 7 : 9);
+    const auto draw = *(SurfDrawFn*)(*(uintptr_t*)sf + 8);
+    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    if (s_gtr) RLog("group trace: direct draw %p via %p (hook %p)", (void*)sf, (void*)draw, (void*)&HookA3dDraw);
+    t_inGroupIter = true;
+    if (g_profMode == 4) g_profTid = GetCurrentThreadId();  // RANDAMU_A3D_PROF=4: where a group's draw spends its time
+    try {
+        draw(sf, ctx, cam, *(const unsigned char*)(ctx + 104), (uintptr_t)params, (uintptr_t)*(const int*)(prep + 428),
+             (uintptr_t)kt);
+    } catch (int e) {  // AE throws its error codes
+        t_inGroupIter = false;
+        RLog("group: AE's draw of a group surface threw %d", e);
+        throw;
+    } catch (...) {
+        t_inGroupIter = false;
+        RLog("group: AE's draw of a group surface threw (not an int)");
+        throw;
+    }
+    t_inGroupIter = false;
+    if (g_profMode == 4) g_profTid = 0;
+    if (s_gtr) RLog("group trace: direct draw %p done", (void*)sf);
+    return true;
+}
+
+// false: not drawn by the group drawing (the caller draws the representative as an ordinary copy)
+bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const ParamSnapshot& s,
+               const MergeCluster& g, int rep)
+{
+    // RANDAMU_GROUP_TRACE=1 (diagnostics): every step logged (finding where AE stops)
+    static const bool tr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+#define GTRACE(...) \
+    if (tr) RLog(__VA_ARGS__)
+    GTRACE("group trace: start rep %d copies %zu", rep, g.copies.size());
+    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    const auto tg0 = std::chrono::steady_clock::now();
+    auto gms = [](std::chrono::steady_clock::time_point a) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+    };
+    double tBuild = 0, tGraph = 0;
+    const uintptr_t prep = *(uintptr_t*)ctx;
+    const int idx = *(int*)(self + a3d::kSurfLayerIndex);
+    if (*(int*)a7 != 1 || !prep || *(const unsigned char*)(prep + 0x128) || idx < 0 ||
+        idx >= *(int*)(prep + a3d::kPrepEntryCount)) {
+        if (g_groupLog.Take(10)) RLog("group: not drawn as a group (target kind %d, motion %d)", *(int*)a7, prep ? (int)*(const unsigned char*)(prep + 0x128) : -1);
+        return false;
+    }
+    const uintptr_t tmpl = *(uintptr_t*)(prep + a3d::kPrepEntries) + (uintptr_t)idx * a3d::kEntrySize;
+    A_Time t = {0, 1}, step = {0, 1};
+    Suite<AEGP_LayerSuite9> ls(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    A_Matrix4 B;
+    if (!g_canvas8 || g_canvas8->AEGP_GetCompRenderTime((PR_RenderContextH)*(void**)(ctx + a3d::kCtxRenderContext), &t, &step) ||
+        !ls || ls->AEGP_GetLayerToWorldXform((AEGP_LayerH)L, &t, &B))
+        return false;
+    double G[16];
+    WorldM4(s.world, s.anchorX, s.anchorY, G);
+    const int n = (int)g.copies.size();
+    std::vector<unsigned char> entries((size_t)n * a3d::kEntrySize), surfs((size_t)n * a3d::kSurfaceSize);
+    std::vector<double> m4((size_t)n * 16);
+    std::vector<uintptr_t> built;
+    const int tmplIndex = *(const int*)(tmpl + 0x34);
+    const double base = t_lastBaseOpacity;
+    int mism = 0;
+    for (int k = 0; k < n; k++) {
+        const int c = g.copies[k];
+        CopyXform x;
+        ComputeCopy(s.p, c, s.anchorX, s.anchorY, &x);
+        double M[16];
+        Mul4(x.m4, G, M);
+        unsigned char* e = &entries[(size_t)k * a3d::kEntrySize];
+        if (!CopyEntry(tmpl, M, B, 1.0, base * x.opacity, tmplIndex + (c - rep), e, &m4[(size_t)k * 16])) return false;
+        if (c == rep && (std::memcmp(&m4[(size_t)k * 16], *(const double**)tmpl, 128) ||
+                         *(const double*)(e + 0x40) != *(const double*)(tmpl + 0x40)))
+            mism++;
+        // sub_180013160's conditions for a surface: opacity, visible, a texture
+        if (*(const double*)(e + 0x40) == 0 || !(e[0x78] || e[0x79]) || !*(const int*)(e + 8)) continue;
+        unsigned char* sf = &surfs[(size_t)k * a3d::kSurfaceSize];
+        GTRACE("group trace: build copy %d", c);
+        if (BuildSurface(ctx, (uintptr_t)e, idx, sf)) built.push_back((uintptr_t)sf);
+    }
+    GTRACE("group trace: built %zu", built.size());
+    tBuild = gms(tg0);
+    if (mism && g_groupLog.Take(20)) RLog("group: the representative's rebuilt entry differs from AE's (world or opacity)");
+    // AE's list of surfaces and its components (std::list nodes: next, prev, value), allocated by AE's new
+    const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
+    const auto aeFree = (AeFreeFn)(g_a3dLo + a3d::kFreeRva);
+    struct List {
+        uintptr_t* head;
+        size_t size;
+    } list{(uintptr_t*)aeNew(0x18), 0}, comps{(uintptr_t*)aeNew(0x20), 0};
+    list.head[0] = list.head[1] = (uintptr_t)list.head;
+    comps.head[0] = comps.head[1] = (uintptr_t)comps.head;
+    for (uintptr_t sf : built) {
+        uintptr_t* node = (uintptr_t*)aeNew(0x18);
+        uintptr_t* last = (uintptr_t*)list.head[1];
+        node[0] = (uintptr_t)list.head, node[1] = (uintptr_t)last, node[2] = sf;
+        last[0] = (uintptr_t)node, list.head[1] = (uintptr_t)node;
+        list.size++;
+    }
+    GTRACE("group trace: graph");
+    ((GraphFn)(g_a3dLo + a3d::kGraphRva))(&list, &comps);
+    GTRACE("group trace: graph done (%zu components)", comps.size);
+    for (uintptr_t sf : built) ((SurfFn)(g_a3dLo + a3d::kPrepareRva))(sf);
+    GTRACE("group trace: prepared");
+    tGraph = gms(tg0) - tBuild;
+    const auto tDraw0 = std::chrono::steady_clock::now();
+    const int savedCount = *(int*)(ctx + a3d::kCtxProgressCount);
+    const uintptr_t target = *(uintptr_t*)(a7 + 8);
+    struct InGroup {  // also when AE throws (its error codes) out of a draw: the kept jobs are dropped then
+        bool done = false;
+        InGroup() { ++t_inGroup; }
+        ~InGroup()
+        {
+            if (!done) DropGroupJobs();
+            --t_inGroup;
+        }
+    };
+    auto inGroup = std::make_unique<InGroup>();
+    int drawn = 0, clusters = 0;
+    for (uintptr_t* j = (uintptr_t*)comps.head[0]; j != comps.head; j = (uintptr_t*)j[0]) {
+        if (j[3] == 1) {
+            struct {
+                int kind;
+                uintptr_t buf;
+            } kt{1, target};
+            const uintptr_t sf = ((uintptr_t*)((uintptr_t*)j[2])[0])[2];
+            GTRACE("group trace: draw one %p", (void*)sf);
+            if (!DrawSurfaceDirect(ctx, sf, &kt) && g_groupLog.Take(10)) RLog("group: a copy on the motion path was not drawn");
+            if (*(const unsigned char*)(sf + 0x81)) ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(sf, target);
+            drawn++;
+        } else {
+            // AE's cluster drawing (sub_180013470) makes a capsule helper per surface too (it would wait forever):
+            // its surfaces drawn one by one in the component's order (not AE's pixels where they cross; the plan
+            // keeps copies that meet in 3D out of groups)
+            if (g_groupLog.Take(10)) RLog("group: a cluster of %llu copies drawn one by one", (unsigned long long)j[3]);
+            for (uintptr_t* q = (uintptr_t*)((uintptr_t*)j[2])[0]; q != (uintptr_t*)j[2]; q = (uintptr_t*)q[0]) {
+                struct {
+                    int kind;
+                    uintptr_t buf;
+                } kt{1, target};
+                DrawSurfaceDirect(ctx, q[2], &kt);
+            }
+            drawn += (int)j[3], clusters++;
+        }
+    }
+    FlushGroupJobs();
+    inGroup->done = true;
+    inGroup.reset();
+    GTRACE("group trace: drawn");
+    const double tDraw = gms(tDraw0);
+    *(int*)(ctx + a3d::kCtxProgressCount) = savedCount;
+    // the lists freed as sub_180014470 frees them
+    for (uintptr_t* j = (uintptr_t*)comps.head[0]; j != comps.head;) {
+        uintptr_t* next = (uintptr_t*)j[0];
+        uintptr_t* inner = (uintptr_t*)j[2];
+        for (uintptr_t* q = (uintptr_t*)inner[0]; q != inner;) {
+            uintptr_t* qn = (uintptr_t*)q[0];
+            aeFree(q, 0x18);
+            q = qn;
+        }
+        aeFree(inner, 0x18);
+        aeFree(j, 0x20);
+        j = next;
+    }
+    aeFree(comps.head, 0x20);
+    for (uintptr_t* q = (uintptr_t*)list.head[0]; q != list.head;) {
+        uintptr_t* qn = (uintptr_t*)q[0];
+        aeFree(q, 0x18);
+        q = qn;
+    }
+    aeFree(list.head, 0x18);
+    GTRACE("group trace: lists freed");
+    for (uintptr_t sf : built) FreeSurface((unsigned char*)sf);
+    GTRACE("group trace: surfaces freed");
+#undef GTRACE
+    static LogLimit tl;
+    if (s_time && tl.Take(200))
+        RLog("group time: %d copies: build %.2f graph %.2f draw %.2f all %.2f ms", n, tBuild, tGraph, tDraw, gms(tg0));
+    int nn = 0;
+    if (g_groupLog.Take(8, true, &nn))
+        RLog("group: drew %d of %d copies (%zu surfaces, %d clusters) at copy %d", drawn, n, built.size(), clusters, rep);
+    return true;
+}
+
 typedef uintptr_t (*A3dDrawFn)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 typedef int (*ExtractRefconFn)(void*, void**);
 typedef int (*NthLayerFn)(void*, int, void**);
@@ -1307,8 +1772,65 @@ thread_local double t_helperMs[4];  // see HookNewMatching etc.
 thread_local int t_helperN[4];
 LogLimit g_gpuLog;
 
+// a group copy's rows and state, drawn at the end of its group
+struct GroupJob {
+    rnd::GpuAeSpanJob gj;
+    std::vector<int> rows;  // (y, x0, x1) per row
+    rnd::AeSpanParams p;    // the same on the CPU (a GPU failure)
+    rnd::AeTex8 tex;
+    // the texture's pixels: AE disposes a surface's texture at the end of its draw, before the group is drawn
+    std::shared_ptr<std::vector<unsigned char>> texKeep;
+};
+thread_local std::vector<GroupJob> t_groupJobs;
+// the last kept texture (the group's copies share one: kept once)
+std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t)
+{
+    const size_t bytes = (size_t)t.rowbytes * t.height;
+    if (!t_groupJobs.empty()) {
+        const GroupJob& last = t_groupJobs.back();
+        const rnd::AeTex8& k = last.tex;
+        bool same = k.width == t.width && k.height == t.height && k.rowbytes == t.rowbytes && last.texKeep;
+        for (int y = 0; same && y < t.height; y++)
+            same = !std::memcmp(k.data + (size_t)y * t.rowbytes, t.data + (size_t)y * t.rowbytes, (size_t)t.width * 4);
+        if (same) return last.texKeep;
+    }
+    return std::make_shared<std::vector<unsigned char>>(t.data, t.data + bytes);
+}
+LogLimit g_flushLog;
+void DropGroupJobs() { t_groupJobs.clear(); }
+// draws the kept jobs in order: on the GPU together, else one by one, else on the CPU (AE's arithmetic either way)
+void FlushGroupJobs()
+{
+    if (t_groupJobs.empty()) return;
+    std::vector<rnd::GpuAeSpanJob> js;
+    js.reserve(t_groupJobs.size());
+    for (GroupJob& g : t_groupJobs) {
+        g.gj.rows = g.rows.data();
+        g.gj.nRows = (int)g.rows.size() / 3;
+        js.push_back(g.gj);
+    }
+    double ms = 0;
+    bool ok = rnd::GpuAeSpansBatch(js.data(), (int)js.size(), &ms);
+    int n = 0;
+    if (g_flushLog.Take(5, true, &n)) RLog("group: %zu copies on the GPU together %s in %.2f ms", js.size(), ok ? "ok" : "FAILED", ms);
+    if (!ok) {
+        size_t k = 0;
+        for (; k < js.size() && rnd::GpuAeSpans(js[k]); k++) {
+        }
+        for (; k < js.size(); k++) {  // the rest on the CPU
+            const GroupJob& g = t_groupJobs[k];
+            for (size_t r = 0; r + 2 < g.rows.size(); r += 3)
+                rnd::AeDrawSpan8(g.p, g.tex, g.rows[r + 1], g.rows[r + 2], g.rows[r],
+                                 g.gj.target + (ptrdiff_t)g.rows[r] * g.gj.targetRowbytes);
+        }
+    }
+    t_groupJobs.clear();
+}
+
 int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
+    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    if (s_gtr && t_inGroupIter) RLog("group trace: nested iterate (%llu rows)", (unsigned long long)n);
     t_iterIn = std::chrono::steady_clock::now();
     if (g_profMode == 1) g_profTid = 0;
     struct Out {
@@ -1319,8 +1841,12 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
     if (cb != g_a3dLo + a3d::kRowPolygonRva || !SpanJobFor(d, &job, &why)) {
         if (g_oursSkip.Take(20)) RLog("a3d ours: AE draws this copy (%s)", why);
         g_aeDraws++;
+        if (t_inGroup) FlushGroupJobs();  // the group's kept copies first: AE draws this one into the target now
         return t_origIter(n, d, cb);
     }
+    // RANDAMU_GROUP_NOGPU=1 (diagnostics): a group's copies are not drawn (the cost of AE's draw setup alone)
+    static const bool s_noGpu = GetEnvironmentVariableA("RANDAMU_GROUP_NOGPU", nullptr, 0) > 0;
+    if (s_noGpu && t_inGroup) return 0;
     if (t_aeGpu) {
         // all rows on the GPU at once (sub_180016900's rows: y = row + first y, every field row, AE's spans)
         const int count = (int)n;
@@ -1343,6 +1869,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         }();
         if (px < s_minPx) {
             g_aeDraws++;
+            if (t_inGroup) FlushGroupJobs();
             return t_origIter(n, d, cb);
         }
         rnd::GpuAeSpanJob gj;
@@ -1352,6 +1879,29 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
                     ((unsigned long long)job.tex.width << 40) ^ (unsigned long long)job.tex.height;
         gj.rcp = g_rcp.r, gj.target = job.tdata, gj.targetRowbytes = job.trb;
         gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
+        // a group's copies: kept, drawn together at the end of the group (FlushGroupJobs) in this order
+        // (RANDAMU_GROUP_BATCH=0, diagnostics: each one at once)
+        static const bool s_batch = [] {
+            char v[4] = {0};
+            return !(GetEnvironmentVariableA("RANDAMU_GROUP_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
+        }();
+        if (t_inGroup && gj.nRows > 0 && s_batch) {
+            GroupJob pj;
+            pj.gj = gj;
+            pj.rows = std::move(tri);
+            pj.p = job.p;
+            pj.texKeep = KeepTexture(job.tex);
+            pj.tex = job.tex;
+            pj.tex.data = pj.texKeep->data();
+            pj.gj.tex = pj.tex;
+            t_groupJobs.push_back(std::move(pj));
+            g_oursDraws++;
+            const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
+            for (int row = 0; row < count; row++)
+                if ((row & 3) == 0 || row == count)
+                    (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)row, (unsigned)count);
+            return 0;
+        }
         double ms = 0;
         t_gt = rnd::GpuAeSpanTimes();
         t_gtRows = gj.nRows;
@@ -1369,6 +1919,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         // the GPU could not draw it: AE draws it (its own arithmetic is faster than ours on the CPU)
         if (g_gpuLog.Take(10)) RLog("a3d ours: GPU failed, AE draws this copy");
         g_aeDraws++;
+        if (t_inGroup) FlushGroupJobs();
         return t_origIter(n, d, cb);
     }
     int slot = -1;
@@ -1377,6 +1928,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         for (int i = 0; i < 32 && slot < 0; i++)
             if (!g_jobs[i].d) g_jobs[i] = job, slot = i;
     }
+    if (t_inGroup) FlushGroupJobs();
     if (slot < 0) return t_origIter(n, d, cb);
     g_oursDraws++;
     const int e = t_origIter(n, d, (uintptr_t)&OurRow);
@@ -1387,6 +1939,8 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 
 uintptr_t DrawCopyOurs(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
 {
+    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    if (s_gtr && t_inGroupIter) RLog("group trace: DrawCopyOurs %p", (void*)self);
     IterFnO* slot = (IterFnO*)(ctx + 224);
     const IterFnO saved = t_origIter;
     t_origIter = *slot;
@@ -1414,6 +1968,8 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         auto since = [](std::chrono::steady_clock::time_point t) {
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
         };
+        static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+        if (s_gtr && t_inGroup) RLog("group trace: nested draw %p enter", (void*)self);
         const void* L = nullptr;
         int sb = -9;
         void* rf = nullptr;
@@ -1429,9 +1985,11 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         if (seen < 0) seen = IsMine(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
         const double lookMs = s_time ? since(tA) : 0;
         const bool ours = seen > 0 && !OldMerge() && IsMine(L);
+        if (s_gtr && t_inGroup) RLog("group trace: nested draw looked up (L %p sub %d seen %d ours %d)", L, sb, seen, (int)ours);
         // the shared textures (HookTex) live for one frame's drawing on this thread: sub_180012B30 counts the
         // surfaces drawn so far at ctx+kCtxProgressCount (0 at a frame's first surface) out of ctx+kCtxProgressTotal
         if (ctx != t_shareCtx || *(int*)(ctx + a3d::kCtxProgressCount) == 0) DropSharedTextures(), t_shareCtx = ctx;
+        if (t_passDraws++ == 0) t_passFirstDraw = std::chrono::steady_clock::now();
         struct InDraw {
             uintptr_t ctx;
             bool prev;
@@ -1439,7 +1997,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             ~InDraw()
             {
                 --t_inA3dDraw, t_shareOn = prev;
-                if (*(int*)(ctx + a3d::kCtxProgressCount) >= *(int*)(ctx + a3d::kCtxProgressTotal)) {
+                if (!t_inGroup && *(int*)(ctx + a3d::kCtxProgressCount) >= *(int*)(ctx + a3d::kCtxProgressTotal)) {
                     DropSharedTextures();
                     ClosePass();
                     if (g_profMode == 3) g_profTid = 0;
@@ -1448,6 +2006,30 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         } inDraw(ctx, ours);
         // RANDAMU_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels
         static const bool s_aePix = GetEnvironmentVariableA("RANDAMU_A3D_AEPIX", ev, sizeof(ev)) > 0 && ev[0] == '1';
+        // the group drawing: the representative of a group draws the whole group
+        if (ours && !t_inGroup && GroupDrawOn() && IsMine(L)) {
+            ParamSnapshot gs;
+            LayerKey gk;
+            const int* tm = KeyOf(L, &gk) ? ArtTimeOf(gk) : nullptr;
+            const MergeLayerPlan* lp = nullptr;
+            std::shared_ptr<const MergePlan> plan;
+            if (tm && ParamsFor(L, tm, &gs)) plan = MergePlanOf(L, tm, gs, false, &lp);
+            static LogLimit gl;
+            if (gl.Take(10))
+                RLog("group: draw sub %d tm %d plan %d subs %d", sb, tm ? tm[0] : -1, (int)(bool)plan, lp ? (int)lp->subs.size() : -1);
+            if (lp && sb >= 0 && sb < (int)lp->subs.size() && lp->subs[sb].cluster >= 0 &&
+                lp->subs[sb].cluster < (int)lp->clusters.size()) {
+                t_aeGpu = true;
+                if (DrawGroup(self, ctx, a7, L, gs, lp->clusters[lp->subs[sb].cluster], lp->subs[sb].copy)) {
+                    // what the representative's own draw does last: the progress count
+                    const int pn = ++*(int*)(ctx + a3d::kCtxProgressCount);
+                    void*** pr = *(void****)(ctx + a3d::kCtxProgress);
+                    ((void (*)(void*, uintptr_t, uintptr_t))(**pr))(pr, (uintptr_t)(unsigned)pn,
+                                                                     *(unsigned*)(ctx + a3d::kCtxProgressTotal));
+                    return 0;
+                }
+            }
+        }
         if (ours && !s_aePix) {
             t_aeGpu = true;
             t_gt = rnd::GpuAeSpanTimes(), t_gtAll = -1, t_gtRows = 0;
@@ -1455,9 +2037,14 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             t_iterIn = t_iterOut = tB;
             for (int k = 0; k < 4; k++) t_helperMs[k] = 0, t_helperN[k] = 0;
             if (s_prof) g_profTid = GetCurrentThreadId();
-            const uintptr_t r = DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
+            static const bool s_clone = GetEnvironmentVariableA("RANDAMU_GROUP_CLONE", ev, sizeof(ev)) > 0 && ev[0] == '1';
+            alignas(16) unsigned char clone[a3d::kSurfaceSize], entryBuf[a3d::kEntrySize];
+            alignas(16) double cm4[16];
+            const bool useClone = s_clone && CloneForCheck(self, ctx, L, sb, clone, entryBuf, cm4);
+            const uintptr_t r = DrawCopyOurs(useClone ? (uintptr_t)clone : self, ctx, a3, a4, a5, a6, a7);
+            if (useClone) FreeSurface(clone);
             if (g_profMode == 1) g_profTid = 0;
-            if (s_time) {
+            if (s_time && !t_inGroup) {
                 auto d = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
                     return std::chrono::duration<double, std::milli>(b - a).count();
                 };
@@ -1808,6 +2395,21 @@ void ProfLoop()
                 char key[1024];
                 snprintf(key, sizeof(key), "a3d+%llx our+%llx outer+%llx %s", (unsigned long long)a3dRa, (unsigned long long)ourRa,
                          (unsigned long long)ourOuter, chain.c_str());
+                if (g_profMode == 4) {  // the exact frames (module+offset), innermost first
+                    std::string fr;
+                    for (int f = 0; f < nf && f < 14; f++) {
+                        HMODULE m = nullptr;
+                        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           (LPCSTR)frames[f], &m);
+                        char name[MAX_PATH] = "?";
+                        if (m) GetModuleFileNameA(m, name, MAX_PATH);
+                        const char* bn = strrchr(name, '\\');
+                        char one[96];
+                        snprintf(one, sizeof(one), " %s+%llx", bn ? bn + 1 : name, (unsigned long long)(frames[f] - (uintptr_t)m));
+                        fr += one;
+                    }
+                    snprintf(key, sizeof(key), "%s", fr.c_str());
+                }
                 std::lock_guard<std::mutex> lk(g_profMu);
                 g_profHits[key]++;
                 if (++g_profTotal % 20000 == 0) {
@@ -1869,8 +2471,22 @@ int HookPurgeLoop(size_t n, void* fn, void* r, int f)
     return g_origPurgeLoop(n, fn, r, f);
 }
 
+// RANDAMU_GROUP_TRACE=1: Advanced3D's failed internal checks (U_ReportFailedVerification, then it throws 3)
+typedef void (*ReportFailedFn)(int, int, int, const char*);
+ReportFailedFn g_origReportFailed = nullptr;
+void HookReportFailed(int a, int line, int c, const char* msg)
+{
+    RLog("a3d check failed: line %d (%d, %d) %s", line, a, c, msg ? msg : "(null)");
+    g_origReportFailed(a, line, c, msg);
+}
+
 void InstallA3dDrawHook(HMODULE a3d)
 {
+    if (GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0) {
+        void** s = FindImportSlot(a3d, "U.dll", "U_ReportFailedVerification");
+        if (s) g_origReportFailed = (ReportFailedFn)*s, WritePtr(s, (void*)&HookReportFailed);
+        RLog("a3d check hook: %s", s ? "installed" : "not found");
+    }
     {
         char ev[8] = {0};
         if (GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1') {
@@ -1916,6 +2532,46 @@ void InstallA3dDrawHook(HMODULE a3d)
     RLog("a3d draw hook: %s (refcon %p nth %p)", ok ? "installed" : "failed", (void*)g_extractRefcon, (void*)g_nthLayer);
 }
 
+// ---- the group drawing: every layer entry keeps the depth-bias index it has when no copy is grouped. sub_180008710
+// numbers the entries in order (+0x30 and +0x34 = the render layer's index); sub_180013160 makes each surface's depth
+// bias from +0x34 (index * 1e-7), which decides where surfaces meeting in 3D cross. A group makes a layer's sub-layers
+// fewer, so the following indices would shift. The last call of each entry in sub_180008710 is AEGP_GetLayerIndex
+// with entry + 176: there +0x34 is set to the index the entry would have without groups (a merged layer's sub-layer:
+// its first entry's index + its copy; later entries: + the copies grouped before them).
+typedef A_Err (*GetLayerIndexFn)(AEGP_LayerH, A_long*);
+GetLayerIndexFn g_origGetLayerIndex = nullptr;
+LogLimit g_biasLog;
+A_Err HookGetLayerIndex(AEGP_LayerH L, A_long* idx)
+{
+    const A_Err e = g_origGetLayerIndex(L, idx);
+    const uintptr_t ra = (uintptr_t)_ReturnAddress();
+    if (e || !idx || !t_passOpen || ra < g_a3dLo || ra >= g_a3dHi || !GroupDrawOn()) return e;
+    unsigned char* entry = (unsigned char*)idx - 176;
+    const int v17 = *(const int*)(entry + 0x34);
+    if (*(const int*)(entry + 0x30) != v17) return e;  // not an entry being built (sanity)
+    int index = v17 + t_biasShift;
+    if (IsMine(L) && MergeOnFor(L)) {
+        LayerKey k;
+        ParamSnapshot s;
+        const int* tm = KeyOf(L, &k) ? ArtTimeOf(k) : nullptr;
+        const MergeLayerPlan* lp = nullptr;
+        std::shared_ptr<const MergePlan> plan;
+        if (tm && ParamsFor(L, tm, &s)) plan = MergePlanOf(L, tm, s, false, &lp);
+        if (lp && !lp->clusters.empty()) {
+            if (t_biasLayer != L) t_biasLayer = L, t_biasLayerSubs = 0, t_biasBase = v17 + t_biasShift;
+            const int j = t_biasLayerSubs++;
+            if (j < (int)lp->subs.size()) index = t_biasBase + lp->subs[j].copy;
+            if (j == (int)lp->subs.size() - 1) t_biasShift += s.p.count - (int)lp->subs.size(), t_biasLayer = nullptr;
+        }
+    }
+    if (index != v17) {
+        *(int*)(entry + 0x34) = index;
+        int n = 0;
+        if (g_biasLog.Take(4, true, &n)) RLog("group: depth-bias index %d -> %d (shift %d)", v17, index, t_biasShift);
+    }
+    return e;
+}
+
 void InstallQualityHook()
 {
     HMODULE a3d = GetModuleHandleA("Advanced3D.aex");
@@ -1933,6 +2589,9 @@ void InstallQualityHook()
     g_origGetQuality = (GetLayerQualityFn)*slot;
     bool ok = WritePtr(slot, (void*)&HookGetLayerQuality);
     RLog("merge: quality hook %s (table %p slot %p)", ok ? "installed" : "failed", (void*)ls, (void*)slot);
+    void** islot = (void**)&ls->AEGP_GetLayerIndex;
+    g_origGetLayerIndex = (GetLayerIndexFn)*islot;
+    RLog("group: layer index hook %s", WritePtr(islot, (void*)&HookGetLayerIndex) ? "installed" : "failed");
     InstallDownsampleHook(g_a3dLo, g_a3dHi);
     InstallA3dDrawHook(a3d);
 }

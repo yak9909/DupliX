@@ -85,6 +85,9 @@ struct GpuAeSpanTimes {
     long long regionPx = 0;
 };
 bool GpuAeSpans(const GpuAeSpanJob& job, double* msOut = nullptr, GpuAeSpanTimes* times = nullptr);
+// Several jobs drawn in order with one upload and one download (one kernel per job on one stream): they must share
+// the target, the texture's pixels and the table. False: nothing drawn (the caller draws them one by one).
+bool GpuAeSpansBatch(const GpuAeSpanJob* jobs, int n, double* msOut = nullptr);
 
 // Where the rasterizer logs failures (printf-style; the effect passes its log).
 void GpuRasterSetLog(void (*fn)(const char*, ...));

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -101,7 +102,17 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         if (it != g_last.end()) return it->second;
     }
     MergeSceneInput in;
-    if (!ReadMergeScene(layer, layerTime, &in)) {
+    const auto tRead = std::chrono::steady_clock::now();
+    const bool readOk = ReadMergeScene(layer, layerTime, &in);
+    {
+        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static LogLimit lg;
+        if (s_time && lg.Take(200))
+            RLog("group time: scene read %.2f ms (%zu planes, %zu layers)",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tRead).count(), in.planes.size(),
+                 in.layers.size());
+    }
+    if (!readOk) {
         static LogLimit warned;
         if (warned.Take(5)) RLog("merge: scene read failed (comp %d layer %d): no merging", comp, id);
         return nullptr;
@@ -111,7 +122,15 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     // the log generation (changes only when a test switches logs): each test render builds and logs its own plan
     const unsigned long long h = HashMergeScene(in) ^ ((unsigned long long)RLogGeneration() * 0x9E3779B97F4A7C15ull);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in] {
-        MergePlan p = BuildMergePlan(in);
+        // the earlier group planes (RANDAMU_MERGE_OLD=1) or the group drawing (isolated copies drawn by AE's functions)
+        char ov[4] = {0};
+        const bool old = GetEnvironmentVariableA("RANDAMU_MERGE_OLD", ov, sizeof(ov)) > 0 && ov[0] == '1';
+        const auto tPlan = std::chrono::steady_clock::now();
+        MergePlan p = old ? BuildMergePlan(in) : BuildIsolatedGroupPlan(in);
+        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static LogLimit lg;
+        if (s_time && lg.Take(200))
+            RLog("group time: plan %.2f ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tPlan).count());
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
         char fv[96] = {0};
         double wp[3];

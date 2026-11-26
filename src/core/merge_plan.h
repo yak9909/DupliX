@@ -124,6 +124,14 @@ inline long long MergeLayerKey(int compItemId, int layerId) { return ((long long
 // at the depth of its nearest copy; the others one by one. A group of one copy is drawn as that copy.
 MergePlan BuildSingleGroupPlan(const MergeSceneInput& in);
 
+// The group drawing (11/26, spec: HANDOFF 11/26 12 時): copies of a layer whose screen quads (grown by marginPx)
+// overlap no other surface (other layers, copies of other layers) and only copies that do the same form the
+// layer's group; the others are drawn one by one. The group is one sub-layer: its representative copy (the largest
+// on screen), with MergeSub {rep, 0}. At its draw, DupliX builds every group copy's surface with AE's own functions
+// and has AE order and draw them (as AE would if they were sub-layers): nothing else overlaps them, so the result is
+// AE's. A layer with a copy that cannot be placed on screen (behind the camera) is drawn one by one.
+MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx = 3);
+
 struct MergeOptions {
     double marginPx = 3;          // screen overlap tests grow every quad by this much (edge filtering)
     double maxAreaScreens = 2;    // the groups' textures together cover at most this many comp screens
