@@ -1,12 +1,22 @@
 # 引き継ぎメモ（最新: 2026-11-27 1 時。再開はこの冒頭の「再開の手順」から）
 
-## 再開の手順（2026-11-27 1 時、軽量化の続き・利用者への報告待ち）
+## 再開の手順（2026-11-27 1 時、軽量化の続き。利用者がセッションをクリアし、そのあと自分で試す）
 
-- **済み（この節の commit）:** 詳細は `docs/experiments/2026-11-27-dev-log.md`。(1) 最新の版の試験一式。(2) GPU を温める試み（入れなかった。フレームごとでは足りない）。(3) 組の描画の「AE の行の前の準備」40 → 10〜15 ms（Test C）: 環境変数の読み取りを `hook/env_cache.h` で覚え置き、描画の回の中のフックでは `IsMineInPass`（AE のロックを取る comp の描画方式の問い合わせを回ごとに 1 回）。
-- **確かめた試験（この節の版）:** EDIT ALL PASS、MERGE ALL PASS（`RANDAMU_GRAPH_CHECK=1`）、利用者のシーン Test・A・B・C・D 各 8 フレーム オン＝オフ差 0。単体 81・GPU は (2) を戻した後の版で合格（(3) は core と GPU を変えていない）。
-- **今の内訳（Test C、3271 枚、CPU）:** 計画 約 25、並べ替え 約 33、面の作成 約 6、組の描画の準備 10〜15、行の処理 約 4、GPU の前の CPU 約 22 → 約 100 ms。GPU はクロックが上がっていれば 13〜17 ms。
-- **気を付けること:** 計測の時、AE 以外のプロセス（CUDA を使う python.exe と Android エミュレーター MuMu）が GPU を 100% 使っていて、GPU の段が 230〜285 ms 待たされる回があった。GPU の時間は当てにならない。利用者に伝える。
-- **次の 1 手:** 利用者に報告（GPU の取り合い、NVIDIA の電源設定「パフォーマンス最大化を優先」の案内）。続けるなら CPU の残り: 並べ替え（辺の作成 25〜35 ms）、計画（対の判定 17 ms）、GPU の前の区間のまとめ（16 ms）。
+- **今の状態:** commit 30e09ec まで push 済み、作業ツリーはきれい。`dev_plugins\randamu.aex` はこの commit のビルド（Release）。
+  利用者は「セッションをクリアして、テストはその後やります」と言った。**再開したら、利用者の試用の結果（画面での速さ・見た目）を聞いてから次へ進む。**
+- **この日の流れ（詳細は `docs/experiments/2026-11-27-dev-log.md`）:**
+  1. Test D の「切れ目が動く」報告は AE 自身の描き方と分かり、利用者の判断で閉じた（下の 0 時の節）。
+  2. 11/26 の最後の版（b0c63d7）の未確認の試験をすべて回して合格。
+  3. GPU のクロックの差（待機 345 MHz と最大 2100 MHz）でタイル描きが 13〜17 ms と 78〜92 ms に分かれる。フレームの始めに空回りの処理で温める案は、AE の中では描画まで約 100 ms しかなく安定しないので入れなかった（コードは戻した）。利用者には NVIDIA コントロールパネルで AfterFX.exe の「電源管理モード」を「パフォーマンス最大化を優先」にする案内をした（したかどうかは未確認）。
+  4. 組の描画の「AE の行の前の準備」を 40 → 10〜15 ms（Test C）に縮めた。原因は DupliX 側: (a) 診断用の環境変数をコピーごとに読んでいた → `src/hook/env_cache.h` の `EnvCache`（250 ms 覚え置き。試験の `$.setenv` も反映される）、(b) `IsMine` → `LayerIsLive` が comp の描画方式を BEE に問うたびに AE の排他ロックを取る（コピーごとに約 6 回）→ 描画の回の中のフックだけ `IsMineInPass`（回ごとにレイヤーの答えを覚え、`ClosePass` で捨てる。UI や Count・Rects は毎回確かめる）。
+- **確かめた試験（30e09ec）:** EDIT ALL PASS（`run_preview.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -Layer "flower_blue.png" -Variants "pv_anim_on100,pv_on20" -Edit 5`）、MERGE ALL PASS（`$env:RANDAMU_GRAPH_CHECK=1; run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`）、`run_user_merge.ps1` で Test・A・B・C・D 各 8 フレーム オン＝オフ差 0、単体 81・GPU ALL PASS（core と GPU はこの日の最終版で変えていない）。
+- **今の内訳（Test C、3271 枚、画面の経路、1 フレーム、CPU）:** 計画 約 25、AE の並べ替え 約 33（うち辺の作成 25〜35）、面の作成 約 6、組の描画の準備 10〜15、行の処理 約 4、GPU の前の CPU 約 22（並べ替え 5、区間のまとめ 16）→ 約 100 ms。GPU はクロックが上がっていれば 13〜17 ms。高速モードは同じ条件で 55〜145 ms（ぶれ大）。
+- **気を付けること（計測）:**
+  - 計測の時、AE 以外のプロセス（CUDA を使う python.exe と Android エミュレーター MuMu Player）が GPU を 100% 使っていて、GPU の段で 1〜2 ms の処理が 230〜285 ms 待たされる回があった。利用者に伝え済み。GPU の時間を測る前に `nvidia-smi` で GPU の使用率と使っているプロセスを確かめる。利用者のプロセスは止めない。
+  - 計測: `$env:RANDAMU_PV_COUNTS='3271'; $env:RANDAMU_A3D_TIME='2'; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 8 -IntervalMs 3000 -Variants "pv_fast3271,pv_on3271"` → `build\test\preview\plugin.log` の `group time:`・`graph time:`。GPU の段ごとは `RANDAMU_GPU_KTIME=1`（`gpu ae span` の行）。
+  - どこで時間を使っているかは `RANDAMU_A3D_PROF=4`（組の描画の中を標本化、`RANDAMU_A3D_PROF_N=300` で少ない標本でも出る）。番地 `randamu.aex+xxxx` は PDB（`dev_plugins\randamu.pdb`）を dbghelp で引いて関数名と行に直す（Python の ctypes で `SymLoadModuleEx`・`SymFromAddr`・`SymGetLineFromAddr64`。スクラッチパッドの `sym.py` は消えているかもしれないので作り直す）。
+  - AE を動かす試験は 1 つずつ（`run_jsx.ps1` は AE が動いていると止まる）。長いものは裏で回す。
+- **次の 1 手:** 利用者の試用の結果を聞く。続けるなら CPU の残りの大きい順に: (1) 並べ替えの辺の作成（`HookBuildEdges`・`BuildEdgesFast`、25〜35 ms。対の判定は `core/ae_pair` で 8 スレッド済み）、(2) 計画の対の判定（`BuildIsolatedGroupPlan`、約 17 ms）、(3) GPU の前の区間のまとめ（`gpu_raster.cpp` の `AeSpansImpl`、約 16 ms）。どれも同じ絵のまま（完全一致は必須）。11/26 22:00 の節の (2)「AE の面ごとの処理の置き換え」は、準備が 10〜15 ms まで縮んだので優先度は下がった。
 
 ## 再開の手順（2026-11-27 0 時、Test D の「切れ目が動く」の調査を終えて利用者への報告・判断待ち）
 
