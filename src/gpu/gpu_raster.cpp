@@ -477,9 +477,9 @@ struct AeHost {
     CUcontext ctx = nullptr;
     CUstream stream = nullptr;
     CUmodule mod = nullptr;
-    CUfunction fn = nullptr, fnOrdered = nullptr;
-    CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0;
-    size_t texCap = 0, regionCap = 0, rowsCap = 0;
+    CUfunction fn = nullptr, fnOrdered = nullptr, fnWalk = nullptr, fnTiles = nullptr;
+    CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0, states = 0;
+    size_t texCap = 0, regionCap = 0, rowsCap = 0, statesCap = 0;
     unsigned long long texKey = ~0ull;
     std::vector<unsigned char> shadow;  // the pixels of the texture on the GPU (host copy)
     int shadowW = 0, shadowH = 0, shadowRb = 0;
@@ -507,8 +507,35 @@ namespace {
 bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTimes* times);
 }
 bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut, GpuAeSpanTimes* times) { return AeSpansImpl(&j, 1, msOut, times); }
+// RANDAMU_BATCH_DUMP=<file> (tests): the first batch of 1000 jobs or more is written to the file (the texture, the
+// table, every job's core and rows) for tests/gpu to replay without AE
+void DumpBatch(const GpuAeSpanJob* jobs, int n)
+{
+    static std::atomic<bool> done{false};
+    char path[MAX_PATH] = {0};
+    if (n < 1000 || done.load() || GetEnvironmentVariableA("RANDAMU_BATCH_DUMP", path, sizeof(path)) <= 0) return;
+    long long spans = 0;
+    for (int q = 0; q < n; q++) spans += jobs[q].nRows;
+    if (spans < 100000) return;  // a full frame's batch (AE draws a viewer frame at a lower resolution first)
+    if (done.exchange(true)) return;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") || !f) return;
+    const AeTex8& t = jobs[0].tex;
+    const int hdr[4] = {n, t.width, t.height, t.rowbytes};
+    fwrite(hdr, sizeof(hdr), 1, f);
+    fwrite(t.data, 1, (size_t)t.rowbytes * t.height, f);
+    fwrite(jobs[0].rcp, sizeof(float), 256, f);
+    for (int q = 0; q < n; q++) {
+        fwrite(&jobs[q].core, sizeof(AeSpanCore), 1, f);
+        fwrite(&jobs[q].nRows, sizeof(int), 1, f);
+        fwrite(jobs[q].rows, sizeof(int), 3 * (size_t)jobs[q].nRows, f);
+    }
+    fclose(f);
+    GpuLog("gpu ae span: batch of %d jobs written to %s", n, path);
+}
 bool GpuAeSpansBatch(const GpuAeSpanJob* jobs, int n, double* msOut)
 {
+    DumpBatch(jobs, n);
     return n > 0 && AeSpansImpl(jobs, n, msOut, nullptr);
 }
 namespace {
@@ -539,6 +566,8 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             if (!r) r = cu.moduleLoadData(&g_ae.mod, kAeSpanPtx);
             if (!r) r = cu.moduleGetFunction(&g_ae.fn, g_ae.mod, "AeSpanRows");
             if (!r) r = cu.moduleGetFunction(&g_ae.fnOrdered, g_ae.mod, "AeSpanRowsOrdered");
+            if (!r && cu.moduleGetFunction(&g_ae.fnWalk, g_ae.mod, "AeSpanWalk")) g_ae.fnWalk = nullptr;
+            if (!r && cu.moduleGetFunction(&g_ae.fnTiles, g_ae.mod, "AeSpanTiles")) g_ae.fnTiles = nullptr;
             if (r) {
                 GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
                 g_ae.ctx = nullptr;
@@ -584,16 +613,16 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             if (r[2] > r[1]) start[(size_t)(r[0] - yMin) + 1]++;
         }
     for (int k = 0; k < nY; k++) start[(size_t)k + 1] += start[k];
-    // (y, x0, x1, segment x, segment offset, job) per span
-    std::vector<int> packed(allRows * 6);
+    // (y, x0, x1, segment x, segment offset, job, first kept state, 0) per span (ae_span.cu)
+    std::vector<int> packed(allRows * 8);
     {
         std::vector<int> fill(start.begin(), start.end() - 1);
         for (int q = 0; q < nj; q++)
             for (int i = 0; i < js[q].nRows; i++) {
                 const int* r = js[q].rows + 3 * i;
                 if (r[2] <= r[1]) continue;
-                int* o = &packed[(size_t)fill[r[0] - yMin]++ * 6];
-                o[0] = r[0], o[1] = r[1], o[2] = r[2], o[3] = 0, o[4] = 0, o[5] = q;
+                int* o = &packed[(size_t)fill[r[0] - yMin]++ * 8];
+                o[0] = r[0], o[1] = r[1], o[2] = r[2], o[3] = 0, o[4] = 0, o[5] = q, o[6] = 0, o[7] = 0;
             }
     }
     // the target's touched pixels: each row's spans merged into segments, packed one after another; a block per row
@@ -606,7 +635,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         if (a == b) continue;
         gStart.push_back(a);
         iv.clear();
-        for (int e = a; e < b; e++) iv.push_back({packed[(size_t)e * 6 + 1], packed[(size_t)e * 6 + 2]});
+        for (int e = a; e < b; e++) iv.push_back({packed[(size_t)e * 8 + 1], packed[(size_t)e * 8 + 2]});
         std::sort(iv.begin(), iv.end());
         const size_t s0 = segs.size();
         for (const auto& v : iv) {
@@ -615,7 +644,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         }
         for (size_t s = s0; s < segs.size(); s++) segs[s].off = (int)regionBytes, regionBytes += (size_t)(segs[s].x1 - segs[s].x0) * 4;
         for (int e = a; e < b; e++) {
-            int* o = &packed[(size_t)e * 6];
+            int* o = &packed[(size_t)e * 8];
             // the row's segment starting at or before x0 holds the span
             size_t lo = s0, hi = segs.size();
             while (hi - lo > 1) {
@@ -628,12 +657,26 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
     }
     const int nGroups = (int)gStart.size();
     gStart.push_back((int)allRows);
+    // the tiled drawing: each span's kept states (every x0 < x < x1 with x % 8 == 0) and each row's x range
+    constexpr int kTile = 8;  // AE_TILE
+    long long nStates = 0;
+    for (size_t e = 0; e < allRows; e++) {
+        int* o = &packed[e * 8];
+        o[6] = (int)nStates;
+        nStates += (o[2] - 1) / kTile - o[1] / kTile;
+    }
+    std::vector<int> gSpan((size_t)nGroups * 2);
+    for (int g = 0; g < nGroups; g++) {
+        int x0 = INT_MAX, x1 = INT_MIN;
+        for (int e = gStart[g]; e < gStart[(size_t)g + 1]; e++) x0 = std::min(x0, packed[(size_t)e * 8 + 1]), x1 = std::max(x1, packed[(size_t)e * 8 + 2]);
+        gSpan[2 * (size_t)g] = x0, gSpan[2 * (size_t)g + 1] = x1;
+    }
     std::vector<AeSpanCore> cores((size_t)nj);
     for (int q = 0; q < nj; q++) cores[q] = js[q].core;
     const size_t rowsBytes = packed.size() * 4, coresBytes = cores.size() * sizeof(AeSpanCore),
-                 gBytes = gStart.size() * 4;
+                 gBytes = gStart.size() * 4 + gSpan.size() * 4;
     const size_t texBytes = (size_t)j.tex.rowbytes * j.tex.height;
-    if (!GrowDev(&g_ae.region, &g_ae.regionCap, regionBytes) ||
+    if (!GrowDev(&g_ae.region, &g_ae.regionCap, regionBytes) || !GrowDev(&g_ae.states, &g_ae.statesCap, (size_t)nStates * 24 + 8) ||
         !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes + coresBytes + gBytes) ||
         !GrowHost(&g_ae.stage, &g_ae.stageCap, regionBytes + rowsBytes + coresBytes + gBytes)) {
         GpuLog("gpu ae span: buffers not allocated (%zu bytes): this copy on the CPU", regionBytes);
@@ -674,18 +717,33 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                     (size_t)(sg.x1 - sg.x0) * 4);
     std::memcpy(g_ae.stage + regionBytes, packed.data(), rowsBytes);
     std::memcpy(g_ae.stage + regionBytes + rowsBytes, cores.data(), coresBytes);
-    std::memcpy(g_ae.stage + regionBytes + rowsBytes + coresBytes, gStart.data(), gBytes);
+    std::memcpy(g_ae.stage + regionBytes + rowsBytes + coresBytes, gStart.data(), gStart.size() * 4);
+    std::memcpy(g_ae.stage + regionBytes + rowsBytes + coresBytes + gStart.size() * 4, gSpan.data(), gSpan.size() * 4);
     const double tg = nowMs();
     if (cu.htodAsync(g_ae.region, g_ae.stage, regionBytes, st) ||
         cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes + coresBytes + gBytes, st))
         return false;
-    // one launch: a block per target row, its spans in order
+    // the tiled drawing (a thread per span walks it, then a thread per 8 pixels of a row draws them, every span in
+    // order), or RANDAMU_GPU_TILES=0: a block per target row, its spans one after another
     {
+        static const bool s_tiles = [] {
+            char v[4] = {0};
+            return !(GetEnvironmentVariableA("RANDAMU_GPU_TILES", v, sizeof(v)) > 0 && v[0] == '0');
+        }();
         CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rcpD = g_ae.rcp, regD = g_ae.region, rowsD = g_ae.rows,
-                    gD = g_ae.rows + rowsBytes + coresBytes;
-        int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = nGroups;
-        void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};
-        if (cu.launch(g_ae.fnOrdered, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr)) {
+                    gD = g_ae.rows + rowsBytes + coresBytes, gsD = gD + gStart.size() * 4, stD = g_ae.states;
+        int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = nGroups, ns = (int)allRows;
+        CUresult lr = (CUresult)0;
+        if (s_tiles && g_ae.fnWalk && g_ae.fnTiles) {
+            void* wargs[] = {&coresD, &rowsD, &ns, &stD};
+            lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
+            void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD};
+            if (!lr) lr = cu.launch(g_ae.fnTiles, (unsigned)n, 1, 1, 64, 1, 1, 0, st, targs, nullptr);
+        } else {
+            void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};
+            lr = cu.launch(g_ae.fnOrdered, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr);
+        }
+        if (lr) {
             g_failed = true;
             GpuLog("gpu ae span: launch failed: copies drawn on the CPU from now on");
             return false;

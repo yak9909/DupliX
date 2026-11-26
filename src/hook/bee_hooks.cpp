@@ -851,11 +851,79 @@ AEGP_WorldH CopyOfWorld(AEGP_WorldH src)
     for (A_long y = 0; y < h; y++) std::memcpy(d + (size_t)y * orb, s + (size_t)y * rb, (size_t)w * bpp);
     return out;
 }
+// ---- the shared textures without a copy per sub-layer: AE disposes each sub-layer's texture after its draw
+// (Canvas Suite AEGP_DisposeTexture, Advanced3D's v10 table). With that hooked, a shared texture request gets the
+// shared master itself, and its dispose is skipped (the masters are disposed at the end of the frame's drawing,
+// DropSharedTextures). Without the hook: a copy of the master, as before. RANDAMU_TEX_NOCOPY=0: copies.
+typedef A_Err (*DisposeTexFn)(PR_RenderContextH, AEGP_RenderLayerContextH, AEGP_WorldH);
+DisposeTexFn g_origDisposeTex = nullptr;
+bool g_disposeHooked = false;
+std::atomic<long long> g_disposeSkipped{0};
+bool IsSharedMaster(AEGP_WorldH w);
+A_Err HookDisposeTexture(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, AEGP_WorldH w)
+{
+    if (w && IsSharedMaster(w)) {
+        g_disposeSkipped++;
+        return A_Err_NONE;
+    }
+    return g_origDisposeTex(rc, lc, w);
+}
+bool TexNoCopy()
+{
+    static const bool on = [] {
+        char v[4] = {0};
+        return !(GetEnvironmentVariableA("RANDAMU_TEX_NOCOPY", v, sizeof(v)) > 0 && v[0] == '0');
+    }();
+    return on && g_disposeHooked;
+}
+
+// The texture world AE got last on this thread and the shared master it has the pixels of: the group drawing's
+// KeepTexture knows two copies' textures are equal without comparing their pixels. Valid while no other texture was
+// fetched since (g_texGen unchanged): AE draws a surface right after fetching its texture.
+struct TexOrigin {
+    const unsigned char* base = nullptr;
+    AEGP_WorldH master = nullptr;
+    long long gen = -1;
+};
+thread_local TexOrigin t_texOrigin;
+void NoteTexOrigin(AEGP_WorldH w, AEGP_WorldH master)
+{
+    AEGP_WorldSuite3* ws = WorldSuite();
+    PF_Pixel8* p = nullptr;
+    AEGP_WorldType type = AEGP_WorldType_NONE;
+    t_texOrigin = TexOrigin();
+    if (!ws || !w || ws->AEGP_GetType(w, &type) || type != AEGP_WorldType_8 || ws->AEGP_GetBaseAddr8(w, &p) || !p) return;
+    t_texOrigin = {(const unsigned char*)p, master, (long long)g_texGen.load()};
+}
+// the master of the texture at base (null if unknown)
+AEGP_WorldH TexMasterOf(const unsigned char* base)
+{
+    return base && base == t_texOrigin.base && t_texOrigin.gen == (long long)g_texGen.load() ? t_texOrigin.master : nullptr;
+}
+// every thread's live masters (a dispose may come on any thread)
+std::mutex g_mastersMu;
+std::vector<AEGP_WorldH> g_masters;
+bool IsSharedMaster(AEGP_WorldH w)
+{
+    std::lock_guard<std::mutex> lk(g_mastersMu);
+    return std::find(g_masters.begin(), g_masters.end(), w) != g_masters.end();
+}
+void AddSharedMaster(AEGP_WorldH w)
+{
+    std::lock_guard<std::mutex> lk(g_mastersMu);
+    g_masters.push_back(w);
+}
 void DropSharedTextures()
 {
     AEGP_WorldSuite3* ws = WorldSuite();
-    for (SharedTex& s : t_shared)
-        if (ws && s.master) ws->AEGP_Dispose(s.master);
+    for (SharedTex& s : t_shared) {
+        if (!s.master) continue;
+        {
+            std::lock_guard<std::mutex> lk(g_mastersMu);
+            g_masters.erase(std::remove(g_masters.begin(), g_masters.end(), s.master), g_masters.end());
+        }
+        if (ws) ws->AEGP_Dispose(s.master);
+    }
     t_shared.clear();
 }
 bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned u, const double* v2, const double* rect)
@@ -881,11 +949,12 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
             shareLayer = layer;
             for (const SharedTex& s : t_shared)
                 if (SameRequest(s, ctx, layer, u, v2, rect)) {
-                    AEGP_WorldH c = CopyOfWorld(s.master);
+                    AEGP_WorldH c = TexNoCopy() ? s.master : CopyOfWorld(s.master);
                     if (!c) break;
                     *world = (void*)c;
                     std::memcpy(m3, s.m3, sizeof(s.m3));
                     g_texGen++;  // a new world (maybe at a freed one's address): the GPU copy is uploaded again
+                    NoteTexOrigin(c, s.master);
                     int n = 0;
                     if (g_texShareLog.Take(3, true, &n))
                         RLog("merge: texture shared %lld (fetched %lld)", ++g_texShared, g_texFetched.load());
@@ -903,9 +972,11 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         if (rect) std::memcpy(s.rect, rect, sizeof(s.rect));
         std::memcpy(s.m3, m3, sizeof(s.m3));
         s.master = CopyOfWorld((AEGP_WorldH)*world);
-        if (s.master) t_shared.push_back(s), ++g_texFetched;
+        if (s.master) t_shared.push_back(s), AddSharedMaster(s.master), ++g_texFetched;
     }
     g_texGen++;
+    if (shareLayer && !r && *world && !t_shared.empty() && t_shared.back().layer == shareLayer)
+        NoteTexOrigin((AEGP_WorldH)*world, t_shared.back().master);
     LogTexTime(trace, "tex", t0);
     if (!r) LogTexArgs(trace, u, v2, rect, world, m3);
     if (!r) SwapGroupTexture(trace, world, m3, "tex");
@@ -1244,6 +1315,16 @@ void InstallBoundsHook(void** t10)
     if (sn < 0 || sb < 0) {
         RLog("merge: bounds hook not installed (slots %d %d)", sn, sb);
         return;
+    }
+    {
+        int sd = -1;
+        for (int i = 0; i < 60; i++)
+            if (t10[i] == (void*)g_canvas8->AEGP_DisposeTexture) { sd = i; break; }
+        if (sd >= 0) {
+            g_origDisposeTex = (DisposeTexFn)t10[sd];
+            g_disposeHooked = WritePtr(&t10[sd], (void*)&HookDisposeTexture);
+        }
+        RLog("merge: texture dispose hook %s (v10 slot %d)", g_disposeHooked ? "installed" : "not installed", sd);
     }
     g_origGetNumLayers = (GetNumLayersFn)t10[sn];
     g_origGetBounds = (GetBoundsFn)t10[sb];
@@ -2276,16 +2357,20 @@ struct GroupJob {
     rnd::AeTex8 tex;
     // the texture's pixels: AE disposes a surface's texture at the end of its draw, before the group is drawn
     std::shared_ptr<std::vector<unsigned char>> texKeep;
+    AEGP_WorldH texMaster = nullptr;  // the shared master the texture is a copy of (null: unknown)
 };
 thread_local std::vector<GroupJob> t_groupJobs;
-// the last kept texture (the group's copies share one: kept once)
-std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t)
+// the last kept texture (the group's copies share one: kept once). *master: t's shared master, if known
+std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AEGP_WorldH* master)
 {
     const size_t bytes = (size_t)t.rowbytes * t.height;
+    *master = TexMasterOf(t.data);
     if (!t_groupJobs.empty()) {
         const GroupJob& last = t_groupJobs.back();
         const rnd::AeTex8& k = last.tex;
         bool same = k.width == t.width && k.height == t.height && k.rowbytes == t.rowbytes && last.texKeep;
+        // copies of the same master: the same pixels
+        if (same && *master && last.texMaster == *master) return last.texKeep;
         for (int y = 0; same && y < t.height; y++)
             same = !std::memcmp(k.data + (size_t)y * t.rowbytes, t.data + (size_t)y * t.rowbytes, (size_t)t.width * 4);
         if (same) return last.texKeep;
@@ -2386,7 +2471,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
             pj.gj = gj;
             pj.rows = std::move(tri);
             pj.p = job.p;
-            pj.texKeep = KeepTexture(job.tex);
+            pj.texKeep = KeepTexture(job.tex, &pj.texMaster);
             pj.tex = job.tex;
             pj.tex.data = pj.texKeep->data();
             pj.gj.tex = pj.tex;
@@ -2923,7 +3008,11 @@ void ProfLoop()
                 }
                 std::lock_guard<std::mutex> lk(g_profMu);
                 g_profHits[key]++;
-                if (++g_profTotal % 20000 == 0) {
+                static const int s_every = [] {  // RANDAMU_A3D_PROF_N: log every this many samples
+                    char v[16] = {0};
+                    return GetEnvironmentVariableA("RANDAMU_A3D_PROF_N", v, sizeof(v)) > 0 ? std::max(100, atoi(v)) : 20000;
+                }();
+                if (++g_profTotal % s_every == 0) {
                     std::vector<std::pair<int, std::string>> v;
                     for (auto& kv : g_profHits) v.push_back({kv.second, kv.first});
                     std::sort(v.rbegin(), v.rend());

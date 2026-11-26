@@ -231,8 +231,173 @@ static void GpuSpanCapture(const std::string& dir)
     CHECK(pixels > 0 && bad == 0);
 }
 
+// gpu_ae_batch: a group's copies drawn together on the GPU (GpuAeSpansBatch: overlapping copies in their order)
+// against the CPU reference (AeDrawSpan8, AE's arithmetic, one copy after another): every pixel equal. Many small
+// copies piled up (like Test C: about 180 spans per row), rotated, minified (area sampling) and in perspective.
+static void GpuAeBatch(int n, unsigned seed)
+{
+    static rnd::AeRcpTable rcp;
+    rnd::AeFillRcpTable(&rcp);
+    unsigned s = seed;
+    auto r01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
+    const int W = 1920, H = 1080, tw = 217, th = 216;
+    std::vector<unsigned char> tex((size_t)tw * th * 4);
+    for (int y = 0; y < th; y++)
+        for (int x = 0; x < tw; x++) {
+            unsigned char* p = &tex[((size_t)y * tw + x) * 4];
+            const double d = std::hypot(x - tw / 2.0, y - th / 2.0) / (tw / 2.0);
+            p[0] = d > 1 ? 0 : (unsigned char)(255 * (1 - d * d * 0.7));  // A (ARGB), clear corners
+            p[1] = (unsigned char)(x * 255 / tw), p[2] = (unsigned char)(y * 255 / th), p[3] = (unsigned char)((x ^ y) & 255);
+        }
+    std::vector<unsigned char> frame((size_t)W * H * 4);
+    for (auto& b : frame) b = (unsigned char)(r01() * 256);
+    struct J {
+        rnd::AeSpanParams p;
+        std::vector<int> rows;
+    };
+    std::vector<J> js((size_t)n);
+    for (J& j : js) {
+        const double S = 8 + r01() * 70, cx = 300 + r01() * 1300, cy = 100 + r01() * 880, a = r01() * 6.283;
+        const double k = tw / S * (0.8 + r01() * 0.4);  // texture px per screen px (> 1: minified)
+        const double c = std::cos(a) * k, sn = std::sin(a) * k;
+        const bool persp = r01() < 0.5;
+        const double wx = persp ? (r01() - 0.5) * 2e-3 : 0, wy = persp ? (r01() - 0.5) * 2e-3 : 0, w0 = 1 - wx * cx - wy * cy;
+        // screen (x, y) -> (U, V, W): U = (y m3 + x m0) + m6, ...
+        j.p.m[0] = c, j.p.m[3] = sn, j.p.m[6] = tw / 2.0 - c * cx - sn * cy;
+        j.p.m[1] = -sn, j.p.m[4] = c, j.p.m[7] = th / 2.0 + sn * cx - c * cy;
+        j.p.m[2] = wx, j.p.m[5] = wy, j.p.m[8] = w0;
+        j.p.persp = persp, j.p.a0 = 0, j.p.quality = r01() < 0.9 ? 1 : 0;
+        j.p.opacity = r01() < 0.3 ? 0.2 + r01() * 0.8 : 1.0, j.p.colorMode = 1, j.p.rcp = &rcp;
+        const int y0 = std::max(0, (int)(cy - S * 0.75)), y1 = std::min(H, (int)(cy + S * 0.75));
+        for (int y = y0; y < y1; y++) {
+            const int x0 = std::max(0, (int)(cx - S * 0.75 + (r01() - 0.5) * 3)), x1 = std::min(W, (int)(cx + S * 0.75));
+            if (x1 > x0) j.rows.insert(j.rows.end(), {y, x0, x1});
+        }
+    }
+    rnd::AeTex8 t;
+    t.data = tex.data(), t.rowbytes = tw * 4, t.width = tw, t.height = th;
+    std::vector<unsigned char> cpu = frame, gpu = frame;
+    for (const J& j : js)
+        for (size_t r = 0; r + 2 < j.rows.size(); r += 3)
+            rnd::AeDrawSpan8(j.p, t, j.rows[r + 1], j.rows[r + 2], j.rows[r], &cpu[(size_t)j.rows[r] * W * 4]);
+    std::vector<rnd::GpuAeSpanJob> gj((size_t)n);
+    for (int q = 0; q < n; q++) {
+        gj[q].core = rnd::AeCoreOf(js[q].p), gj[q].tex = t, gj[q].texKey = 77, gj[q].rcp = rcp.r;
+        gj[q].target = gpu.data(), gj[q].targetRowbytes = W * 4, gj[q].rows = js[q].rows.data(), gj[q].nRows = (int)js[q].rows.size() / 3;
+    }
+    double ms = 0, best = 1e9;
+    bool ok = true;
+    for (int rep = 0; rep < 3 && ok; rep++) {
+        std::vector<unsigned char> g = frame;
+        for (auto& x : gj) x.target = g.data();
+        ok = rnd::GpuAeSpansBatch(gj.data(), n, &ms);
+        best = std::min(best, ms);
+        if (rep == 0) gpu = g;
+    }
+    CHECK(ok);
+    long long bad = 0, touched = 0;
+    for (size_t i = 0; i < frame.size(); i += 4) {
+        touched += std::memcmp(&cpu[i], &frame[i], 4) != 0;
+        if (std::memcmp(&cpu[i], &gpu[i], 4)) {
+            if (bad < 5) std::printf("  gpu_ae_batch px %zu: gpu %d %d %d %d cpu %d %d %d %d\n", i / 4, gpu[i], gpu[i + 1], gpu[i + 2], gpu[i + 3], cpu[i], cpu[i + 1], cpu[i + 2], cpu[i + 3]);
+            bad++;
+        }
+    }
+    std::printf("gpu_ae_batch: %d copies, %lld pixels changed, %lld differ, %.1f ms (best of 3)\n", n, touched, bad, best);
+    CHECK(touched > 0 && bad == 0);
+}
+
+// gpu_ae_replay (RANDAMU_BATCH_REPLAY=<file>, written by the plugin with RANDAMU_BATCH_DUMP): a real group's batch
+// from AE drawn on the GPU and by the CPU reference (AE's arithmetic, in order), every pixel compared, and timed
+static void GpuAeReplay(const std::string& path)
+{
+    const auto b = ReadAll(path);
+    if (b.size() < 16) {
+        std::printf("FAIL gpu_ae_replay: %s not read\n", path.c_str());
+        g_failed++;
+        return;
+    }
+    size_t o = 0;
+    const int n = At<int>(b, 0), tw = At<int>(b, 4), th = At<int>(b, 8), trb = At<int>(b, 12);
+    o = 16;
+    std::vector<unsigned char> tex(b.begin() + o, b.begin() + o + (size_t)trb * th);
+    o += (size_t)trb * th;
+    float rcp[256];
+    std::memcpy(rcp, b.data() + o, sizeof(rcp));
+    o += sizeof(rcp);
+    std::vector<rnd::AeSpanCore> cores((size_t)n);
+    std::vector<std::vector<int>> rows((size_t)n);
+    int W = 0, H = 0;
+    for (int q = 0; q < n; q++) {
+        std::memcpy(&cores[q], b.data() + o, sizeof(rnd::AeSpanCore));
+        o += sizeof(rnd::AeSpanCore);
+        const int nr = At<int>(b, o);
+        o += 4;
+        rows[q].resize(3 * (size_t)nr);
+        std::memcpy(rows[q].data(), b.data() + o, 12 * (size_t)nr);
+        o += 12 * (size_t)nr;
+        for (int r = 0; r < nr; r++) W = std::max(W, rows[q][3 * r + 2]), H = std::max(H, rows[q][3 * r] + 1);
+    }
+    rnd::AeTex8 t;
+    t.data = tex.data(), t.rowbytes = trb, t.width = tw, t.height = th;
+    std::vector<unsigned char> frame((size_t)W * H * 4);
+    unsigned s = 5;
+    for (auto& v : frame) v = (unsigned char)((s = s * 1103515245u + 12345u) >> 24);
+    std::vector<unsigned char> cpu = frame;
+    const auto c0 = std::chrono::steady_clock::now();
+    for (int q = 0; q < n; q++) {
+        rnd::aeimpl::Samp st;
+        const unsigned char op = rnd::aeimpl::OpacityByte(cores[q].opacity);
+        for (size_t r = 0; r + 2 < rows[q].size(); r += 3) {
+            const int y = rows[q][r], x0 = rows[q][r + 1], x1 = rows[q][r + 2];
+            rnd::aeimpl::InitRow(st, cores[q], rnd::aeimpl::SpanStart(x0), rnd::aeimpl::SpanStart(y));
+            unsigned char* row = &cpu[(size_t)y * W * 4];
+            for (int x = x0; x < x1; x++) {
+                rnd::aeimpl::DrawPixel(cores[q], st, t, op, rcp, row + 4 * x);
+                rnd::aeimpl::Step(st);
+            }
+        }
+    }
+    const double cpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
+    std::vector<rnd::GpuAeSpanJob> gj((size_t)n);
+    double best = 1e9, ms = 0;
+    std::vector<unsigned char> gpu;
+    bool ok = true;
+    for (int rep = 0; rep < 3 && ok; rep++) {
+        std::vector<unsigned char> g = frame;
+        for (int q = 0; q < n; q++) {
+            gj[q].core = cores[q], gj[q].tex = t, gj[q].texKey = 99, gj[q].rcp = rcp, gj[q].target = g.data();
+            gj[q].targetRowbytes = W * 4, gj[q].rows = rows[q].data(), gj[q].nRows = (int)rows[q].size() / 3;
+        }
+        ok = rnd::GpuAeSpansBatch(gj.data(), n, &ms);
+        best = std::min(best, ms);
+        if (rep == 0) gpu = g;
+    }
+    CHECK(ok);
+    long long bad = 0;
+    for (size_t i = 0; i < cpu.size(); i += 4)
+        if (std::memcmp(&cpu[i], &gpu[i], 4)) bad++;
+    std::printf("gpu_ae_replay %s: %d jobs, %lld pixels differ, gpu %.1f ms (best of 3), cpu %.1f ms\n", path.c_str(), n, bad,
+                best, cpuMs);
+    CHECK(bad == 0);
+}
+
 int main()
 {
+    {
+        char rp[MAX_PATH] = {0};
+        if (GetEnvironmentVariableA("RANDAMU_BATCH_REPLAY", rp, sizeof(rp)) > 0) GpuAeReplay(rp);
+    }
+    rnd::GpuRasterSetLog([](const char* f, ...) {
+        va_list a;
+        va_start(a, f);
+        std::printf("  [gpu] ");
+        std::vprintf(f, a);
+        std::printf("\n");
+        va_end(a);
+    });
+    GpuAeBatch(300, 1);
+    GpuAeBatch(2500, 2);
     {
         char env[4096] = {0};
         if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {
