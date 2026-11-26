@@ -20,6 +20,7 @@
 #include "core/world.h"
 #include "effect/randamu.h"
 #include "hook/bee_abi.h"
+#include "hook/env_cache.h"
 #include "hook/flatten_site.h"
 #include "core/merge_geom.h"
 #include "hook/merge_cache.h"
@@ -85,6 +86,21 @@ bool IsMine(const void* layer)
     LayerKey k;
     ParamSnapshot s;
     return KeyOf(layer, &k) && RegLookup(k, &s) && s.valid && LayerIsLive(layer);
+}
+
+thread_local bool t_passOpen = false;  // between a pass's AEGP_GetNumLayersToRender and its last surface drawn
+// IsMine for the hooks of a draw pass (opacity, texture, bounds, stream values, AE's draws): within a pass open on this
+// thread, a layer's answer is kept until the pass ends (ClosePass). LayerIsLive asks BEE for the comp's renderer under
+// AE's lock, about six times a copy; a pass does not see the layer, its effect or the renderer change.
+thread_local std::vector<std::pair<const void*, bool>> t_mineInPass;
+bool IsMineInPass(const void* layer)
+{
+    if (!t_passOpen) return IsMine(layer);
+    for (const auto& m : t_mineInPass)
+        if (m.first == layer) return m.second;
+    const bool r = IsMine(layer);
+    if (t_mineInPass.size() < 64) t_mineInPass.emplace_back(layer, r);
+    return r;
 }
 
 // ---- parameters
@@ -375,15 +391,15 @@ int MergeSeenOf(const void* layer)
 // AE's order (HookA3dDraw, core/ae_span). The earlier group planes (merge plans) only with RANDAMU_MERGE_OLD=1.
 bool OldMerge()
 {
-    char v[4] = {0};
-    return GetEnvironmentVariableA("RANDAMU_MERGE_OLD", v, sizeof(v)) > 0 && v[0] == '1';
+    static EnvCache e("RANDAMU_MERGE_OLD");
+    return e.Is('1');
 }
 
 // The group drawing (BuildIsolatedGroupPlan): RANDAMU_GROUP=0 turns it off (every copy one by one)
 bool GroupDrawOn()
 {
-    char v[4] = {0};
-    return !(GetEnvironmentVariableA("RANDAMU_GROUP", v, sizeof(v)) > 0 && v[0] == '0');
+    static EnvCache e("RANDAMU_GROUP");
+    return !e.Is('0');
 }
 
 // The front and back groups (BuildFrontBackGroupPlan): on unless RANDAMU_GROUP_FB=0, and only while the hook that
@@ -392,8 +408,8 @@ std::atomic<bool> g_graphHooked{false};
 }  // namespace
 bool FrontBackGroupsOn()
 {
-    char v[4] = {0};
-    return g_graphHooked.load() && !(GetEnvironmentVariableA("RANDAMU_GROUP_FB", v, sizeof(v)) > 0 && v[0] == '0');
+    static EnvCache e("RANDAMU_GROUP_FB");
+    return g_graphHooked.load() && !e.Is('0');
 }
 namespace {
 
@@ -671,7 +687,7 @@ double HookArtOpacity(void* ctx, void* trace, const void* t, const void* bag)
     const void* layer = *(void**)(v + bee::kArtLayerToLayer);
     int index = *(int*)(v + bee::kArtLayerToSubIndex);
     ParamSnapshot s;
-    if (index < 0 || !IsMine(layer) || !ParamsFor(layer, t, &s)) return op;
+    if (index < 0 || !IsMineInPass(layer) || !ParamsFor(layer, t, &s)) return op;
     NoteMergeSeen(layer, s.p.merge);
     int copy = index;
     if (s.p.merge) {
@@ -707,7 +723,7 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     if (!v) return;
     const void* layer = *(void**)(v + bee::kArtLayerToLayer);
     const int index = *(int*)(v + bee::kArtLayerToSubIndex);
-    if (index < 0 || !IsMine(layer)) return;
+    if (index < 0 || !IsMineInPass(layer)) return;
     LayerKey k;
     ParamSnapshot s;
     if (!KeyOf(layer, &k)) return;
@@ -748,7 +764,8 @@ void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_
 {
     char ev[8] = {0};
     static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
-    if ((!s_time && GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) <= 0) || !g_texTimeLog.Take(4000)) return;
+    static EnvCache s_draw("RANDAMU_A3D_DRAW");
+    if ((!s_time && s_draw.Get(nullptr, 0) <= 0) || !g_texTimeLog.Take(4000)) return;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     int sub = -9;
     if (trace) {
@@ -945,7 +962,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
     if (t_inA3dDraw && t_shareOn && trace && world && m3) {
         char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
         const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
-        if (layer && *(int*)(v + bee::kArtLayerToSubIndex) >= 0 && IsMine(layer)) {
+        if (layer && *(int*)(v + bee::kArtLayerToSubIndex) >= 0 && IsMineInPass(layer)) {
             shareLayer = layer;
             for (const SharedTex& s : t_shared)
                 if (SameRequest(s, ctx, layer, u, v2, rect)) {
@@ -1038,10 +1055,10 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     const MergeLayerPlan* lp = nullptr;
     auto plan = MergePlanOf(layer, tm, s, false, &lp);
     if (!lp || !AllGroups(*lp)) return err;
-    // diagnosis / tests: RANDAMU_MERGE_DRAFT=0 keeps the layer's own quality (read per call: test scripts in AE
+    // diagnosis / tests: RANDAMU_MERGE_DRAFT=0 keeps the layer's own quality (cached briefly: test scripts in AE
     // switch it between renders)
-    char v[8] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_MERGE_DRAFT", v, sizeof(v)) > 0 && v[0] == '0') return err;
+    static EnvCache s_draft("RANDAMU_MERGE_DRAFT");
+    if (s_draft.Is('0')) return err;
     *q = AEGP_LayerQual_DRAFT;
     int d = 0;
     if (g_qDraft.Take(5, true, &d)) RLog("merge: draft quality answered %d (calls %d, comp %d layer %d)", d, n, k.compItemId, k.layerId);
@@ -1094,7 +1111,6 @@ struct SharedStream {  // see HookLayerStreamValue
     AEGP_StreamType type;
 };
 thread_local std::vector<SharedStream> t_streams;
-thread_local bool t_passOpen = false;  // between a pass's AEGP_GetNumLayersToRender and its last surface drawn
 // RANDAMU_A3D_TIME=1: a pass's preparation (its start to its first surface drawn) and drawing (to its last)
 thread_local std::chrono::steady_clock::time_point t_passStart, t_passFirstDraw;
 thread_local int t_passDraws = 0;
@@ -1116,6 +1132,7 @@ void ClosePass()
     t_passDraws = 0;
     t_bounds.clear();
     t_streams.clear();
+    t_mineInPass.clear();
     t_passOpen = false;
 }
 std::atomic<long long> g_boundsShared{0}, g_boundsAsked{0};
@@ -1132,7 +1149,7 @@ A_Err HookGetNumLayers(PR_RenderContextH rc, A_long* n)
 
 bool MergeOnFor(const void* L)
 {
-    if (!L || !IsMine(L) || OldMerge()) return false;
+    if (!L || !IsMineInPass(L) || OldMerge()) return false;
     int seen = MergeSeenOf(L);
     if (seen < 0) {
         ParamSnapshot s;
@@ -2540,7 +2557,8 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     // RANDAMU_A3D_DRAW (diagnostics): 0 AE draws everything, 1 log, 2 skip copies, 3 capture, 4 no pixel loop,
     // 5 ours on the CPU, 6 ours on the GPU. Unset: the copies of a layer with the merge on are drawn on the GPU.
     char ev[8] = {0};
-    const int mode = GetEnvironmentVariableA("RANDAMU_A3D_DRAW", ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
+    static EnvCache s_drawMode("RANDAMU_A3D_DRAW");
+    const int mode = s_drawMode.Get(ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
     if (!mode) return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     if (mode < 0) {
         static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
@@ -2564,9 +2582,9 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         }
         ParamSnapshot s;
         int seen = L && sb >= 0 ? MergeSeenOf(L) : 0;
-        if (seen < 0) seen = IsMine(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
+        if (seen < 0) seen = IsMineInPass(L) && ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
         const double lookMs = s_time ? since(tA) : 0;
-        const bool ours = seen > 0 && !OldMerge() && IsMine(L);
+        const bool ours = seen > 0 && !OldMerge() && IsMineInPass(L);
         if (s_gtr && t_inGroup) RLog("group trace: nested draw looked up (L %p sub %d seen %d ours %d)", L, sb, seen, (int)ours);
         // the shared textures (HookTex) live for one frame's drawing on this thread: sub_180012B30 counts the
         // surfaces drawn so far at ctx+kCtxProgressCount (0 at a frame's first surface) out of ctx+kCtxProgressTotal
@@ -2589,7 +2607,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         // RANDAMU_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels
         static const bool s_aePix = GetEnvironmentVariableA("RANDAMU_A3D_AEPIX", ev, sizeof(ev)) > 0 && ev[0] == '1';
         // the group drawing: the representative of a group draws the whole group
-        if (ours && !t_inGroup && GroupDrawOn() && IsMine(L)) {
+        if (ours && !t_inGroup && GroupDrawOn() && IsMineInPass(L)) {
             ParamSnapshot gs;
             LayerKey gk;
             const int* tm = KeyOf(L, &gk) ? ArtTimeOf(gk) : nullptr;
@@ -2668,7 +2686,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
         if (v) layer = *(void**)(v + bee::kArtLayerToLayer), sub = *(int*)(v + bee::kArtLayerToSubIndex);
     }
-    const bool mine = layer && sub >= 0 && IsMine(layer);
+    const bool mine = layer && sub >= 0 && IsMineInPass(layer);
     LayerKey k = {};
     if (layer) KeyOf(layer, &k);
     const long seq = g_a3dDrawSeq.fetch_add(1);
@@ -3152,7 +3170,7 @@ A_Err HookGetLayerIndex(AEGP_LayerH L, A_long* idx)
     const int v17 = *(const int*)(entry + 0x34);
     if (*(const int*)(entry + 0x30) != v17) return e;  // not an entry being built (sanity)
     int index = v17 + t_biasShift;
-    if (IsMine(L) && MergeOnFor(L)) {
+    if (IsMineInPass(L) && MergeOnFor(L)) {
         LayerKey k;
         ParamSnapshot s;
         const int* tm = KeyOf(L, &k) ? ArtTimeOf(k) : nullptr;
