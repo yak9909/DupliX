@@ -121,13 +121,15 @@ try {
 if ($Edit -ge 0) { & (Join-Path $root "spike\.venv\Scripts\python.exe") (Join-Path $PSScriptRoot "check_preview_edit.py") $out; exit $LASTEXITCODE }
 
 # Summary: "timing:" lines with drawn copies, per comp (first frame of each variant dropped: it includes
-# setup work). Lines without copies are AE's pre-render passes over the whole comp, not drawn frames.
-$rows = foreach ($l in Select-String -Path (Join-Path $out "plugin.log") -Pattern "timing: comp (\d+) t=([\d.]+) span=([\d.]+)ms in-plugin=([\d.]+)ms .*copies ([1-9]\d*)") {
+# setup work). Lines without copies are AE's pre-render passes over the whole comp, not drawn frames; fast mode
+# (pv_fast*) draws without hooks: its lines with an effect render count.
+$rows = foreach ($l in Select-String -Path (Join-Path $out "plugin.log") -Pattern "timing: comp (\d+) t=([\d.]+) span=([\d.]+)ms in-plugin=([\d.]+)ms .*render [\d.]+ms/(\d+), copies (\d+)") {
     $g = $l.Matches[0].Groups
-    [pscustomobject]@{ Comp = [int]$g[1].Value; T = [double]$g[2].Value; Span = [double]$g[3].Value; Plugin = [double]$g[4].Value; Copies = [int]$g[5].Value }
+    [pscustomobject]@{ Comp = [int]$g[1].Value; T = [double]$g[2].Value; Span = [double]$g[3].Value; Plugin = [double]$g[4].Value; Renders = [int]$g[5].Value; Copies = [int]$g[6].Value }
 }
 foreach ($v in $Variants -split ",") {
-    $r = @($rows | Where-Object Comp -eq $vars[$v] | Sort-Object T | Select-Object -Skip 1)
+    $fast = $v -like "pv_fast*"
+    $r = @($rows | Where-Object { $_.Comp -eq $vars[$v] -and ($(if ($fast) { $_.Renders -gt 0 } else { $_.Copies -gt 0 })) } | Sort-Object T | Select-Object -Skip 1)
     if (-not $r) { Write-Host ("{0,-10} no timing lines" -f $v); continue }
     $span = ($r | Measure-Object Span -Average -Maximum); $pl = ($r | Measure-Object Plugin -Average)
     Write-Host ("{0,-10} frames {1,3}  span avg {2,7:N1} ms (max {3,7:N1})  in-plugin avg {4,6:N1} ms  copies/frame {5}" -f

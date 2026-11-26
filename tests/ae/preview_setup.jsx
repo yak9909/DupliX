@@ -72,10 +72,15 @@
         });
         // merge on / off with a copy count on the layer named RANDAMU_PV_LAYER (else the last DupliX layer):
         // pv_on20, pv_off100, ..., pv_none (that layer off: the scene without its copies)
+        // RANDAMU_PV_COUNTS (e.g. "1000,3271") adds more counts. pv_fast<n>: fast mode (RP_FAST = property 15) on a 2D
+        // layer, the same copies (the placement is in the World Transform, the layer in its initial state)
         var counts = [1, 20, 100, 380];
+        var more = ($.getenv("RANDAMU_PV_COUNTS") || "").split(",");
+        for (var mi = 0; mi < more.length; mi++) if (parseInt(more[mi], 10) > 0) counts.push(parseInt(more[mi], 10));
         for (var ci = 0; ci < counts.length; ci++) (function (n) {
             variant("pv_on" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(1); });
             variant("pv_off" + n, function (c, T, f) { f.property(2).setValue(n); f.property(MERGE).setValue(0); });
+            variant("pv_fast" + n, function (c, T, f) { f.property(2).setValue(n); f.property(15).setValue(1); T.threeDLayer = false; });
         })(counts[ci]);
         variant("pv_none", function (c, T, f) { T.enabled = false; });
         // the layer's pixels change every frame (a Fill before DupliX whose color follows the time): a texture kept

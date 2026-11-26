@@ -2223,7 +2223,12 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
                     static LogLimit nm;
                     if (nm.Take(20)) RLog("group: a %s group's representative was not moved (drawn at its place)", gc.place > 0 ? "front" : "back");
                 }
-                if (DrawGroup(self, ctx, a7, L, gs, gc, lp->subs[sb].copy)) {
+                const long long tg0 = TimingNow();
+                const bool drewGroup = DrawGroup(self, ctx, a7, L, gs, gc, lp->subs[sb].copy);
+                // RANDAMU_TIMING: the frame's span reaches the end of the group's drawing (the hooks before it end
+                // earlier: without this the span left the group out)
+                MarkTiming(L, tm, TK_HOOK, tg0);
+                if (drewGroup) {
                     // what the representative's own draw does last: the progress count
                     const int pn = ++*(int*)(ctx + a3d::kCtxProgressCount);
                     void*** pr = *(void****)(ctx + a3d::kCtxProgress);
@@ -2244,7 +2249,12 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             alignas(16) unsigned char clone[a3d::kSurfaceSize], entryBuf[a3d::kEntrySize];
             alignas(16) double cm4[16];
             const bool useClone = s_clone && CloneForCheck(self, ctx, L, sb, clone, entryBuf, cm4);
+            const long long tc0 = TimingNow();
             const uintptr_t r = DrawCopyOurs(useClone ? (uintptr_t)clone : self, ctx, a3, a4, a5, a6, a7);
+            if (TimingEnabled() && !t_inGroup) {
+                LayerKey ck;
+                if (KeyOf(L, &ck)) MarkTiming(L, ArtTimeOf(ck), TK_HOOK, tc0);
+            }
             if (useClone) FreeSurface(clone);
             if (g_profMode == 1) g_profTid = 0;
             if (s_time && !t_inGroup) {
