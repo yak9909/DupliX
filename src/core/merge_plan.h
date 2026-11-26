@@ -114,8 +114,9 @@ struct MergePlan {
     // diagnostics (BuildFrontBackGroupPlan): copies that may be grouped, in front groups, in back groups, and the
     // others: with an unsure pair (margin band, sliver, crossing, level), between surfaces (something in front and
     // something behind), alone in their group (a group of one is drawn one by one); then the unsure pairs of two
-    // copies and of a copy and another surface, each by its reason: a sliver, no depth there, level or crossing
-    int fb[12] = {};
+    // copies and of a copy and another surface, each by its reason: a sliver, no depth there, level or crossing;
+    // [12] 1 when the budget ran out (the plan is BuildIsolatedGroupPlan's)
+    int fb[13] = {};
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
     // diagnostics (RANDAMU_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
@@ -149,7 +150,8 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx = 3)
 // plane, so the corners decide the whole overlap). Pairs inside a group are clear too (AE's order between them is
 // then its graph's edge, the same in the group's own list as in the frame's). Copies overlapping nothing join the
 // front group. The same exclusions as BuildIsolatedGroupPlan (boxes, unbounded planes, behind the camera).
-MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx = 3);
+// Past budgetMs of pair judgments (very dense scenes) it returns BuildIsolatedGroupPlan's plan with fb[12] = 1.
+MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx = 3, double budgetMs = 40);
 
 struct MergeOptions {
     double marginPx = 3;          // screen overlap tests grow every quad by this much (edge filtering)

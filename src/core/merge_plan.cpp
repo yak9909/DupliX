@@ -212,68 +212,68 @@ struct Pt2 {
 
 double Cross2(const Pt2& o, const Pt2& a, const Pt2& b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
 
-// Convex polygon `subject` clipped by convex polygon `clip` (Sutherland-Hodgman; any winding), as in ae_order.cpp.
-std::vector<Pt2> ClipConvex(const std::vector<Pt2>& subject, const std::vector<Pt2>& clip)
+// A convex polygon of at most 4 + 4 corners (two convex quads clipped), with room to spare.
+struct Poly {
+    Pt2 p[16];
+    int n = 0;
+};
+
+// Convex polygon `in` clipped by the convex quad `clip` (Sutherland-Hodgman; any winding), as in ae_order.cpp.
+void ClipByQuad(const Poly& in, const Pt2 clip[4], Poly* out)
 {
     double area = 0;
-    for (size_t k = 0; k < clip.size(); k++) {
-        const Pt2& a = clip[k];
-        const Pt2& b = clip[(k + 1) % clip.size()];
-        area += a.x * b.y - b.x * a.y;
-    }
+    for (int k = 0; k < 4; k++) area += clip[k].x * clip[(k + 1) % 4].y - clip[(k + 1) % 4].x * clip[k].y;
     const double s = area >= 0 ? 1 : -1;
-    std::vector<Pt2> out = subject;
-    for (size_t k = 0; k < clip.size() && !out.empty(); k++) {
-        const Pt2& a = clip[k];
-        const Pt2& b = clip[(k + 1) % clip.size()];
-        std::vector<Pt2> in;
-        in.swap(out);
-        Pt2 prev = in.back();
-        bool prevIn = s * Cross2(a, b, prev) >= 0;
-        for (const Pt2& cur : in) {
-            const bool curIn = s * Cross2(a, b, cur) >= 0;
+    Poly a = in, b;
+    for (int k = 0; k < 4 && a.n; k++) {
+        const Pt2& e0 = clip[k];
+        const Pt2& e1 = clip[(k + 1) % 4];
+        b.n = 0;
+        Pt2 prev = a.p[a.n - 1];
+        bool prevIn = s * Cross2(e0, e1, prev) >= 0;
+        for (int i = 0; i < a.n && b.n < 15; i++) {
+            const Pt2& cur = a.p[i];
+            const bool curIn = s * Cross2(e0, e1, cur) >= 0;
             if (curIn != prevIn) {
-                const double d1x = cur.x - prev.x, d1y = cur.y - prev.y, d2x = b.x - a.x, d2y = b.y - a.y;
+                const double d1x = cur.x - prev.x, d1y = cur.y - prev.y, d2x = e1.x - e0.x, d2y = e1.y - e0.y;
                 const double den = d1x * d2y - d1y * d2x;
-                const double t = den != 0 ? ((a.x - prev.x) * d2y - (a.y - prev.y) * d2x) / den : 0;
-                out.push_back({prev.x + t * d1x, prev.y + t * d1y});
+                const double t = den != 0 ? ((e0.x - prev.x) * d2y - (e0.y - prev.y) * d2x) / den : 0;
+                b.p[b.n++] = {prev.x + t * d1x, prev.y + t * d1y};
             }
-            if (curIn) out.push_back(cur);
+            if (curIn) b.p[b.n++] = cur;
             prev = cur;
             prevIn = curIn;
         }
+        a = b;
     }
-    return out;
+    *out = a;
 }
 
-double PolyArea2(const std::vector<Pt2>& p)
+double PolyArea2(const Poly& p)
 {
     double a = 0;
-    for (size_t k = 0; k < p.size(); k++) a += p[k].x * p[(k + 1) % p.size()].y - p[(k + 1) % p.size()].x * p[k].y;
+    for (int k = 0; k < p.n; k++) a += p.p[k].x * p.p[(k + 1) % p.n].y - p.p[(k + 1) % p.n].x * p.p[k].y;
     return std::fabs(a) / 2;
 }
 
-std::vector<Pt2> QuadPts(const ScreenQuad& q) { return {{q.x[0], q.y[0]}, {q.x[1], q.y[1]}, {q.x[2], q.y[2]}, {q.x[3], q.y[3]}}; }
-
 // The convex quad q grown by m: every edge moved outward by m, the corners where the moved edges meet (a superset of
-// every point within m of q). Empty if q is degenerate.
-std::vector<Pt2> GrowQuad(const ScreenQuad& q, double m)
+// every point within m of q). False if q is degenerate.
+bool GrowQuad(const ScreenQuad& q, double m, Pt2 out[4])
 {
     double a = 0;
     for (int k = 0; k < 4; k++) a += q.x[k] * q.y[(k + 1) % 4] - q.x[(k + 1) % 4] * q.y[k];
-    if (!(std::fabs(a) / 2 > 1e-6)) return {};
+    if (!(std::fabs(a) / 2 > 1e-6)) return false;
     const double s = a > 0 ? 1 : -1;
     Pt2 p[4], d[4];
     for (int k = 0; k < 4; k++) {
         const int n = (k + 1) % 4;
         double dx = q.x[n] - q.x[k], dy = q.y[n] - q.y[k];
         const double len = std::sqrt(dx * dx + dy * dy);
-        if (!(len > 1e-9)) return {};
+        if (!(len > 1e-9)) return false;
         dx /= len, dy /= len;
         d[k] = {dx, dy};
         p[k] = {q.x[k] + s * dy * m, q.y[k] - s * dx * m};  // outward: (dy, -dx) for a positive area
     }
-    std::vector<Pt2> out(4);
     for (int k = 0; k < 4; k++) {
         const int b = (k + 3) % 4;  // the edge ending at corner k
         const double den = d[b].x * d[k].y - d[b].y * d[k].x;
@@ -284,14 +284,42 @@ std::vector<Pt2> GrowQuad(const ScreenQuad& q, double m)
         const double t = ((p[k].x - p[b].x) * d[k].y - (p[k].y - p[b].y) * d[k].x) / den;
         out[k] = {p[b].x + t * d[b].x, p[b].y + t * d[b].y};
     }
-    return out;
+    return true;
 }
 
 constexpr int kApart = 0, kUnsure = 2;  // a pair's order: apart, +1 a in front, -1 b in front, unsure
 
-// The order of two planar quads where they overlap on screen (wa, wb: their planes' layer px -> world).
-int JudgePair(const CameraView& cam, const ScreenQuad& qa, const double wa[16], const ScreenQuad& qb, const double wb[16],
-              double m, int* why)
+// A planar quad prepared for the pair judgments: its screen corners, the corners grown by the margin, and its plane's
+// camera depth at screen (x, y): z = k / (a x + b y + c) (as PlaneDepthAt: the ray's camera z is 1 per unit).
+struct Shape {
+    Pt2 q[4], g[4];
+    bool grown = false;
+    double a = 0, b = 0, c = 0, k = 0;
+};
+Shape MakeShape(const CameraView& cam, const ScreenQuad& q, const double w[16], double m)
+{
+    Shape s;
+    for (int i = 0; i < 4; i++) s.q[i] = {q.x[i], q.y[i]};
+    s.grown = q.valid && GrowQuad(q, m, s.g);
+    const double n[3] = {w[1] * w[6] - w[2] * w[5], w[2] * w[4] - w[0] * w[6], w[0] * w[5] - w[1] * w[4]};
+    const double* C = cam.camToWorld;
+    const double n0 = n[0] * C[0] + n[1] * C[1] + n[2] * C[2], n1 = n[0] * C[4] + n[1] * C[5] + n[2] * C[6],
+                 n2 = n[0] * C[8] + n[1] * C[9] + n[2] * C[10];
+    s.a = n0 / cam.dist, s.b = n1 / cam.dist;
+    s.c = n2 - cam.compW / 2 * s.a - cam.compH / 2 * s.b;
+    s.k = n[0] * (w[12] - C[12]) + n[1] * (w[13] - C[13]) + n[2] * (w[14] - C[14]);
+    return s;
+}
+bool ShapeDepth(const Shape& s, const Pt2& p, double* z)
+{
+    const double nd = s.a * p.x + s.b * p.y + s.c;
+    if (std::fabs(nd) < 1e-12) return false;
+    *z = s.k / nd;
+    return *z > 0;
+}
+
+// The order of two planar quads where they overlap on screen.
+int JudgePair(const ScreenQuad& qa, const Shape& sa, const ScreenQuad& qb, const Shape& sb, double m, int* why)
 {
     *why = 0;
     if (!QuadsOverlap(qa, qb, m)) return kApart;
@@ -299,15 +327,19 @@ int JudgePair(const CameraView& cam, const ScreenQuad& qa, const double wa[16], 
     // crossings and corners inside the other) and the depths differ by more than 1e-12 there: any overlap orders
     // them. Only the margin band (no overlap, a few px apart) has no edge, and AE's order is then its walk's, while
     // antialiased edges may share a pixel: unsure.
-    if (PolyArea2(ClipConvex(QuadPts(qa), QuadPts(qb))) < 0.01) return *why = 0, kUnsure;
-    const std::vector<Pt2> ga = GrowQuad(qa, m), gb = GrowQuad(qb, m);
-    if (ga.empty() || gb.empty()) return *why = 1, kUnsure;
-    const std::vector<Pt2> ov = ClipConvex(ga, gb);
-    if (ov.size() < 3) return *why = 1, kUnsure;
+    Poly pa, ov;
+    pa.n = 4;
+    for (int i = 0; i < 4; i++) pa.p[i] = sa.q[i];
+    ClipByQuad(pa, sb.q, &ov);
+    if (ov.n < 3 || PolyArea2(ov) < 0.01) return *why = 0, kUnsure;
+    if (!sa.grown || !sb.grown) return *why = 1, kUnsure;
+    for (int i = 0; i < 4; i++) pa.p[i] = sa.g[i];
+    ClipByQuad(pa, sb.g, &ov);
+    if (ov.n < 3) return *why = 1, kUnsure;
     bool aFront = true, bFront = true;
-    for (const Pt2& p : ov) {
+    for (int i = 0; i < ov.n; i++) {
         double za = 0, zb = 0;
-        if (!PlaneDepthAt(cam, wa, p.x, p.y, &za) || !PlaneDepthAt(cam, wb, p.x, p.y, &zb)) return *why = 1, kUnsure;
+        if (!ShapeDepth(sa, ov.p[i], &za) || !ShapeDepth(sb, ov.p[i], &zb)) return *why = 1, kUnsure;
         const double tol = 1e-5 * std::max(za, zb);
         if (!(za < zb - tol)) aFront = false;
         if (!(zb < za - tol)) bFront = false;
@@ -317,7 +349,7 @@ int JudgePair(const CameraView& cam, const ScreenQuad& qa, const double wa[16], 
 
 }  // namespace
 
-MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx)
+MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx, double budgetMs)
 {
     MergePlan plan;
     plan.cam = in.cam;
@@ -329,11 +361,13 @@ MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx)
         double toW[16];
         double minX, minY, maxX, maxY, area;
         bool ok;
+        Shape sh;
     };
     std::vector<It> its;
     bool everywhere = !in.boxes.empty();
     std::vector<char> layerBad(in.layers.size(), 0);
-    auto bounds = [](It& t) {
+    auto bounds = [&](It& t) {
+        t.sh = MakeShape(in.cam, t.q, t.toW, marginPx);
         t.minX = t.minY = 1e300, t.maxX = t.maxY = -1e300, t.area = 0;
         for (int k = 0; k < 4; k++) {
             t.minX = std::min(t.minX, t.q.x[k]), t.maxX = std::max(t.maxX, t.q.x[k]);
@@ -385,15 +419,22 @@ MergePlan BuildFrontBackGroupPlan(const MergeSceneInput& in, double marginPx)
     std::vector<int> byX(its.size());
     for (size_t i = 0; i < its.size(); i++) byX[i] = (int)i;
     std::sort(byX.begin(), byX.end(), [&](int a, int b) { return its[a].minX < its[b].minX; });
+    const auto t0 = std::chrono::steady_clock::now();
     for (size_t a = 0; a < byX.size(); a++) {
+        // past the budget (very dense scenes): the isolated groups (BuildIsolatedGroupPlan) instead
+        if ((a & 127) == 127 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > budgetMs) {
+            MergePlan iso = BuildIsolatedGroupPlan(in, marginPx);
+            iso.fb[12] = 1;
+            return iso;
+        }
         const It& A = its[byX[a]];
         if (!A.q.valid) continue;
         for (size_t b = a + 1; b < byX.size() && its[byX[b]].minX <= A.maxX + 2 * marginPx; b++) {
             const It& B = its[byX[b]];
             if (!B.q.valid || B.minY > A.maxY + 2 * marginPx || A.minY > B.maxY + 2 * marginPx) continue;
-            if (A.layer < 0 && B.layer < 0) continue;
+            if (!A.ok && !B.ok) continue;  // neither may be grouped: their order is AE's either way
             int uw = 0;
-            const int o = JudgePair(in.cam, A.q, A.toW, B.q, B.toW, marginPx, &uw);
+            const int o = JudgePair(A.q, A.sh, B.q, B.sh, marginPx, &uw);
             if (o == kApart) continue;
             if (o == kUnsure) plan.fb[6 + uw + (A.layer < 0 || B.layer < 0 ? 3 : 0)]++;
             if (A.layer >= 0) nbs[byX[a]].push_back({byX[b], o == kUnsure ? kUnsure : o});

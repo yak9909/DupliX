@@ -129,7 +129,8 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         const bool fb = !old && FrontBackGroupsOn();
         MergePlan p = old ? BuildMergePlan(in) : fb ? BuildFrontBackGroupPlan(in) : BuildIsolatedGroupPlan(in);
         static LogLimit fbl;
-        if (fb && fbl.Take(40))
+        if (fb && p.fb[12] && fbl.Take(40)) RLog("group: front/back plan over budget: isolated groups only");
+        else if (fb && fbl.Take(40))
             RLog("group: front/back plan: %d copies may group, %d front, %d back; not grouped: %d unsure, %d between, %d alone; "
                  "unsure pairs (sliver/no depth/level) copies %d/%d/%d, with other surfaces %d/%d/%d",
                  p.fb[0], p.fb[1], p.fb[2], p.fb[3], p.fb[4], p.fb[5], p.fb[6], p.fb[7], p.fb[8], p.fb[9], p.fb[10], p.fb[11]);

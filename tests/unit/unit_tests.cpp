@@ -1555,6 +1555,32 @@ TEST(fb_orders_hold)
     FbOrdersHold("fb_orders_hold (sparse 2)", 80, 4242);
 }
 
+// The plan's cost (it is rebuilt whenever the scene changes, every frame of an animation)
+TEST(fb_plan_speed)
+{
+    for (const int n : {380, 1000, 5000}) {
+        rnd::MergeSceneInput in;
+        in.cam = PlanCam();
+        in.planes.push_back(PlanWall(200, 150, 500, 300, 200, 20));
+        std::vector<PlanCopy> cs;
+        unsigned s = 99;
+        auto rnd01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
+        for (int i = 0; i < n; i++) cs.push_back({rnd01() * 400, rnd01() * 300, 100 + rnd01() * 700, 8 + rnd01() * 16, rnd01() * 120 - 60});
+        in.layers.push_back(PlanLayer(7, cs));
+        const auto t0 = std::chrono::steady_clock::now();
+        rnd::MergePlan p = rnd::BuildFrontBackGroupPlan(in);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        const auto t1 = std::chrono::steady_clock::now();
+        rnd::BuildIsolatedGroupPlan(in);
+        const double iso = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        printf("  fb_plan_speed: %d copies %.1f ms (%d front, %d back%s; the isolated plan alone %.1f ms)\n", n, ms,
+               p.fb[1], p.fb[2], p.fb[12] ? ", over budget: isolated groups" : "", iso);
+        CHECK(ms < iso + 70);  // the budget (40 ms) and the isolated plan bound it
+        const auto& lp = p.layers.at(rnd::MergeLayerKey(1, 7));
+        for (const auto& c : lp.clusters) CHECK(p.fb[12] ? c.place == 0 : c.place != 0);
+    }
+}
+
 // The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in
 // ScatterParams' padding (the saved sequence data keeps its size); it is off by default.
 TEST(params_merge_last)
