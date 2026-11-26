@@ -735,10 +735,15 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = nGroups, ns = (int)allRows;
         CUresult lr = (CUresult)0;
         if (s_tiles && g_ae.fnWalk && g_ae.fnTiles) {
+            // RANDAMU_GPU_KTIME=1 (diagnostics): each step waited for and timed
+            static const bool s_kt = GetEnvironmentVariableA("RANDAMU_GPU_KTIME", nullptr, 0) > 0;
+            const double k0 = s_kt && !cu.streamSync(st) ? nowMs() : 0;
             void* wargs[] = {&coresD, &rowsD, &ns, &stD};
             lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
+            const double k1 = s_kt && !cu.streamSync(st) ? nowMs() : 0;
             void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD};
             if (!lr) lr = cu.launch(g_ae.fnTiles, (unsigned)n, 1, 1, 64, 1, 1, 0, st, targs, nullptr);
+            if (s_kt && !cu.streamSync(st)) GpuLog("gpu ae span: upload %.2f, walk %.2f, tiles %.2f ms", k0 - tg, k1 - k0, nowMs() - k1);
         } else {
             void* args[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &n};
             lr = cu.launch(g_ae.fnOrdered, (unsigned)n, 1, 1, 64, 1, 1, 0, st, args, nullptr);

@@ -340,6 +340,9 @@ static void GpuAeReplay(const std::string& path)
     }
     rnd::AeTex8 t;
     t.data = tex.data(), t.rowbytes = trb, t.width = tw, t.height = th;
+    // RANDAMU_REPLAY_Q0=1 (timing only): every copy with nearest sampling (the cost without AE's area sampling)
+    if (GetEnvironmentVariableA("RANDAMU_REPLAY_Q0", nullptr, 0) > 0)
+        for (auto& c : cores) c.quality = 0;
     std::vector<unsigned char> frame((size_t)W * H * 4);
     unsigned s = 5;
     for (auto& v : frame) v = (unsigned char)((s = s * 1103515245u + 12345u) >> 24);
@@ -384,10 +387,6 @@ static void GpuAeReplay(const std::string& path)
 
 int main()
 {
-    {
-        char rp[MAX_PATH] = {0};
-        if (GetEnvironmentVariableA("RANDAMU_BATCH_REPLAY", rp, sizeof(rp)) > 0) GpuAeReplay(rp);
-    }
     rnd::GpuRasterSetLog([](const char* f, ...) {
         va_list a;
         va_start(a, f);
@@ -396,6 +395,10 @@ int main()
         std::printf("\n");
         va_end(a);
     });
+    {
+        char rp[MAX_PATH] = {0};
+        if (GetEnvironmentVariableA("RANDAMU_BATCH_REPLAY", rp, sizeof(rp)) > 0) GpuAeReplay(rp);
+    }
     GpuAeBatch(300, 1);
     GpuAeBatch(2500, 2);
     {
