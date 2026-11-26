@@ -64,7 +64,7 @@
             }
             if (!cam || !cam.parent) throw new Error("camera without an orbit null");
             if (vname === "real") { D.enabled = false; R.enabled = true; }
-            else if (vname === "twin") {
+            else if (vname.indexOf("twin") === 0) {
                 // a real layer per copy with the copy's world matrix (RANDAMU_OC_TWINS: "px py pz rx ry rz" per line,
                 // copy order), made from the reference layer (same source and anchor) with orientation 0
                 var tf = new File($.getenv("RANDAMU_OC_TWINS"));
@@ -72,7 +72,9 @@
                 var lines = [];
                 while (!tf.eof) { var ln = tf.readln(); if (ln) lines.push(ln); }
                 tf.close();
-                var only = $.getenv("RANDAMU_OC_TWIN_ONLY");  // only these copies' twins (copy numbers, comma separated)
+                // only these copies' twins (copy numbers, comma separated); RANDAMU_OC_TWIN_ONLY_<variant> for a variant
+                // named twin<something>, so that several subsets render in one session
+                var only = $.getenv("RANDAMU_OC_TWIN_ONLY_" + vname) || $.getenv("RANDAMU_OC_TWIN_ONLY");
                 if (only) {
                     var oa = only.split(","), sub = [];
                     for (var oi = 0; oi < oa.length; oi++) sub.push(lines[parseInt(oa[oi], 10)]);
@@ -132,6 +134,9 @@
             }
         }
         $.setenv("RANDAMU_LOG", "");
+        // RANDAMU_OC_SAVE: save the project with the variant comps (oc_<variant>) for a check by eye
+        var savePath = $.getenv("RANDAMU_OC_SAVE");
+        if (savePath) { P.save(new File(savePath)); log("saved " + savePath); }
         log("done");
     } catch (ex) {
         log("EXCEPTION " + ex.message + " (line " + ex.line + ")");
