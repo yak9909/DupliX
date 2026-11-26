@@ -490,8 +490,10 @@ struct AeHost {
     size_t stageCap = 0;
 };
 AeHost g_ae;
-// the culling's threshold: the share of opaque texels (AeHost::opaque) from which it is on
-constexpr double kCullOpaque = 0.9;
+// the culling's threshold: the share of opaque texels (AeHost::opaque) from which it is on. Low: where it does not
+// help it costs little (Test C's flower, 0 % opaque: 16 -> 24 ms), where it helps it saves hundreds of ms (11/27,
+// bigS3271 with a cut-out 1920x1080: 50 % opaque 352 -> 19 ms, 78 % 352 -> 7 ms, 100 % 816 -> 10 ms)
+constexpr double kCullOpaque = 0.1;
 
 bool GrowHost(unsigned char** p, size_t* cap, size_t need)
 {
