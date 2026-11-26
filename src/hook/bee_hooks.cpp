@@ -378,11 +378,11 @@ bool OldMerge()
     return GetEnvironmentVariableA("RANDAMU_MERGE_OLD", v, sizeof(v)) > 0 && v[0] == '1';
 }
 
-// The group drawing (BuildIsolatedGroupPlan): RANDAMU_GROUP=1 while it is being built (off: every copy one by one)
+// The group drawing (BuildIsolatedGroupPlan): RANDAMU_GROUP=0 turns it off (every copy one by one)
 bool GroupDrawOn()
 {
     char v[4] = {0};
-    return GetEnvironmentVariableA("RANDAMU_GROUP", v, sizeof(v)) > 0 && v[0] == '1';
+    return !(GetEnvironmentVariableA("RANDAMU_GROUP", v, sizeof(v)) > 0 && v[0] == '0');
 }
 
 std::shared_ptr<const MergePlan> MergePlanOf(const void* layer, const void* tm, const ParamSnapshot& s, bool reread,
