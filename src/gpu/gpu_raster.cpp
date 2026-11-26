@@ -481,6 +481,8 @@ struct AeHost {
     CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0;
     size_t texCap = 0, regionCap = 0, rowsCap = 0;
     unsigned long long texKey = ~0ull;
+    std::vector<unsigned char> shadow;  // the pixels of the texture on the GPU (host copy)
+    int shadowW = 0, shadowH = 0, shadowRb = 0;
     float rcpHost[256] = {};
     bool rcpSet = false;
     unsigned char* stage = nullptr;  // pinned: the region on its way to and from the GPU
@@ -555,9 +557,21 @@ bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut, GpuAeSpanTimes* times)
     if (times) times->regionPx = (long long)(x1 - x0) * (y1 - y0);
     if (g_ae.texKey != j.texKey || !g_ae.tex) {
         const double ta = nowMs();
-        if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
-            g_ae.texKey = ~0ull;
-            return false;
+        // the same pixels as the texture on the GPU (the copies of one layer share one texture): no upload
+        // (each row's pixels only: the padding after them differs between textures and is never read)
+        bool same = g_ae.tex && g_ae.shadow.size() == texBytes && g_ae.shadowW == j.tex.width &&
+                    g_ae.shadowH == j.tex.height && g_ae.shadowRb == j.tex.rowbytes;
+        for (int y = 0; same && y < j.tex.height; y++)
+            same = !std::memcmp(g_ae.shadow.data() + (size_t)y * j.tex.rowbytes, j.tex.data + (size_t)y * j.tex.rowbytes,
+                                (size_t)j.tex.width * 4);
+        if (!same) {
+            if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
+                g_ae.texKey = ~0ull;
+                g_ae.shadow.clear();
+                return false;
+            }
+            g_ae.shadow.assign(j.tex.data, j.tex.data + texBytes);
+            g_ae.shadowW = j.tex.width, g_ae.shadowH = j.tex.height, g_ae.shadowRb = j.tex.rowbytes;
         }
         g_ae.texKey = j.texKey;
         if (times) times->texMs = nowMs() - ta;

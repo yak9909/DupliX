@@ -968,6 +968,98 @@ A_Err HookGetDsf(PR_RenderContextH ctx, AEGP_DownsampleFactor* f)
     return err;
 }
 
+// ---- the merge checkbox: one layer-bounds answer per layer and pass. Before drawing, Advanced3D (sub_180008710) asks
+// AEGP_GetRenderLayerBounds for every sub-layer, and each ask runs the layer's pre-render (the effects' bounds, ~0.2
+// ms each in the viewer). The copies are the same layer at the same time: within one pass (from its
+// AEGP_GetNumLayersToRender, on one thread) a later sub-layer of a layer with the merge on gets the first answer.
+typedef A_Err (*GetNumLayersFn)(PR_RenderContextH, A_long*);
+typedef A_Err (*GetBoundsFn)(PR_RenderContextH, AEGP_RenderLayerContextH, const A_Time*, A_LegacyRect*);
+GetNumLayersFn g_origGetNumLayers = nullptr;
+GetBoundsFn g_origGetBounds = nullptr;
+AEGP_CanvasSuite8* g_canvas8 = nullptr;
+struct SharedBounds {
+    PR_RenderContextH rc;
+    AEGP_LayerH layer;
+    A_Time t;
+    A_LegacyRect r;
+};
+thread_local std::vector<SharedBounds> t_bounds;
+std::atomic<long long> g_boundsShared{0}, g_boundsAsked{0};
+LogLimit g_boundsLog, g_boundsCheckLog;
+
+A_Err HookGetNumLayers(PR_RenderContextH rc, A_long* n)
+{
+    t_bounds.clear();  // a new pass
+    return g_origGetNumLayers(rc, n);
+}
+
+bool MergeOnFor(const void* L)
+{
+    if (!L || !IsMine(L) || OldMerge()) return false;
+    int seen = MergeSeenOf(L);
+    if (seen < 0) {
+        ParamSnapshot s;
+        seen = ParamsFor(L, nullptr, &s) && s.p.merge ? 1 : 0;
+    }
+    return seen > 0;
+}
+
+A_Err HookGetBounds(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_Time* t, A_LegacyRect* r)
+{
+    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    // RANDAMU_BOUNDS_SHARE=0 (diagnostics): never share; with RANDAMU_A3D_TIME every answer of a merged layer is
+    // compared with the first one of its pass
+    static const bool s_noShare = [] {
+        char v[4] = {0};
+        return GetEnvironmentVariableA("RANDAMU_BOUNDS_SHARE", v, sizeof(v)) > 0 && v[0] == '0';
+    }();
+    AEGP_LayerH L = nullptr;
+    AEGP_SubLayerIndex sub = -1;
+    if (!t || !r || !g_canvas8 || g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) || !L || !MergeOnFor(L))
+        return g_origGetBounds(rc, lc, t, r);
+    for (const SharedBounds& s : t_bounds)
+        if (s.rc == rc && s.layer == L && s.t.value == t->value && s.t.scale == t->scale) {
+            if (!s_noShare) {
+                *r = s.r;
+                int n = 0;
+                if (g_boundsLog.Take(3, true, &n)) RLog("merge: layer bounds shared %lld (asked %lld)", ++g_boundsShared, g_boundsAsked.load());
+                else ++g_boundsShared;
+                return A_Err_NONE;
+            }
+            const auto t0 = std::chrono::steady_clock::now();
+            const A_Err e = g_origGetBounds(rc, lc, t, r);
+            if (s_time && g_boundsCheckLog.Take(2000))
+                RLog("merge: bounds sub %d %s (%d %d %d %d vs first %d %d %d %d) %.3f ms", (int)sub,
+                     !e && !std::memcmp(r, &s.r, sizeof(*r)) ? "same" : "DIFFERENT", r->top, r->left, r->bottom, r->right,
+                     s.r.top, s.r.left, s.r.bottom, s.r.right,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            return e;
+        }
+    const A_Err e = g_origGetBounds(rc, lc, t, r);
+    ++g_boundsAsked;
+    if (!e && t_bounds.size() < 64) t_bounds.push_back({rc, L, *t, *r});
+    return e;
+}
+
+void InstallBoundsHook(void** t10)
+{
+    // the v10 table's slots of the two functions, found by comparing with the SDK version's table
+    if (!g_canvas8) return;
+    int sn = -1, sb = -1;
+    for (int i = 0; i < 60; i++) {
+        if (t10[i] == (void*)g_canvas8->AEGP_GetNumLayersToRender && sn < 0) sn = i;
+        if (t10[i] == (void*)g_canvas8->AEGP_GetRenderLayerBounds && sb < 0) sb = i;
+    }
+    if (sn < 0 || sb < 0) {
+        RLog("merge: bounds hook not installed (slots %d %d)", sn, sb);
+        return;
+    }
+    g_origGetNumLayers = (GetNumLayersFn)t10[sn];
+    g_origGetBounds = (GetBoundsFn)t10[sb];
+    const bool ok = WritePtr(&t10[sn], (void*)&HookGetNumLayers) && WritePtr(&t10[sb], (void*)&HookGetBounds);
+    RLog("merge: bounds hook %s (v10 slots %d %d)", ok ? "installed" : "failed", sn, sb);
+}
+
 void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
 {
     (void)a3dLo, (void)a3dHi;
@@ -980,6 +1072,8 @@ void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
         RLog("merge: downsample hook not installed (suites)");
         return;
     }
+    g_canvas8 = t14;
+    InstallBoundsHook(t10);
     void* fn = (void*)t14->AEGP_GetRenderDownsampleFactor;
     int slot = -1;
     for (int i = 0; i < 40; i++)
@@ -1099,6 +1193,9 @@ int OurRow(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
 typedef int (*IterFnO)(uintptr_t, uintptr_t, uintptr_t);
 thread_local IterFnO t_origIter = nullptr;
 thread_local bool t_aeGpu = false;  // this draw's rows on the GPU (else on AE's threads with our row callback)
+// copies drawing fewer pixels are left to AE (see OurIterate). 0: with the texture kept on the GPU, the GPU and AE
+// were equally fast for the user's small flowers (Test A 100 / 380 copies 42-44 / 109-112 ms either way)
+constexpr long long kGpuMinPx = 0;
 // RANDAMU_A3D_TIME=1 (diagnostics): the last GPU draw's times on this thread, logged per copy by HookA3dDraw
 thread_local rnd::GpuAeSpanTimes t_gt;
 thread_local double t_gtAll = 0;
@@ -1131,11 +1228,22 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         tri.reserve(3 * (size_t)count);
         const short* sp = (const short*)(**(uintptr_t**)(d + 32));
         const int yFirst = *(int*)(d + 44), field = *(int*)(d + 48);
+        long long px = 0;
         for (int row = 0; row < count; row++) {
             const int y = row + yFirst;
             if ((y & 1) == 2 - field) continue;
             const int x0 = sp[2 * row], len = sp[2 * row + 1] - sp[2 * row];
-            if (len > 0) tri.push_back(y), tri.push_back(x0), tri.push_back(x0 + len);
+            if (len > 0) tri.push_back(y), tri.push_back(x0), tri.push_back(x0 + len), px += len;
+        }
+        // a small copy: AE's own loop (the same arithmetic on its threads) is faster than a GPU round trip
+        // (~0.45 ms however small). RANDAMU_GPU_MINPX overrides the size (0: always the GPU)
+        static const long long s_minPx = [] {
+            char v[16] = {0};
+            return GetEnvironmentVariableA("RANDAMU_GPU_MINPX", v, sizeof(v)) > 0 ? atoll(v) : kGpuMinPx;
+        }();
+        if (px < s_minPx) {
+            g_aeDraws++;
+            return t_origIter(n, d, cb);
         }
         rnd::GpuAeSpanJob gj;
         gj.core = rnd::AeCoreOf(job.p);
@@ -1598,12 +1706,12 @@ void ProfLoop()
                          (unsigned long long)ourOuter, chain.c_str());
                 std::lock_guard<std::mutex> lk(g_profMu);
                 g_profHits[key]++;
-                if (++g_profTotal % 1000 == 0) {
+                if (++g_profTotal % 20000 == 0) {
                     std::vector<std::pair<int, std::string>> v;
                     for (auto& kv : g_profHits) v.push_back({kv.second, kv.first});
                     std::sort(v.rbegin(), v.rend());
                     RLog("a3d prof: %d samples", g_profTotal);
-                    for (size_t i = 0; i < v.size() && i < 40; i++) RLog("a3d prof:   %6d %s", v[i].first, v[i].second.c_str());
+                    for (size_t i = 0; i < v.size() && i < 300; i++) RLog("a3d prof:   %6d %s", v[i].first, v[i].second.c_str());
                 }
             }
         }
