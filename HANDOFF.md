@@ -1,10 +1,18 @@
-# 引き継ぎメモ（最新: 2026-11-26 14 時 40 分。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-26 14 時 50 分。再開はこの冒頭の「再開の手順」から）
 
-## 再開の手順（2026-11-26 14:40、組の描画を実装・既定で有効・利用者への報告待ち）
+## 再開の手順（2026-11-26 14:50、組の描画を実装・既定で有効・利用者の試用待ち。セッションをクリアする前に記録）
 
-- 利用者「組の方式に取り掛かってください」。**済み（この節の commit）: 組の描画**（記録 `docs/experiments/2026-11-26-dev-log.md` の 8c 節に全部）。他と重ならないコピーをサブレイヤー 1 枚にまとめ、代表の描画の時に AE 自身の関数（面の作成・並べ方・描画）で各コピーを描く。GPU はまとめて 1 回。奥行きの補正の番号は `HookGetLayerIndex` で組なしの値に戻す。
-- **結果:** Test.aep 100 枚 38.6 → 22.2 ms、Test A 100 枚 約 30 → 23 ms、380 枚は変わらず（密集）。オフと全部差 0。試験一式（組あり）合格。今の `dev_plugins\randamu.aex` は最新（Release、14:38）。
-- **次:** 利用者に報告して試してもらう（AE の再起動が必要）。次の候補は手前・奥の組（8c 節の最後）。穴（組の描画が断られると組の他のコピーが描かれない）は 8c 節の「注意」。
+- **今どこまで（commit b5b0912 まで push 済み）:** 利用者「組の方式に取り掛かってください」に対して、**組の描画を実装し既定で有効にした**（`RANDAMU_GROUP=0` で止める）。詳細はすべて `docs/experiments/2026-11-26-dev-log.md` の 8c 節（仕組み・AE の関数の RVA・ずれの原因 2 つ・結果・注意）。要点: 他と重ならないコピーをサブレイヤー 1 枚（代表＝画面上で一番大きいコピー）にまとめ、AE が代表を描く時に、組の全コピーの面を AE 自身の関数で作って描く（`DrawGroup`、`bee_hooks.cpp`）。組分けは `BuildIsolatedGroupPlan`（`merge_plan.cpp`）。GPU はためてまとめて 1 回（`FlushGroupJobs` → `GpuAeSpansBatch`、詰めた行の区間・重なりの段ごとに 1 回の命令）。奥行きの補正の番号は `HookGetLayerIndex` で組なしの値に戻す。
+- **利用者に報告済み（14:45）:** 結果の表（Test.aep 100 枚 38.6 → 22.2 ms、Test A 100 枚 約 30 → 23 ms、Test A 380 枚は密集で 2〜3 枚しかまとまらず変わらない）、オフと全部差 0、限界（密集では効かない・画素の計算は減らない・穴）。**回答待ち:** AE を再起動して試してもらう。続けるなら次は「手前・奥の組」（家と重なっても、はっきり手前か奥にあるコピーをまとめる。8c 節の最後）。
+- **確かめた試験（組あり）:** `run_preview.ps1 ... -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（234 本中 72 本の記録で組を描いた、16/32 bit・MFR オンを含む）、`run_user_merge.ps1`（Test A・Test）オン＝オフ、`run_ref`・`run_ui`・単体（74）・`gpu_test` 合格。画面の経路のオン＝オフは 20・100・380 枚と色が変わる変種で差 0。今の `dev_plugins\randamu.aex` は最新（Release、14:38）。
+- **計測の方法（利用者は画面で測る）:** `pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -Layer "flower_blue.png" -Frames 8 -IntervalMs 1500 -Variants "pv_off100,pv_on100"`（span の平均。ぶれ ±10 ms）。オンとオフの一致は `spike/.venv/Scripts/python.exe tests/ae/cmp_frames.py build/test/preview pv_off100 pv_on100`。変種は `preview_setup.jsx`（`pv_on1/20/100/380`・`pv_off…`・`pv_none`・`pv_anim_on100/off100`）。Test.aep には `-Layer` 不要。
+- **気を付けること:**
+  - 穴: 代表の描画で組の描画が断られる（描き込み先の種類が 1 以外、動きのぼかし）と組の他のコピーが描かれない。ログ「group: not drawn as a group」。組分けの条件では起きないはずで、試験でも出ていない。
+  - 1 回の描画の終わりの検出（`ctx+252 >= ctx+248`）は画面の経路で成り立たないことがある（「pass time」の draw の数字は当てにならない）。共有の表は次の `AEGP_GetNumLayersToRender` で必ず捨てているので結果には影響しない。
+  - 簡易プロファイラー（`RANDAMU_A3D_PROF`）は GPU の同期待ちを大きく見せる。描画の費用は `RANDAMU_A3D_DRAW=2` や `RANDAMU_GROUP_NOGPU=1` との差で測る。
+  - 診断の環境変数（記録の 6・8c 節）: `RANDAMU_A3D_TIME`、`RANDAMU_GROUP_TRACE`（段階ごとの記録と AE の内部確認の失敗）、`RANDAMU_XF_CHECK`、`RANDAMU_GROUP_CLONE`、`RANDAMU_GROUP_BATCH=0`、`RANDAMU_BOUNDS_SHARE=0`（共有せず比べる）。
+  - AE の内部の関数をアドレスで呼んでいる（Advanced3D 2025 の RVA）。版が変わると使えない（vtable の照合で描画のフックごと止まる）。
+  - 計測のスクリプトが AE に届かない件は直した（AE の「2 つめのスクリプト」の警告。`run_preview.ps1` が待ち・送り直し・警告を閉じる）。
 
 ## 再開の手順（2026-11-26 12 時、組の方式を検討中・利用者への報告前）
 
