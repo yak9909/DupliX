@@ -1601,7 +1601,10 @@ constexpr uintptr_t kDrawParamsRva = 0x50FD0;
 // the row callback (ours), AE's draw after it
 thread_local std::chrono::steady_clock::time_point t_gIterIn, t_gIterOut;
 // (diagnostics, RANDAMU_A3D_TIME) a frame's clusters: their time, the resolve's, AE's rows of copies into M buffers
-thread_local double t_mbIterMs = 0, t_mbClusterMs = 0, t_mbResolveMs = 0, t_mbNewMs = 0, t_mbFlushMs = 0, t_mbGpuMs = 0;
+thread_local double t_mbIterMs = 0, t_mbClusterMs = 0, t_mbResolveMs = 0, t_mbNewMs = 0, t_mbFlushMs = 0, t_mbGpuMs = 0,
+                    t_mbKeptMs = 0;  // (the kept surfaces' flushes: MbufFlush)
+thread_local int t_mbKeptFlushes = 0;
+thread_local long long t_mbKeptJobs = 0;
 thread_local int t_mbIters = 0, t_mbClusters = 0;
 thread_local long long t_mbPx = 0;
 thread_local double t_gAcc[4];
@@ -2800,6 +2803,7 @@ std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AE
 }
 LogLimit g_flushLog;
 void DropGroupJobs() { t_groupJobs.clear(); }
+void MbufDropAll();
 // draws the kept jobs in order: on the GPU together, else one by one, else on the CPU (AE's arithmetic either way)
 void FlushGroupJobs()
 {
@@ -2865,6 +2869,9 @@ uintptr_t HookFrameDraw(uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, 
             t_groupJobs.clear();  // drawn at sub_180010E00; left only when AE threw: dropped
             t_groupJobs.swap(*outer);
             if (!t_frameDepth) t_lastKeep = LastKeep();  // (8 MB for a large texture: not kept past the frame)
+            // an M buffer's kept surfaces are flushed at its resolve: any left (AE threw before it) are dropped, so
+            // a later M buffer at the same address never gets them
+            if (!t_frameDepth) MbufDropAll();
         }
     } out{&outer};
     return g_origFrameDraw(a1, a2, a3, a4, a5, a6, a7, a8, a9);
@@ -2879,10 +2886,13 @@ uintptr_t HookCtxEnd(uintptr_t ctx)
              t_bTexBytes / 1048576.0);
     if (s_time && (t_mbIters || t_mbClusters) && ml.Take(200))
         RLog("mbuf: frame's clusters %d in %.1f ms (group clusters: M buffers made %.1f, copies flushed before %.1f, "
-             "resolve %.1f ms); copies' rows into M buffers %.1f ms (%d draws, %lld px; of it the GPU %.1f ms)",
-             t_mbClusters, t_mbClusterMs, t_mbNewMs, t_mbFlushMs, t_mbResolveMs, t_mbIterMs, t_mbIters, t_mbPx, t_mbGpuMs);
+             "resolve %.1f ms); copies' rows into M buffers %.1f ms (%d draws, %lld px); kept ones computed and inserted in "
+             "%d flushes of %lld surfaces %.1f ms; the GPU %.1f ms",
+             t_mbClusters, t_mbClusterMs, t_mbNewMs, t_mbFlushMs, t_mbResolveMs, t_mbIterMs, t_mbIters, t_mbPx,
+             t_mbKeptFlushes, t_mbKeptJobs, t_mbKeptMs, t_mbGpuMs);
     t_bFlushes = t_bCopies = t_bTexBytes = 0;
-    t_mbIterMs = t_mbClusterMs = t_mbResolveMs = t_mbNewMs = t_mbFlushMs = t_mbGpuMs = 0, t_mbIters = t_mbClusters = 0, t_mbPx = 0;
+    t_mbIterMs = t_mbClusterMs = t_mbResolveMs = t_mbNewMs = t_mbFlushMs = t_mbGpuMs = t_mbKeptMs = 0, t_mbKeptFlushes = 0,
+    t_mbKeptJobs = 0, t_mbIters = t_mbClusters = 0, t_mbPx = 0;
     return g_origCtxEnd(ctx);
 }
 uintptr_t HookClusterCall(uintptr_t ctx, uintptr_t comp, uintptr_t target)
@@ -2932,6 +2942,181 @@ void InstallFrameBatchHooks(uintptr_t lo)
     RLog("batch hooks: installed (frame call at +%llx)", (unsigned long long)((uintptr_t)frameSite - lo));
 }
 
+unsigned long long TexKeyOf(const rnd::AeTex8& t);
+// ---- an M buffer's surfaces kept and computed together (11/27: one GPU call per surface, ~0.77 ms each, 376 a frame
+// in Test D with a large image). A surface drawn into an M buffer only adds fragments to it; nothing reads them until
+// the M buffer is resolved into the target (its vfunc +24), so the fragments are computed (one GPU call for the
+// kept surfaces with one texture) and inserted, surface after surface in AE's order, just before the resolve. The
+// M buffers' vtables (SY_MBufferDraftX<PF_Pixel8> and kin) get two slots of ours: +24 (the resolve: kept surfaces
+// first) and +0 (the deleting destructor: kept surfaces dropped). Also flushed before AE itself draws into it.
+struct MbufJob {
+    a3d::SpanJob j;
+    std::vector<int> rows;  // (y, x0, x1) per row with pixels
+    std::shared_ptr<std::vector<unsigned char>> texKeep;
+    unsigned long long texKey = 0;
+};
+struct MbufPending {
+    uintptr_t mb;
+    std::vector<MbufJob> jobs;
+};
+// per thread: an M buffer is drawn into, resolved and deleted on the thread that draws its cluster
+std::mutex g_mbPendMu;
+thread_local std::vector<MbufPending> g_mbPend;
+struct MbufVt {
+    uintptr_t* vt;
+    uintptr_t resolve, del;
+};
+MbufVt g_mbVt[12];
+int g_mbVtN = 0;
+std::mutex g_mbVtMu;
+const MbufVt* MbufVtOf(uintptr_t mb)
+{
+    const uintptr_t* vt = *(uintptr_t**)mb;
+    const int n = ((volatile int&)g_mbVtN);
+    for (int i = 0; i < n; i++)
+        if (g_mbVt[i].vt == vt) return &g_mbVt[i];
+    return nullptr;
+}
+std::vector<MbufJob> MbufTake(uintptr_t mb)
+{
+    std::lock_guard<std::mutex> lk(g_mbPendMu);
+    for (size_t i = 0; i < g_mbPend.size(); i++)
+        if (g_mbPend[i].mb == mb) {
+            std::vector<MbufJob> jobs = std::move(g_mbPend[i].jobs);
+            g_mbPend.erase(g_mbPend.begin() + (ptrdiff_t)i);
+            return jobs;
+        }
+    return {};
+}
+// the kept surfaces of mb: computed and inserted (on this thread, with row thread 0's fragment pool: AE's rows do not
+// run meanwhile)
+void MbufFlush(uintptr_t mb)
+{
+    std::vector<MbufJob> jobs = MbufTake(mb);
+    if (jobs.empty()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    double gpuMs = 0;
+    for (size_t a = 0; a < jobs.size();) {
+        size_t b = a + 1;
+        while (b < jobs.size() && jobs[b].texKeep == jobs[a].texKeep) b++;
+        std::vector<rnd::GpuAeSpanJob> gjs;
+        long long px = 0;
+        for (size_t q = a; q < b; q++) {
+            const MbufJob& m = jobs[q];
+            rnd::GpuAeSpanJob gj;
+            gj.core = rnd::AeCoreOf(m.j.p), gj.tex = m.j.tex, gj.texKey = m.texKey, gj.rcp = g_rcp.r;
+            gj.target = nullptr, gj.targetRowbytes = 0;
+            gj.rows = m.rows.data(), gj.nRows = (int)m.rows.size() / 3;
+            gjs.push_back(gj);
+            for (size_t r = 0; r + 2 < m.rows.size(); r += 3) px += m.rows[r + 2] - m.rows[r + 1];
+        }
+        std::vector<unsigned char> col(4 * (size_t)px + 4);
+        std::vector<float> dep((size_t)px + 1);
+        double ms = 0;
+        const bool gpu = rnd::GpuAeMbufSpans(gjs.data(), (int)gjs.size(), col.data(), dep.data(), &ms);
+        gpuMs += ms;
+        if (!gpu && g_gpuLog.Take(10)) RLog("a3d ours: GPU failed for an M buffer's surfaces, their fragments on the CPU");
+        long long o = 0;
+        for (size_t q = a; q < b; q++) {
+            const MbufJob& m = jobs[q];
+            for (size_t r = 0; r + 2 < m.rows.size(); r += 3) {
+                const int y = m.rows[r], x0 = m.rows[r + 1], len = m.rows[r + 2] - x0;
+                if (!gpu) rnd::AeMbufSpan8(m.j.p, m.j.tex, x0, x0 + len, y, &col[4 * (size_t)o], &dep[(size_t)o]);
+                MbufInsertSpan(m.j, y, x0, len, &col[4 * (size_t)o], &dep[(size_t)o], 0);
+                o += len;
+            }
+        }
+        a = b;
+    }
+    t_mbGpuMs += gpuMs;
+    t_mbKeptFlushes++, t_mbKeptJobs += (long long)jobs.size();
+    t_mbKeptMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+void MbufDropAll()
+{
+    std::lock_guard<std::mutex> lk(g_mbPendMu);
+    static LogLimit dl;
+    if (!g_mbPend.empty() && dl.Take(10)) RLog("mbuf: kept surfaces of %zu M buffers dropped at the frame's end", g_mbPend.size());
+    g_mbPend.clear();
+}
+void MbufFlushAll()
+{
+    for (;;) {
+        uintptr_t mb = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_mbPendMu);
+            if (g_mbPend.empty()) return;
+            mb = g_mbPend.front().mb;
+        }
+        MbufFlush(mb);
+    }
+}
+uintptr_t HookMbufResolve(uintptr_t mb, uintptr_t a2, uintptr_t a3, uintptr_t a4)
+{
+    const MbufVt* v = MbufVtOf(mb);
+    MbufFlush(mb);
+    return ((uintptr_t(*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))v->resolve)(mb, a2, a3, a4);
+}
+uintptr_t HookMbufDelete(uintptr_t mb, uintptr_t flags)
+{
+    const MbufVt* v = MbufVtOf(mb);
+    const std::vector<MbufJob> dropped = MbufTake(mb);
+    static LogLimit dl;
+    if (!dropped.empty() && dl.Take(10)) RLog("mbuf: %zu kept surfaces dropped (the M buffer deleted unresolved)", dropped.size());
+    return ((uintptr_t(*)(uintptr_t, uintptr_t))v->del)(mb, flags);
+}
+// mb's vtable with our two slots (once per class). False: not hooked (the surfaces are inserted at once)
+bool MbufHookVt(uintptr_t mb)
+{
+    if (MbufVtOf(mb)) return true;
+    std::lock_guard<std::mutex> lk(g_mbVtMu);
+    if (MbufVtOf(mb)) return true;
+    if (g_mbVtN >= 12) return false;
+    uintptr_t* vt = *(uintptr_t**)mb;
+    // the slots point into Advanced3D (else someone else's: left alone)
+    MEMORY_BASIC_INFORMATION mi = {};
+    if (!VirtualQuery((void*)vt[3], &mi, sizeof(mi)) || (uintptr_t)mi.AllocationBase != g_a3dLo) return false;
+    if (!VirtualQuery((void*)vt[0], &mi, sizeof(mi)) || (uintptr_t)mi.AllocationBase != g_a3dLo) return false;
+    MbufVt& e = g_mbVt[g_mbVtN];
+    e.vt = vt, e.resolve = vt[3], e.del = vt[0];
+    DWORD old = 0;
+    if (!VirtualProtect(vt, 4 * sizeof(uintptr_t), PAGE_READWRITE, &old)) return false;
+    // published before the slots: a call through them finds its entry
+    ((volatile int&)g_mbVtN) = g_mbVtN + 1;
+    InterlockedExchange64((volatile LONG64*)&vt[3], (LONG64)(uintptr_t)&HookMbufResolve);
+    InterlockedExchange64((volatile LONG64*)&vt[0], (LONG64)(uintptr_t)&HookMbufDelete);
+    VirtualProtect(vt, 4 * sizeof(uintptr_t), old, &old);
+    RLog("mbuf: vtable +%llx hooked (resolve, delete)", (unsigned long long)((uintptr_t)vt - g_a3dLo));
+    return true;
+}
+// keeps the surface's rows for MbufFlush. False: not kept (the caller inserts at once)
+bool MbufKeep(const a3d::SpanJob& job, uintptr_t n, uintptr_t d)
+{
+    if (!MbufHookVt(job.mb)) return false;
+    MbufJob m;
+    m.j = job;
+    const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+    const int yFirst = *(int*)(d + 44), field = *(int*)(d + 48);
+    m.rows.reserve(3 * (size_t)n);
+    for (uintptr_t row = 0; row < n; row++) {
+        const int y = (int)row + yFirst;
+        if ((y & 1) == 2 - field) continue;
+        const int x0 = sp[2 * row], len = sp[2 * row + 1] - sp[2 * row];
+        if (len > 0) m.rows.push_back(y), m.rows.push_back(x0), m.rows.push_back(x0 + len);
+    }
+    // the texture: AE disposes of it at the end of the surface's draw
+    m.texKey = TexKeyOf(job.tex);
+    AEGP_WorldH master = nullptr;
+    m.texKeep = KeepTexture(job.tex, &master);
+    m.j.tex.data = m.texKeep->data();
+    std::lock_guard<std::mutex> lk(g_mbPendMu);
+    for (MbufPending& p : g_mbPend)
+        if (p.mb == job.mb) return p.jobs.push_back(std::move(m)), true;
+    g_mbPend.push_back({job.mb, {}});
+    g_mbPend.back().jobs.push_back(std::move(m));
+    return true;
+}
+
 // a texture's key on the GPU: a shared master's pixels (every copy of the layer this frame): its serial, so the GPU
 // neither uploads nor compares the texture again for each copy (8 MB for 1920x1080). Else a key that changes with
 // every fetch.
@@ -2958,6 +3143,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         if (g_oursSkip.Take(20)) RLog("a3d ours: AE draws this copy (%s)", why);
         g_aeDraws++;
         FlushGroupJobs();  // the kept copies first: AE draws this one into the target now
+        MbufFlushAll();    // and the kept M buffer surfaces (AE may draw into one of them: its fragments after ours)
         // (diagnostics, RANDAMU_A3D_TIME) AE's rows into an M buffer (target kind 2): their time and pixels
         if (cb == g_a3dLo + a3d::kRowPolygonRva && *(int*)*(uintptr_t*)(d + 56) == 2) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -2979,9 +3165,21 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         }();
         const auto t0 = std::chrono::steady_clock::now();
         int e = 0;
+        // RANDAMU_MBUF_BATCH=0 (diagnostics): each surface's fragments at once (one GPU call each)
+        static const bool s_mbBatch = [] {
+            char v[4] = {0};
+            return !(GetEnvironmentVariableA("RANDAMU_MBUF_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
+        }();
         if (s_mbMode == 2) {
+            MbufFlushAll();
             MbufCheck(job, n, d, cb, t_origIter, &e);
+        } else if (t_aeGpu && s_mbMode == 1 && s_mbBatch && MbufKeep(job, n, d)) {
+            g_oursDraws++;
+            // the progress AE's row callback reports: once, at the last row (as for a group's copies)
+            const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
+            if (n > 0) (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)(n - 1), (unsigned)n);
         } else {
+            MbufFlush(job.mb);
             int slot = -1;
             {
                 std::lock_guard<std::mutex> lk(g_jobMu);
@@ -3018,7 +3216,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
                     gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
                     mcol.resize(4 * (size_t)px + 4), mdep.resize((size_t)px + 1);
                     double ms = 0;
-                    if (rnd::GpuAeMbufSpans(gj, mcol.data(), mdep.data(), &ms)) {
+                    if (rnd::GpuAeMbufSpans(&gj, 1, mcol.data(), mdep.data(), &ms)) {
                         g_mbPre[slot] = {d, mcol.data(), mdep.data(), rowOff.data()};
                         t_mbGpuMs += ms;
                     } else if (g_gpuLog.Take(10)) {

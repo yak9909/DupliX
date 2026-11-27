@@ -309,6 +309,95 @@ static void GpuAeBatch(int n, unsigned seed, int tw = 217, int th = 216, bool op
     CHECK(touched > 0 && bad == 0);
 }
 
+// gpu_ae_mbuf: the fragments of spans into AE's M buffer (GpuAeMbufSpans) against the CPU's (AeMbufSpan8, checked
+// against AE's own fragments in AE with RANDAMU_MBUF=2): every sample and every depth's bits. Surfaces drawn like
+// GpuAeBatch's, perspective or not, minified or magnified, with a depth offset (params +0xA8); odd and even spans
+// (the depth of a pair's first pixel is rounded differently)
+static void GpuAeMbuf(int n, unsigned seed)
+{
+    unsigned s = seed;
+    auto r01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
+    const int tw = 217, th = 216;
+    std::vector<unsigned char> tex((size_t)tw * th * 4);
+    for (int y = 0; y < th; y++)
+        for (int x = 0; x < tw; x++) {
+            unsigned char* p = &tex[((size_t)y * tw + x) * 4];
+            const double d = std::hypot(x - tw / 2.0, y - th / 2.0) / (tw / 2.0);
+            p[0] = d > 1 ? 0 : (unsigned char)(255 * (1 - d * d * 0.7));
+            p[1] = (unsigned char)(x * 255 / tw), p[2] = (unsigned char)(y * 255 / th), p[3] = (unsigned char)((x ^ y) & 255);
+        }
+    rnd::AeTex8 t;
+    t.data = tex.data(), t.rowbytes = tw * 4, t.width = tw, t.height = th;
+    static rnd::AeRcpTable rcp;
+    rnd::AeFillRcpTable(&rcp);
+    long long px = 0, bad = 0, frags = 0;
+    bool ok = true;
+    // every surface's rows, job and CPU fragments, for the batch (all the surfaces in one call) after the loop
+    std::vector<std::vector<int>> allRows((size_t)n);
+    std::vector<rnd::GpuAeSpanJob> allJobs;
+    std::vector<unsigned char> allCol;
+    std::vector<float> allDep;
+    for (int q = 0; q < n && ok; q++) {
+        rnd::AeSpanParams p;
+        const double S = 8 + r01() * 300, cx = 300 + r01() * 1300, cy = 100 + r01() * 880, a = r01() * 6.283;
+        const double k = tw / S * (0.5 + r01());
+        const double c = std::cos(a) * k, sn = std::sin(a) * k;
+        const bool persp = r01() < 0.6;
+        const double wx = persp ? (r01() - 0.5) * 2e-3 : 0, wy = persp ? (r01() - 0.5) * 2e-3 : 0, w0 = 1 - wx * cx - wy * cy;
+        p.m[0] = c, p.m[3] = sn, p.m[6] = tw / 2.0 - c * cx - sn * cy;
+        p.m[1] = -sn, p.m[4] = c, p.m[7] = th / 2.0 + sn * cx - c * cy;
+        p.m[2] = wx, p.m[5] = wy, p.m[8] = w0;
+        p.persp = persp, p.a0 = 0, p.quality = r01() < 0.9 ? 1 : 0, p.opacity = 1.0, p.colorMode = r01() < 0.1 ? 2 : 1;
+        p.zoff = (float)((r01() - 0.5) * 20), p.rcp = &rcp;
+        std::vector<int>& rows = allRows[(size_t)q];
+        const int y0 = (int)(cy - S * 0.75), y1 = (int)(cy + S * 0.75);
+        for (int y = y0; y < y1; y++) {
+            const int x0 = (int)(cx - S * 0.75 + (r01() - 0.5) * 3), x1 = (int)(cx + S * 0.75 + (r01() - 0.5) * 3);
+            if (x1 > x0) rows.insert(rows.end(), {y, x0, x1});
+        }
+        long long n1 = 0;
+        for (size_t r = 0; r < rows.size(); r += 3) n1 += rows[r + 2] - rows[r + 1];
+        std::vector<unsigned char> cc((size_t)n1 * 4), gc((size_t)n1 * 4 + 4);
+        std::vector<float> cd((size_t)n1), gd((size_t)n1 + 1);
+        long long o = 0;
+        for (size_t r = 0; r < rows.size(); r += 3) {
+            rnd::AeMbufSpan8(p, t, rows[r + 1], rows[r + 2], rows[r], &cc[(size_t)o * 4], &cd[(size_t)o]);
+            o += rows[r + 2] - rows[r + 1];
+        }
+        rnd::GpuAeSpanJob gj;
+        gj.core = rnd::AeCoreOf(p), gj.tex = t, gj.texKey = 79, gj.rcp = rcp.r, gj.target = nullptr, gj.targetRowbytes = 0;
+        gj.rows = rows.data(), gj.nRows = (int)rows.size() / 3;
+        ok = rnd::GpuAeMbufSpans(&gj, 1, gc.data(), gd.data());
+        for (long long i = 0; ok && i < n1; i++) {
+            frags += cc[(size_t)i * 4] != 0;
+            if (std::memcmp(&cc[(size_t)i * 4], &gc[(size_t)i * 4], 4) || std::memcmp(&cd[(size_t)i], &gd[(size_t)i], 4)) {
+                if (bad < 5)
+                    std::printf("  gpu_ae_mbuf surface %d px %lld: gpu %02x%02x%02x%02x z %.9g cpu %02x%02x%02x%02x z %.9g\n", q, i,
+                                gc[i * 4], gc[i * 4 + 1], gc[i * 4 + 2], gc[i * 4 + 3], gd[i], cc[i * 4], cc[i * 4 + 1], cc[i * 4 + 2],
+                                cc[i * 4 + 3], cd[i]);
+                bad++;
+            }
+        }
+        px += n1;
+        allJobs.push_back(gj);
+        allCol.insert(allCol.end(), cc.begin(), cc.end()), allDep.insert(allDep.end(), cd.begin(), cd.end());
+    }
+    CHECK(ok);
+    // all of them in one call (the plugin's flush of an M buffer's surfaces)
+    std::vector<unsigned char> bc(allCol.size() + 4);
+    std::vector<float> bd(allDep.size() + 1);
+    double ms = 0;
+    const bool okB = rnd::GpuAeMbufSpans(allJobs.data(), (int)allJobs.size(), bc.data(), bd.data(), &ms);
+    CHECK(okB);
+    long long badB = 0;
+    for (size_t i = 0; okB && i < allDep.size(); i++)
+        badB += std::memcmp(&allCol[i * 4], &bc[i * 4], 4) || std::memcmp(&allDep[i], &bd[i], 4);
+    std::printf("gpu_ae_mbuf: in one call %lld differ (%.1f ms)\n", badB, ms);
+    CHECK(badB == 0);
+    std::printf("gpu_ae_mbuf: %d surfaces, %lld pixels (%lld fragments), %lld differ\n", n, px, frags, bad);
+    CHECK(frags > 0 && bad == 0);
+}
+
 // gpu_ae_replay (RANDAMU_BATCH_REPLAY=<file>, written by the plugin with RANDAMU_BATCH_DUMP): a real group's batch
 // from AE drawn on the GPU and by the CPU reference (AE's arithmetic, in order), every pixel compared, and timed
 static void GpuAeReplay(const std::string& path)
@@ -404,6 +493,7 @@ int main()
     GpuAeBatch(300, 1);
     GpuAeBatch(2500, 2);
     GpuAeBatch(300, 3, 960, 540, true);
+    GpuAeMbuf(200, 4);
     {
         char env[4096] = {0};
         if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {

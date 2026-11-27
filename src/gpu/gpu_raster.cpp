@@ -875,38 +875,43 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
 }
 }  // namespace
 
-bool GpuAeMbufSpans(const GpuAeSpanJob& j, unsigned char* col, float* depth, double* msOut)
+bool GpuAeMbufSpans(const GpuAeSpanJob* jobs, int nJobs, unsigned char* col, float* depth, double* msOut)
 {
     const Api& cu = Cuda();
     if (!cu.ok || g_failed.load() || !cu.primaryRetain || !cu.streamCreate || !cu.dtohAsync || !cu.memAllocHost) return false;
-    if (!j.tex.data) return false;
+    if (nJobs <= 0 || !jobs[0].tex.data) return false;
+    const GpuAeSpanJob& j = jobs[0];
+    // one texture for all the jobs (the same size; the caller gives the same pixels)
+    for (int q = 1; q < nJobs; q++)
+        if (jobs[q].tex.width != j.tex.width || jobs[q].tex.height != j.tex.height || jobs[q].tex.rowbytes != j.tex.rowbytes)
+            return false;
     LARGE_INTEGER qf, t0;
     QueryPerformanceFrequency(&qf);
     QueryPerformanceCounter(&t0);
-    // (y, x0, x1, 0, the span's first pixel in col / depth, job 0, its first kept state, 0) per span (ae_span.cu)
+    // (y, x0, x1, 0, the span's first pixel in col / depth, its job, its first kept state, 0) per span (ae_span.cu)
     std::vector<int> packed;
-    packed.reserve(8 * (size_t)j.nRows);
     long long px = 0, nStates = 0;
-    for (int i = 0; i < j.nRows; i++) {
-        const int* r = j.rows + 3 * i;
-        if (r[2] <= r[1]) continue;
-        const int o[8] = {r[0], r[1], r[2], 0, (int)px, 0, (int)nStates, 0};
-        packed.insert(packed.end(), o, o + 8);
-        px += r[2] - r[1], nStates += (r[2] - 1) / 8 - r[1] / 8;
-    }
+    for (int q = 0; q < nJobs; q++)
+        for (int i = 0; i < jobs[q].nRows; i++) {
+            const int* r = jobs[q].rows + 3 * i;
+            if (r[2] <= r[1]) continue;
+            const int o[8] = {r[0], r[1], r[2], 0, (int)px, q, (int)nStates, 0};
+            packed.insert(packed.end(), o, o + 8);
+            px += r[2] - r[1], nStates += (r[2] - 1) / 8 - r[1] / 8;
+        }
     if (packed.empty()) return true;
     std::lock_guard<std::mutex> lk(g_ae.mu);
     if (!AeInit() || !g_ae.fnWalk || !g_ae.fnMbuf) return false;
     CtxScope scope(g_ae.ctx);
     if (!scope.pushed || !AeTexture(j, nullptr)) return false;
     CUstream st = g_ae.stream;
-    const size_t rowsBytes = packed.size() * 4, coreBytes = sizeof(AeSpanCore), outBytes = (size_t)px * 8;
+    const size_t rowsBytes = packed.size() * 4, coreBytes = sizeof(AeSpanCore) * (size_t)nJobs, outBytes = (size_t)px * 8;
     if (!GrowDev(&g_ae.region, &g_ae.regionCap, outBytes) || !GrowDev(&g_ae.states, &g_ae.statesCap, (size_t)nStates * 24 + 8) ||
         !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes + coreBytes) ||
         !GrowHost(&g_ae.stage, &g_ae.stageCap, std::max(outBytes, rowsBytes + coreBytes)))
         return false;
     std::memcpy(g_ae.stage, packed.data(), rowsBytes);
-    std::memcpy(g_ae.stage + rowsBytes, &j.core, coreBytes);
+    for (int q = 0; q < nJobs; q++) std::memcpy(g_ae.stage + rowsBytes + sizeof(AeSpanCore) * (size_t)q, &jobs[q].core, sizeof(AeSpanCore));
     if (cu.htodAsync(g_ae.rows, g_ae.stage, rowsBytes + coreBytes, st)) return false;
     CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rowsD = g_ae.rows, stD = g_ae.states, colD = g_ae.region,
                 depD = g_ae.region + (size_t)px * 4;
