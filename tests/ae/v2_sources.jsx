@@ -1,10 +1,11 @@
 // DupliX 2 (prototype): several layers as Sources. A 400x300 comp with three 100x100 solids (red, green, blue;
 // the blue one with its video switch off) and a 400x300 grey "Target" with DupliX 2: 3 x 1 copies in a 300 x 100
-// grid, so the cell centres are (100,150), (200,150), (300,150). Saves:
-//   self.png        no Source: the copies show the Target itself (grey)
+// grid, so the cell centres are (100,150), (200,150), (300,150); Copy Scale 90% (90 x 90 copies). Saves:
+//   self.png        no Source: the copies show the Target itself (grey, at Copy Scale 20%: 80 x 60)
 //   seq.png         Sources red, green, blue, Assign Sequential -> red, green, blue
 //   bya_rev.png     Sources blue, green, red (set in that order), Assign By A -> blue, green, red
 //   gap.png         Source 2 = None (red, -, blue): the empty slot is skipped -> red, blue, red
+//   grid_big.png    as seq with Grid Size 360 x 200: the copies at (80,150), (200,150), (320,150), still 90 px wide
 //   seq_<n>.png     the project at $DUPLIX_V2_BPC bits (8 or 32)
 // tests/ae/check_v2_sources.py reads the colours. jsx.log lists the parameters (match name, name).
 function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a DupliX 2 parameter by its index (= disk ID)
@@ -19,9 +20,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a DupliX 2 
         for (var k = 0; k < 100 && !f.exists; k++) $.sleep(100);
         log("png " + name + " exists=" + f.exists);
     }
-    // indices (src/v2/dx2_params.h)
-    var P_COUNT_A = 3, P_COUNT_B = 4, P_GRID_SIZE_X = 9, P_GRID_SIZE_Y = 10;
-    var P_SRC_LAYER = -1, P_SRC_ASSIGN = -1;
+    var idx = {};  // parameter name -> index (src/v2/dx2_params.h)
     try {
         // every row shown: a script cannot set a hidden parameter (Source 2.. are hidden until used)
         $.setenv("DUPLIX2_SHOW_ALL", "1");
@@ -42,30 +41,37 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a DupliX 2 
         for (var i = 1; i <= fx.numProperties; i++) {
             var p = fx.property(i);
             log(" #" + i + " " + p.matchName + " [" + p.name + "]");
-            if (p.name === "Source 1") P_SRC_LAYER = parseInt(p.matchName.slice(-4), 10);
-            if (p.name === "Assign") P_SRC_ASSIGN = parseInt(p.matchName.slice(-4), 10);
+            idx[p.name] = parseInt(p.matchName.slice(-4), 10);
         }
-        log("P_SRC_LAYER=" + P_SRC_LAYER + " P_SRC_ASSIGN=" + P_SRC_ASSIGN);
-        fx.property(dx2(P_COUNT_A)).setValue(3);
-        fx.property(dx2(P_COUNT_B)).setValue(1);
-        fx.property(dx2(P_GRID_SIZE_X)).setValue(300);
-        fx.property(dx2(P_GRID_SIZE_Y)).setValue(100);
+        function set(name, v) { fx.property(dx2(idx[name])).setValue(v); }
+        set("Count A", 3);
+        set("Count B", 1);
+        set("Grid Size X", 300);
+        set("Grid Size Y", 100);
+        set("Copy Scale", 20);
         // layers: 1 Target (added last goes on top), 2 Blue, 3 Green, 4 Red
         log("layers: " + comp.layer(1).name + "," + comp.layer(2).name + "," + comp.layer(3).name + "," + comp.layer(4).name);
         png(comp, "self");
 
-        function src(k, layer) { fx.property(dx2(P_SRC_LAYER + k)).setValue(layer ? layer.index : 0); }
+        set("Copy Scale", 90);
+        function src(k, layer) { set("Source " + (k + 1), layer ? layer.index : 0); }
         src(0, red); src(1, green); src(2, blue);
-        fx.property(dx2(P_SRC_ASSIGN)).setValue(1);  // Sequential
+        set("Assign", 1);  // Sequential
         png(comp, "seq");
         png(comp, "seq_" + bpc);
+        // a larger grid moves the copies apart but keeps their size (11/27: the copies grew with the grid)
+        set("Grid Size X", 360);
+        set("Grid Size Y", 200);
+        png(comp, "grid_big");
+        set("Grid Size X", 300);
+        set("Grid Size Y", 100);
 
         src(0, blue); src(1, green); src(2, red);
-        fx.property(dx2(P_SRC_ASSIGN)).setValue(3);  // By A
+        set("Assign", 3);  // By A
         png(comp, "bya_rev");
 
         src(0, red); src(1, null); src(2, blue);
-        fx.property(dx2(P_SRC_ASSIGN)).setValue(1);
+        set("Assign", 1);
         png(comp, "gap");
 
         // reference: a red solid without the effect (how saveFrameToPng writes this depth)

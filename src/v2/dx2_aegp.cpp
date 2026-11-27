@@ -241,7 +241,11 @@ void SequenceSetdown(PF_InData* in_data, PF_OutData* out_data)
 
 namespace {
 
-void ApplyHidden(PF_InData* in_data, const std::vector<signed char>& want)
+// Hides / shows the rows whose state differs from what this instance last set. Two ways at once:
+// AEGP's HIDDEN flag (the Effect Controls and the timeline) and PF_PUI_INVISIBLE through PF_UpdateParamUI.
+// With the AEGP flag alone AE left an angle's dial drawn where its hidden row had been (user, 11/27).
+// Returns true if any row changed (the caller asks AE to redraw the Effect Controls).
+bool ApplyHidden(PF_InData* in_data, PF_ParamDef* params[], const std::vector<signed char>& want)
 {
     std::vector<int> change;
     {
@@ -250,13 +254,21 @@ void ApplyHidden(PF_InData* in_data, const std::vector<signed char>& want)
         for (int i = 1; i < P_NUM; i++)
             if (want[i] >= 0 && s.hidden[i] != want[i]) change.push_back(i);
     }
-    if (change.empty()) return;
+    if (change.empty()) return false;
     Streams st(in_data);
     Suite<AEGP_DynamicStreamSuite4> ds(in_data->pica_basicP, kAEGPDynamicStreamSuite, kAEGPDynamicStreamSuiteVersion4);
-    if (!st || !ds) return;
+    Suite<PF_ParamUtilsSuite3> pu(in_data->pica_basicP, kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
+    if (!st || !ds) return false;
     std::vector<int> done;
     const auto t0 = std::chrono::steady_clock::now();
     for (int i : change) {
+        if (pu && params && params[i] && params[i]->param_type != PF_Param_GROUP_END) {
+            PF_ParamDef d = *params[i];
+            if (want[i]) d.ui_flags |= PF_PUI_INVISIBLE;
+            else d.ui_flags &= ~PF_PUI_INVISIBLE;
+            pu->PF_UpdateParamUI(in_data->effect_ref, i, &d);
+            params[i]->ui_flags = d.ui_flags;
+        }
         AEGP_StreamRefH s = st.Get(i);
         if (!s) continue;  // a group's end has no stream
         if (!ds->AEGP_SetDynamicStreamFlag(s, AEGP_DynStreamFlag_HIDDEN, FALSE, want[i] ? TRUE : FALSE))
@@ -269,24 +281,24 @@ void ApplyHidden(PF_InData* in_data, const std::vector<signed char>& want)
     std::lock_guard<std::mutex> lk(g_mu);
     Instance& s = Inst(in_data);
     for (int i : done) s.hidden[i] = want[i];
+    return true;
 }
 
 }  // namespace
 
-void SetHiddenRange(PF_InData* in_data, int first, int last, bool hidden)
+bool SetHiddenRange(PF_InData* in_data, PF_ParamDef* params[], int first, int last, bool hidden)
 {
     std::vector<signed char> want(P_NUM, -1);
     for (int i = first; i <= last && i < P_NUM; i++) want[i] = hidden ? 1 : 0;
-    ApplyHidden(in_data, want);
+    return ApplyHidden(in_data, params, want);
 }
 
-void UpdateVisibility(PF_InData* in_data, PF_ParamDef* params[])
+bool UpdateVisibility(PF_InData* in_data, PF_ParamDef* params[])
 {
     std::vector<signed char> want(P_NUM, 0);  // everything shown unless hidden below
     // tests only: DUPLIX2_SHOW_ALL=1 shows every row (a script cannot set a hidden parameter)
     if (GetEnvironmentVariableA("DUPLIX2_SHOW_ALL", nullptr, 0) > 0) {
-        ApplyHidden(in_data, want);
-        return;
+        return ApplyHidden(in_data, params, want);
     }
     auto hide = [&](int a, int b) {
         for (int i = a; i <= b; i++) want[i] = 1;
@@ -325,7 +337,7 @@ void UpdateVisibility(PF_InData* in_data, PF_ParamDef* params[])
     const int rows = SourceRowsShown(in_data, src);
     for (int k = rows; k < kSourceSlots; k++) want[P_SRC_LAYER + k] = 1;
     Log("visibility: shape %d, emission %d, source rows %d", shape, (int)params[P_EMIT_ON]->u.bd.value, rows);
-    ApplyHidden(in_data, want);
+    return ApplyHidden(in_data, params, want);
 }
 
 }  // namespace dx2

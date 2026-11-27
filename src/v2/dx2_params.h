@@ -67,6 +67,7 @@ enum Param {
     P_COUNT_C,
     P_SAMPLING,        // Regular / Scatter
     P_SEED,
+    P_COPY_SCALE,      // the copies' size (% of the Source's own size); the Shape sets only where they go
 
     P_SHAPE_TOPIC,     // "Shape Settings" (the rows of the chosen Shape only)
     P_GRID_SIZE_X,

@@ -48,6 +48,20 @@ def main() -> int:
         print(f"  {name:10} cells {[g[:3] for g in got]} {'PASS' if cells_ok else 'FAIL'}, "
               f"gaps {'empty' if gaps_ok else gaps} {'PASS' if gaps_ok else 'FAIL'}")
         ok = ok and cells_ok and gaps_ok
+    # the copies' size does not follow the Grid Size: the red copy is as wide in grid_big.png as in seq.png
+    widths = {}
+    for name, cx in (("seq", 100), ("grid_big", 80)):
+        path = out / f"{name}.png"
+        if not path.exists():
+            ok = False
+            continue
+        im = Image.open(path).convert("RGBA")
+        def red(p):  # the red copy only (not its green neighbour)
+            return p[3] >= 128 and p[0] > 4 and p[0] > 4 * max(p[1], p[2])
+        widths[name] = sum(1 for x in range(cx - 60, cx + 61) if red(im.getpixel((x, 150))))
+    same = len(widths) == 2 and abs(widths["seq"] - widths["grid_big"]) <= 1 and abs(widths["seq"] - 90) <= 2
+    print(f"  copy width seq {widths.get('seq')} grid_big {widths.get('grid_big')} (want 90) {'PASS' if same else 'FAIL'}")
+    ok = ok and same
     print("V2 SOURCES", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

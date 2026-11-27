@@ -89,9 +89,10 @@ void SequenceSetdown(PF_InData* in_data, PF_OutData* out_data);
 // ---- which controls are shown (dx2_visibility.cpp) ----
 // Hides the controls that do not apply (another Shape's settings, unused modifier slots, ...). Changes only
 // the streams whose state differs from what this instance last set.
-void UpdateVisibility(PF_InData* in_data, PF_ParamDef* params[]);
+// Returns true if a row changed (then ask AE to redraw the Effect Controls: PF_OutFlag_REFRESH_UI).
+bool UpdateVisibility(PF_InData* in_data, PF_ParamDef* params[]);
 // Shows / hides params [first, last] now (the "+" buttons: a hidden parameter's value cannot be set).
-void SetHiddenRange(PF_InData* in_data, int first, int last, bool hidden);
+bool SetHiddenRange(PF_InData* in_data, PF_ParamDef* params[], int first, int last, bool hidden);
 
 // ---- custom UI (dx2_ui.cpp) ----
 PF_Err HandleEvent(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output,

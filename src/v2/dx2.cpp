@@ -156,6 +156,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     b.Slider(P_COUNT_C, "Count C", 1, 10000, 1, 20, 1);
     b.Popup(P_SAMPLING, "Sampling", "Regular|Scatter", 1);
     b.Slider(P_SEED, "Random Seed", 0, 1000000, 0, 1000, 0);
+    b.Percent(P_COPY_SCALE, "Copy Scale", 0, 100000, 0, 200, 100);
 
     // ---- Shape Settings: the chosen Shape's rows only ----
     b.Topic(P_SHAPE_TOPIC, "Shape Settings", false);
@@ -362,7 +363,7 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             SequenceSetdown(in_data, out_data);
             break;
         case PF_Cmd_UPDATE_PARAMS_UI:
-            UpdateVisibility(in_data, params);
+            if (UpdateVisibility(in_data, params)) out_data->out_flags |= PF_OutFlag_REFRESH_UI;
             break;
         case PF_Cmd_USER_CHANGED_PARAM: {
             const int i = ((PF_UserChangedParamExtra*)extra)->param_index;

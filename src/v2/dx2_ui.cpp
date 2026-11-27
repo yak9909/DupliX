@@ -509,7 +509,7 @@ PF_Err Click(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF
                 PF_ParamDef* t = params[ModIndex(k, M_TYPE)];
                 if (t->u.pd.value != MT_NONE) continue;
                 // shown first: AE ignores a new value of a hidden parameter
-                SetHiddenRange(in_data, ModIndex(k, M_TOPIC), ModIndex(k, M_TOPIC_END), false);
+                SetHiddenRange(in_data, params, ModIndex(k, M_TOPIC), ModIndex(k, M_TOPIC_END), false);
                 t->u.pd.value = MT_WAVE;
                 t->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
                 UpdateVisibility(in_data, params);  // the rows Wave does not use

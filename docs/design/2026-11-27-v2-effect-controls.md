@@ -10,7 +10,7 @@
 |---|---|
 | パラメータ一式（下の 3 節） | 全部ある。キーフレーム・エクスプレッションも普通に使える。ただし描画に効くのは下の 4 つだけ |
 | Sources（Source 1〜8、Assign） | **実装済み。** 選んだレイヤーを読み込み、コピーごとに Assign（Sequential / Random / By A / By B）で割り当てて描く。Source が 1 つもなければ自分のレイヤーを使う。空きの番号は飛ばす。8 / 16 / 32 bpc |
-| Count A・Count B・Grid Size X/Y・Random Seed | 格子の仮の描画に使う（Count A × Count B の格子をレイヤーの中央に置き、各コピーを升目の 90% に収まるよう縦横比を保って縮小）。Random Seed は Assign = Random の並びに効く |
+| Count A・Count B・Grid Size X/Y・Copy Scale・Random Seed | 格子の仮の描画に使う（Count A × Count B の格子をレイヤーの中央に置く。Grid Size は位置だけを決め、コピーの大きさは素材の元の大きさ × Copy Scale）。Random Seed は Assign = Random の並びに効く |
 | Custom UI（Overview・Modifier List・Source List） | 実装済み（2 節） |
 | 表示の切り替え | Shape に合わない設定、Emission がオフのときの設定、使っていない Modifier の枠、Modifier の Type・Mask に関係のない行、使っていない Source の行を隠す（Effect Controls とタイムラインの両方。`AEGP_SetDynamicStreamFlag` の HIDDEN） |
 | それ以外（Shape の Polar・Sphere・Path、Count C、Sampling、Flow、Morph、Emission、Modifier の効果、Source の時間、Render） | まだ何もしない（値を持つだけ） |
@@ -32,7 +32,7 @@
 
 | 場所 | パラメータ | 参考にした定番 |
 |---|---|---|
-| 入口 | Overview（Custom UI）、Shape（Grid / Polar / Sphere / Path）、Count A / B / C、Sampling（Regular / Scatter）、Random Seed | C4D Cloner の Mode と Count、Form の Base Form と Particles in X/Y/Z、Motion Replicator の Shape と Columns / Rows、Form の Random Seed |
+| 入口 | Overview（Custom UI）、Shape（Grid / Polar / Sphere / Path）、Count A / B / C、Sampling（Regular / Scatter）、Random Seed、Copy Scale | C4D Cloner の Mode と Count、Form の Base Form と Particles in X/Y/Z、Motion Replicator の Shape と Columns / Rows、Form の Random Seed |
 | Shape Settings（開いた状態） | Grid: Grid Size X/Y/Z、Brick Offset ／ Polar: Inner Radius、Outer Radius、Angle Range、Sides、Twist、Height ／ Sphere: Sphere Radius、Shell Spacing、Latitude Range ／ Path: Path（マスク）、Row Spacing、Even Spacing | C4D Cloner の Grid Array の Size・Radial の Radius / Start / End Angle、Cavalry Duplicator の Circle の Travel |
 | Flow（閉じた状態） | Offset A、Speed A、Speed Variance A、Step A、同じく B、Boundary（Wrap / Ping Pong / Clamp）、Edge Fade | 設計 v2 の 3 節 |
 | Morph（閉） | Morph Amount、Target Shape、Target Size | 設計 v2 の 4 節（Shape B の細かい設定は後で） |
@@ -41,8 +41,8 @@
 | Sources（開） | Source List（Custom UI）、Source 1〜8（レイヤー）、Assign（Sequential / Random / By A / By B）、Time Mode（Normal / Hold / Loop）、Source Time Offset、Time Quantize | C4D Cloner の Clones（Iterate / Random / Blend / Sort）、Particular の Sprite の Layer と Time Sampling、Cavalry の Shape Time Offset |
 | Render（閉） | Billboard、Depth Sort、Depth Fade、Global Position、Global Rotation X/Y/Z、Global Scale | Form・Particular の Transform と Rendering |
 
-- 入口に出るのは Overview と 6 つのパラメータだけ。Flow・Morph・Emission・Render は閉じた状態で始まる。
-- Modifier の枠は 8 個（1 枠 39 パラメータ）。全体で約 420 パラメータ。設計 v2 は 16 枠を目安にし、Effect Controls の重さを実測して決めるとしている。8 枠で重さを測ってから増やすか決める（増やすのは後ろに足す形でしかできない）。
+- 入口に出るのは Overview と 7 つのパラメータだけ。Flow・Morph・Emission・Render は閉じた状態で始まる。
+- Modifier の枠は 8 個（1 枠 39 パラメータ）。全体で 409 パラメータ。設計 v2 は 16 枠を目安にし、Effect Controls の重さを実測して決めるとしている。8 枠で重さを測ってから増やすか決める（増やすのは後ろに足す形でしかできない）。
 - 表示・非表示は AE に毎回問い合わせず、インスタンスごとに「最後に設定した状態」を覚えて、変わる行だけ設定する（AE の `AEGP_GetDynamicStreamFlags` は HIDDEN を正しく返さないという報告があるため）。
 
 ## 4. 調べたもの

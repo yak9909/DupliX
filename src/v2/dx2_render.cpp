@@ -1,7 +1,8 @@
 // DupliX 2 (prototype): the render. So far only the Sources are real: the copies are laid out in a flat grid
 // (Count A x Count B, Grid Size X/Y, centred on the layer) and each copy shows one of the chosen layers, picked
-// by Assign. With no Source chosen the copies show this layer. Each copy is fitted into its cell (keeping its
-// aspect); the 3D shapes, Count C and the rest of the controls are not drawn yet.
+// by Assign. With no Source chosen the copies show this layer. A copy is its Source at Copy Scale: the Grid Size
+// sets only where the copies go, never their size. The 3D shapes, Count C and the rest of the controls are not
+// drawn yet.
 #include "v2/dx2.h"
 
 #include <algorithm>
@@ -21,6 +22,7 @@ struct Pre {
     int seed = 0;
     int assign = AS_SEQUENTIAL;
     double gridX = 800, gridY = 800;
+    double copyScale = 1.0;
     bool has[kSourceSlots] = {};
     PF_LRect layerRect = {0, 0, 0, 0};  // the input's max rect (downsampled layer px)
 };
@@ -47,6 +49,7 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     if (!Checkout(in_data, P_COUNT_B, &d)) pre->countB = d.u.sd.value, PF_CHECKIN_PARAM(in_data, &d);
     if (!Checkout(in_data, P_SEED, &d)) pre->seed = d.u.sd.value, PF_CHECKIN_PARAM(in_data, &d);
     if (!Checkout(in_data, P_SRC_ASSIGN, &d)) pre->assign = d.u.pd.value, PF_CHECKIN_PARAM(in_data, &d);
+    if (!Checkout(in_data, P_COPY_SCALE, &d)) pre->copyScale = d.u.fs_d.value / 100.0, PF_CHECKIN_PARAM(in_data, &d);
     if (!Checkout(in_data, P_GRID_SIZE_X, &d)) pre->gridX = d.u.fs_d.value, PF_CHECKIN_PARAM(in_data, &d);
     if (!Checkout(in_data, P_GRID_SIZE_Y, &d)) pre->gridY = d.u.fs_d.value, PF_CHECKIN_PARAM(in_data, &d);
 
@@ -257,7 +260,8 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
             for (int a = 0; a < A; a++) {
                 const int i = b * A + a;
                 const PF_EffectWorld* w = sources[AssignSource(pre->assign, pre->seed, i, a, b, n)];
-                const double fit = std::min(cellW * 0.9 / w->width, cellH * 0.9 / w->height);
+                // the Source's own size (its world is already at the render's downsampling) times Copy Scale
+                const double fit = pre->copyScale;
                 if (!(fit > 0)) continue;
                 const double px = cx + (a - (A - 1) * 0.5) * cellW, py = cy + (b - (B - 1) * 0.5) * cellH;
                 const double hw = w->width * fit * 0.5, hh = w->height * fit * 0.5;

@@ -26,6 +26,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }
         fx.property(dx2(idx["Count B"])).setValue(4);
         fx.property(dx2(idx["Grid Size X"])).setValue(1000);
         fx.property(dx2(idx["Grid Size Y"])).setValue(600);
+        fx.property(dx2(idx["Copy Scale"])).setValue(60);
         for (var s = 0; s < 3; s++) fx.property(dx2(idx["Source " + (s + 1)])).setValue(src[s].index);
         fx.property(dx2(idx["Assign"])).setValue(2);  // Random
         fx.property(dx2(idx["M1 Type"])).setValue(2);  // Wave
