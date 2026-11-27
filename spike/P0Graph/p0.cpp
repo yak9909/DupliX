@@ -17,6 +17,8 @@
 #include "AE_EffectCBSuites.h"
 #include "AE_GeneralPlug.h"
 #include "AE_EffectSuites.h"
+#include "AE_AdvEffectSuites.h"
+#include "AE_EffectUI.h"
 #include "Param_Utils.h"
 #include "String_Utils.h"
 
@@ -28,8 +30,8 @@
 
 namespace {
 
-enum { P_INPUT = 0, P_OPEN, P_GRAPH, P_MACRO1, P_NUM };
-enum { D_OPEN = 1, D_GRAPH, D_MACRO1 };
+enum { P_INPUT = 0, P_OPEN, P_GRAPH, P_MACRO1, P_OVERVIEW, P_NUM };
+enum { D_OPEN = 1, D_GRAPH, D_MACRO1, D_OVERVIEW };
 constexpr A_u_long kMagic = 0x31475844;  // "DXG1"
 void* const kArbRefcon = (void*)0x50304758;
 
@@ -283,6 +285,12 @@ A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep)
         Pending p = g_pending;
         g_pending.on = false;
         WriteGraph(p.r, p.g, p.b, p.why);
+        if (GetEnvironmentVariableA("DUPLIX_P0_REFRESH", nullptr, 0) > 0) {
+            // the Overview must show the edit at once (UPDATE_PARAMS_UI does not come after an AEGP write)
+            Suite<PF_AdvAppSuite2> adv(kPFAdvAppSuite, kPFAdvAppSuiteVersion2);
+            const PF_Err e = adv ? adv->PF_RefreshAllWindows() : -1;
+            Log("refresh all windows after the write: err %d", (int)e);
+        }
     } else if (g_wnd) {
         // AE's own undo / redo (or a script) changed the graph data: the editor reloads it
         A_u_long rev = 0;
@@ -386,6 +394,19 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     if ((err = PF_ADD_PARAM(in_data, -1, &def))) return err;
     AEFX_CLR_STRUCT(def);
     PF_ADD_FLOAT_SLIDERX("Macro 1", -1000000, 1000000, 0, 100, 0, PF_Precision_TENTHS, 0, 0, D_MACRO1);
+    // the Overview's stand-in: a custom UI row whose draws are logged with the graph data's revision
+    AEFX_CLR_STRUCT(def);
+    def.param_type = PF_Param_NO_DATA;
+    PF_STRNNCPY(def.PF_DEF_NAME, "Overview", sizeof(def.PF_DEF_NAME));
+    def.ui_flags = PF_PUI_CONTROL;
+    def.ui_width = 200;
+    def.ui_height = 40;
+    def.uu.id = D_OVERVIEW;
+    if ((err = PF_ADD_PARAM(in_data, -1, &def))) return err;
+    PF_CustomUIInfo ci;
+    AEFX_CLR_STRUCT(ci);
+    ci.events = PF_CustomEFlag_EFFECT;
+    if ((err = (*in_data->inter.register_ui)(in_data->effect_ref, &ci))) return err;
     out_data->num_params = P_NUM;
     return err;
 }
@@ -429,7 +450,7 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
     switch (cmd) {
     case PF_Cmd_GLOBAL_SETUP: {
         out_data->my_version = PF_VERSION(0, 1, 0, PF_Stage_DEVELOP, 1);
-        out_data->out_flags = PF_OutFlag_SEND_UPDATE_PARAMS_UI;  // must match the PiPL
+        out_data->out_flags = PF_OutFlag_SEND_UPDATE_PARAMS_UI | PF_OutFlag_CUSTOM_UI;  // must match the PiPL
         Suite<AEGP_UtilitySuite6> util(kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
         A_Err e = util ? util->AEGP_RegisterWithAEGP(nullptr, "DupliXP0", &g_pluginId) : -1;
         Suite<AEGP_RegisterSuite5> reg(kAEGPRegisterSuite, kAEGPRegisterSuiteVersion5);
@@ -447,6 +468,16 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             OpenEditor(in_data);
             params[P_OPEN]->u.bd.value = FALSE;  // a button: back off at once
             params[P_OPEN]->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
+        }
+        break;
+    }
+    case PF_Cmd_EVENT: {
+        auto* ev = (PF_EventExtra*)extra;
+        if (ev->e_type == PF_Event_DRAW) {
+            GraphHeader g{};
+            ReadGraph(params[P_GRAPH]->u.arb_d.value, &g);
+            Log("overview draw: rev %u", (unsigned)g.revision);
+            ev->evt_out_flags = PF_EO_HANDLED_EVENT;
         }
         break;
     }

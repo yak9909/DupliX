@@ -3,7 +3,8 @@
 # the editor window's timer, DUPLIX_P0_AUTO) runs between them. Then check_p0_graph.py reads the colors.
 #   pwsh tests/ae/run_p0_graph.ps1 [-WaitSec 8] [-Payload 0] [-Path direct|idle]
 #   -Path direct: the window's handler writes; idle: it queues the write and AE's idle hook writes
-param([int]$WaitSec = 8, [int]$Payload = 0, [ValidateSet("direct", "idle")][string]$Path = "idle")
+#   -Refresh: PF_RefreshAllWindows after each write (does the Overview's custom UI draw the new graph data at once)
+param([int]$WaitSec = 8, [int]$Payload = 0, [ValidateSet("direct", "idle")][string]$Path = "idle", [switch]$Refresh)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $out = Join-Path $root "build\test\p0_graph"
@@ -22,8 +23,9 @@ $env:DUPLIX_LOG = Join-Path $out "plugin.log"
 $env:DUPLIX_P0_AUTO = "1"
 $env:DUPLIX_P0_PAYLOAD = "$Payload"
 $env:DUPLIX_P0_PATH = $Path
+if ($Refresh) { $env:DUPLIX_P0_REFRESH = "1" } else { Remove-Item env:DUPLIX_P0_REFRESH -ErrorAction SilentlyContinue }
 $ae = Start-AeHidden -Exe $exe -Arguments ""
-Remove-Item env:DUPLIX_LOG, env:DUPLIX_P0_AUTO, env:DUPLIX_P0_PAYLOAD, env:DUPLIX_P0_PATH
+Remove-Item env:DUPLIX_LOG, env:DUPLIX_P0_AUTO, env:DUPLIX_P0_PAYLOAD, env:DUPLIX_P0_PATH, env:DUPLIX_P0_REFRESH -ErrorAction SilentlyContinue
 
 function Send-Step([string]$step, [int]$sec) {
     Set-Content -Encoding utf8NoBOM (Join-Path $out "step.txt") $step
@@ -60,6 +62,6 @@ try {
     $null = Repair-AeCrashState
 }
 Get-Content (Join-Path $out "jsx.log")
-Select-String -Path (Join-Path $out "plugin.log") -Pattern "p0: (write .*ms$|editor|user|sync|params ui)" | ForEach-Object { $_.Line }
+Select-String -Path (Join-Path $out "plugin.log") -Pattern "p0: (write .*ms$|editor|user|sync|params ui|overview draw|refresh)" | ForEach-Object { $_.Line }
 & (Join-Path $root "spike\.venv\Scripts\python.exe") -I (Join-Path $PSScriptRoot "check_p0_graph.py") $out
 exit $LASTEXITCODE
