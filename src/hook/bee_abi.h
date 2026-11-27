@@ -29,10 +29,17 @@ constexpr const char* kTextRedirect[] = {
     "?HasSubLayerXform@%s@@UEBA_NXZ",
     "?NewXformCache2D@%s@@UEBA?AV?$shared_ptr@VBEE_XformCache@@@std@@AEBUT_Time@@PEBVTDB_ParamBag@@@Z",
     "?GetBoundsFromCache@%s@@UEBA?AUM_FloatRect@@HAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z",
+    // with a sub-layer index and a cache the text one wants its BEE_CrossSubLayerTextCache (else it throws
+    // "invalid sublayer text cache", the frame is dropped)
+    "?GetSourceFloatRect@%s@@UEBA?AUM_FloatRect@@AEBUT_Time@@_NHV?$shared_ptr@VBEE_XformTimeCache@@@std@@PEBVTDB_ParamBag@@@Z",
 };
 constexpr int kTextRedirectCount = sizeof(kTextRedirect) / sizeof(kTextRedirect[0]);
 // GetSubLayerOpacity returns a double (xmm0): its own hook
 constexpr const char* kTextRedirectOpacity = "?GetSubLayerOpacity@%s@@UEBANHAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z";
+// The text layer's own (a character's depth; reads the text cache too, returns a double). BEE_AVLayer has no export
+// of its own: the AV vtable's function at the same slot is used.
+constexpr const char* kTextSubLayerDepth =
+    "?GetSubLayerDepth@BEE_TextLayer@@UEBANHAEBV?$shared_ptr@VBEE_XformTimeCache@@@std@@AEBUT_Time@@_N@Z";
 
 // Virtuals we replace (their exported names give the slot numbers).
 constexpr const char* kIsLayerType = "?IsLayerType@BEE_AVLayer@@UEBAEH@Z";

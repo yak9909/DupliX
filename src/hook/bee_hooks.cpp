@@ -4140,6 +4140,12 @@ double HookTextOpacity(uintptr_t a, int i, uintptr_t cache)
 {
     return (TextAsAv(a) ? g_textOpAv : g_textOpText)(a, i, cache);
 }
+typedef double (*DepthFn)(uintptr_t, int, uintptr_t, uintptr_t, bool);
+DepthFn g_textDepthAv = nullptr, g_textDepthText = nullptr;
+double HookTextDepth(uintptr_t a, int i, uintptr_t cache, uintptr_t t, bool b)
+{
+    return (TextAsAv(a) ? g_textDepthAv : g_textDepthText)(a, i, cache, t, b);
+}
 template <int... K>
 void* TextRedirectHookAt(int k, std::integer_sequence<int, K...>)
 {
@@ -4178,9 +4184,22 @@ bool InstallTextRedirect(HMODULE bee, void** avVt, void** textVt)
         if (!find(bee::kTextRedirect[k], TextRedirectHookAt(k, std::make_integer_sequence<int, bee::kTextRedirectCount>{})))
             return false;
     if (!find(bee::kTextRedirectOpacity, (void*)&HookTextOpacity)) return false;
+    {  // the depth: the text function found by name, the AV one at its slot (must be another function)
+        void* tx = (void*)GetProcAddress(bee, bee::kTextSubLayerDepth);
+        int slot = -1;
+        for (int i = 0; tx && i < bee::kVtableScanSlots && slot < 0; i++)
+            if (textVt[i] == tx) slot = i;
+        if (slot < 0 || !avVt[slot] || avVt[slot] == tx) {
+            RLog("hooks: text redirect GetSubLayerDepth not found (slot %d)", slot);
+            return false;
+        }
+        slots.push_back({slot, avVt[slot], tx, (void*)&HookTextDepth});
+    }
     for (int k = 0; k < bee::kTextRedirectCount; k++) g_textRedir[k] = {(Fwd8)slots[k].av, (Fwd8)slots[k].text};
-    g_textOpAv = (OpacityFn)slots.back().av;
-    g_textOpText = (OpacityFn)slots.back().text;
+    g_textOpAv = (OpacityFn)slots[bee::kTextRedirectCount].av;
+    g_textOpText = (OpacityFn)slots[bee::kTextRedirectCount].text;
+    g_textDepthAv = (DepthFn)slots.back().av;
+    g_textDepthText = (DepthFn)slots.back().text;
     for (const Slot& s : slots)
         if (!WritePtr(&textVt[s.slot], s.hook)) {
             RLog("hooks: text redirect slot %d: VirtualProtect failed", s.slot);
@@ -4252,8 +4271,71 @@ void InstallClassHooks(HMODULE bee, int sIs, int sSep, int sCnt, int sRc, unsign
     }
 }
 
+// dbg (11/27, text 3D Layers): the render-as-layer route logged
+typedef bool (*DbgMustFn)(void*, void*, const void*);
+typedef int (*DbgRlFn)(void*, void*, void*, unsigned, void**);
+typedef int (*DbgRlRcFn)(void*, void*, void*, unsigned, void*, void*, void**);
+DbgMustFn g_dbgMust = nullptr;
+DbgRlFn g_dbgRl = nullptr;
+DbgRlRcFn g_dbgRlRc = nullptr;
+bool DbgMust(void* ctx, void* trace, const void* layer)
+{
+    bool r = g_dbgMust(ctx, trace, layer);
+    static LogLimit lg;
+    if (lg.Take(20)) RLog("dbg: must render as layer mine %d -> %d", (int)IsMine(layer), (int)r);
+    return r;
+}
+int DbgRl(void* ctx, void* layer, void* trace, unsigned u, void** world)
+{
+    static LogLimit lg;
+    const bool on = lg.Take(20);
+    if (on) RLog("dbg: render layer enter mine %d u %u", (int)IsMine(layer), u);
+    int r = g_dbgRl(ctx, layer, trace, u, world);
+    if (on) RLog("dbg: render layer leave r %d", r);
+    return r;
+}
+int DbgRlRc(void* ctx, void* layer, void* trace, unsigned u, void* opts, void* rect, void** world)
+{
+    static LogLimit lg;
+    const bool on = lg.Take(20);
+    if (on) RLog("dbg: render layer rc enter mine %d u %u", (int)IsMine(layer), u);
+    int r = g_dbgRlRc(ctx, layer, trace, u, opts, rect, world);
+    if (on) RLog("dbg: render layer rc leave r %d", r);
+    return r;
+}
+
+// dbg (11/27, text 3D Layers): first-chance exceptions logged with the throwing module and offset
+LONG CALLBACK DbgVeh(PEXCEPTION_POINTERS ep)
+{
+    static LogLimit lg;
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == 0x406D1388 || code == DBG_PRINTEXCEPTION_C || code == 0x4001000A) return EXCEPTION_CONTINUE_SEARCH;
+    if (!lg.Take(40)) return EXCEPTION_CONTINUE_SEARCH;
+    void* stack[24] = {};
+    USHORT n = RtlCaptureStackBackTrace(0, 24, stack, nullptr);
+    char buf[2048];
+    int o = snprintf(buf, sizeof(buf), "dbg: exception %08lx at", code);
+    for (USHORT i = 0; i < n && o < (int)sizeof(buf) - 80; i++) {
+        HMODULE m = nullptr;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)stack[i], &m) &&
+            m) {
+            char full[MAX_PATH];
+            GetModuleFileNameA(m, full, sizeof(full));
+            const char* s = strrchr(full, '\\');
+            snprintf(name, sizeof(name), "%s", s ? s + 1 : full);
+        }
+        o += snprintf(buf + o, sizeof(buf) - o, " %s+%llx", name,
+                      (unsigned long long)((uintptr_t)stack[i] - (uintptr_t)m));
+    }
+    RLog("%s", buf);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
 {
+    if (GetEnvironmentVariableA("DUPLIX_DBG_VEH", nullptr, 0) > 0) AddVectoredExceptionHandler(1, DbgVeh);
     if (g_status != HookStatus::NotInstalled) return g_status;
     g_mainThread = GetCurrentThreadId();
     g_pica = pica;
@@ -4334,6 +4416,15 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
             g_texHooked = WritePtr(t1, (void*)&HookTex) && WritePtr(t2, (void*)&HookTexRc);
         }
         RLog("hooks: texture entry points %p %p -> merge %s", (void*)t1, (void*)t2, g_texHooked ? "available" : "off");
+        if (GetEnvironmentVariableA("DUPLIX_DBG_RENDER_AS_LAYER", nullptr, 0) > 0) {  // dbg (11/27, text 3D Layers)
+            void** a = FindImportSlot(drv, "BEE.dll", "?BEE_ArtisanMustRenderAsLayer@@YA_NPEAXPEAVBEE_RenderTrace@@PEBVBEE_AVLayer@@@Z");
+            void** b = FindImportSlot(drv, "BEE.dll", "?BEE_RenderLayerForArtisanPlus@@YAHPEAXPEAVBEE_Layer@@PEAVBEE_RenderTrace@@IPEAPEAVPF_World@@@Z");
+            void** c = FindImportSlot(drv, "BEE.dll", "?BEE_RenderLayerForArtisanPlusWithReceipt@@YAHPEAXPEAVBEE_Layer@@PEAVBEE_RenderTrace@@IPEAVBEE_LayerRenderOptions@@PEAUM_Rect@@PEAPEAVPF_World@@@Z");
+            if (a) g_dbgMust = (DbgMustFn)*a, WritePtr(a, (void*)&DbgMust);
+            if (b) g_dbgRl = (DbgRlFn)*b, WritePtr(b, (void*)&DbgRl);
+            if (c) g_dbgRlRc = (DbgRlRcFn)*c, WritePtr(c, (void*)&DbgRlRc);
+            RLog("dbg: render-as-layer hooks %p %p %p", (void*)a, (void*)b, (void*)c);
+        }
         if (g_texHooked) InstallQualityHook();
     }
     g_status = ok ? HookStatus::Installed : HookStatus::MissingSymbols;
