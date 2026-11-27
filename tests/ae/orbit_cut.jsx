@@ -105,9 +105,11 @@
                 RT.property("ADBE Orientation").setValue([0, 0, 0]);
                 RT.property("ADBE Anchor Point").setValue([108.5, 108, 0]);
                 RT.property("ADBE Scale").setValue([100, 100, 100]);
+                var twinLayers = [];
                 for (var ti2 = lines.length - 1; ti2 >= 0; ti2--) {
                     var f6 = lines[ti2].split(" ");
                     var Ln = ti2 === 0 ? R : R.duplicate();
+                twinLayers.push(Ln);
                     var LT = tg(Ln);
                     LT.property("ADBE Position").setValue([parseFloat(f6[0]), parseFloat(f6[1]), parseFloat(f6[2])]);
                     LT.property("ADBE Rotate X").setValue(parseFloat(f6[3]));
@@ -115,6 +117,21 @@
                     LT.property("ADBE Rotate Z").setValue(parseFloat(f6[5]));
                 }
                 log("twins: " + lines.length + " layers, comp has " + c.numLayers);
+                // RANDAMU_OC_PIVOT ("x,y,z") and RANDAMU_OC_PIVOT_RY_<variant> (degrees): every twin parented to a 3D
+                // null at the pivot (parenting keeps their place), then the null turned about Y: the twins of one
+                // state turned as a whole, without any data of the turned state
+                var pv = $.getenv("RANDAMU_OC_PIVOT");
+                if (pv) {
+                    var pc = pv.split(",");
+                    var nl = c.layers.addNull();
+                    nl.threeDLayer = true;
+                    nl.name = "oc_pivot";
+                    tg(nl).property("ADBE Position").setValue([parseFloat(pc[0]), parseFloat(pc[1]), parseFloat(pc[2])]);
+                    for (var pi = 0; pi < twinLayers.length; pi++) twinLayers[pi].parent = nl;
+                    var pry = parseFloat($.getenv("RANDAMU_OC_PIVOT_RY_" + vname) || "0");
+                    tg(nl).property("ADBE Rotate Y").setValue(pry);
+                    log("pivot " + pv + " ry " + pry);
+                }
             }
             else {
                 R.enabled = false;
