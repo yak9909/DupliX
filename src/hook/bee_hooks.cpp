@@ -2550,10 +2550,31 @@ thread_local std::vector<GroupJob> t_groupJobs;
 // (diagnostics, RANDAMU_A3D_TIME) this frame's flushes, copies drawn by them, texture bytes kept by KeepTexture
 thread_local long long t_bFlushes = 0, t_bCopies = 0, t_bTexBytes = 0;
 // the last kept texture (the group's copies share one: kept once). *master: t's shared master, if known
+// the last texture kept for a shared master in this frame (by its serial, unique for the frame): kept again after a
+// flush emptied the jobs (11/27: 28 clusters in a group, each flushing before it, copied the 8 MB texture 28 times)
+struct LastKeep {
+    std::shared_ptr<std::vector<unsigned char>> keep;
+    unsigned long long serial = 0;
+    int w = 0, h = 0, rb = 0;
+};
+thread_local LastKeep t_lastKeep;
 std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AEGP_WorldH* master)
 {
     const size_t bytes = (size_t)t.rowbytes * t.height;
     *master = TexMasterOf(t.data);
+    const unsigned long long serial = TexSerialOf(t.data);
+    if (serial && serial == t_lastKeep.serial && t.width == t_lastKeep.w && t.height == t_lastKeep.h && t.rowbytes == t_lastKeep.rb &&
+        t_lastKeep.keep && (t_groupJobs.empty() || t_groupJobs.back().texKeep == t_lastKeep.keep))
+        return t_lastKeep.keep;
+    struct Note {
+        unsigned long long serial;
+        const rnd::AeTex8& t;
+        std::shared_ptr<std::vector<unsigned char>> operator()(std::shared_ptr<std::vector<unsigned char>> k) const
+        {
+            if (serial) t_lastKeep = {k, serial, t.width, t.height, t.rowbytes};
+            return k;
+        }
+    } note{serial, t};
     if (!t_groupJobs.empty()) {
         const GroupJob& last = t_groupJobs.back();
         const rnd::AeTex8& k = last.tex;
@@ -2565,7 +2586,7 @@ std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AE
         if (same) return last.texKeep;
     }
     t_bTexBytes += (long long)bytes;
-    return std::make_shared<std::vector<unsigned char>>(t.data, t.data + bytes);
+    return note(std::make_shared<std::vector<unsigned char>>(t.data, t.data + bytes));
 }
 LogLimit g_flushLog;
 void DropGroupJobs() { t_groupJobs.clear(); }
@@ -2633,6 +2654,7 @@ uintptr_t HookFrameDraw(uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, 
             --t_frameDepth;
             t_groupJobs.clear();  // drawn at sub_180010E00; left only when AE threw: dropped
             t_groupJobs.swap(*outer);
+            if (!t_frameDepth) t_lastKeep = LastKeep();  // (8 MB for a large texture: not kept past the frame)
         }
     } out{&outer};
     return g_origFrameDraw(a1, a2, a3, a4, a5, a6, a7, a8, a9);
