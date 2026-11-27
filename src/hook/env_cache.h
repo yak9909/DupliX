@@ -1,4 +1,4 @@
-// randamu hooks: environment variables read in hot paths, through a cache.
+// DupliX hooks: environment variables read in hot paths, through a cache.
 // GetEnvironmentVariableA scans AE's whole environment block (several µs a call); the hooks run thousands of times a
 // frame. A cached value is read again at most every kEnvRefreshMs, so a test script that changes a variable between
 // renders ($.setenv) still sees the change.

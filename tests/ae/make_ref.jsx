@@ -1,10 +1,11 @@
-// Builds probe_<case> (Target + randamu) and ref_<case> (real duplicate layers placed from
-// randamu_dump's draws) for every case in ref_cases.json, saves ref.aep with all comps in the render
+// Builds probe_<case> (Target + DupliX) and ref_<case> (real duplicate layers placed from
+// duplix_dump's draws) for every case in ref_cases.json, saves ref.aep with all comps in the render
 // queue, then reopens it and saves probe/ref PNGs of "baseline" (reopen check).
-// Env: RANDAMU_TEST_DIR (output; copies_<case>.json must be there), RANDAMU_REF_CASES (json path),
-//      RANDAMU_REF_IMAGE (png for "image" cases).
+// Env: DUPLIX_TEST_DIR (output; copies_<case>.json must be there), DUPLIX_REF_CASES (json path),
+//      DUPLIX_REF_IMAGE (png for "image" cases).
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -85,7 +86,7 @@
     function makeSource(comp, c, name) {
         var L;
         if (c.image) {
-            if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_REF_IMAGE"))));
+            if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("DUPLIX_REF_IMAGE"))));
             L = comp.layers.add(imgItem);
             L.name = name;
         } else {
@@ -122,12 +123,12 @@
     }
     function setParams(fx, p) {
         var pos = p.pos || [0, 0, 0], rot = p.rot || [0, 0, 0], sc = p.scale || [100, 100], op = p.opacity || [100, 100];
-        fx.property(2).setValue(p.count);
-        fx.property(3).setValue(p.seed || 0);
-        for (var k = 0; k < 3; k++) { fx.property(4 + k).setValue(pos[k]); fx.property(7 + k).setValue(rot[k]); }
-        fx.property(10).setValue(sc[0]); fx.property(11).setValue(sc[1]);
-        fx.property(12).setValue(op[0]); fx.property(13).setValue(op[1]);
-        fx.property(14).setValue(p.keepFirst ? 1 : 0);
+        fx.property("DupliX-0002").setValue(p.count);
+        fx.property("DupliX-0003").setValue(p.seed || 0);
+        for (var k = 0; k < 3; k++) { fx.property(dx(4 + k)).setValue(pos[k]); fx.property(dx(7 + k)).setValue(rot[k]); }
+        fx.property("DupliX-0010").setValue(sc[0]); fx.property("DupliX-0011").setValue(sc[1]);
+        fx.property("DupliX-0012").setValue(op[0]); fx.property("DupliX-0013").setValue(op[1]);
+        fx.property("DupliX-0014").setValue(p.keepFirst ? 1 : 0);
     }
 
     function buildProbe(c) {
@@ -137,7 +138,7 @@
         var T = makeSource(comp, c, "Target");
         placeLikeTarget(T, c, parent);
         if (c.targetOpacity !== undefined) tg(T).property("ADBE Opacity").setValue(c.targetOpacity);
-        var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
+        var fx = T.property("ADBE Effect Parade").addProperty("DupliX");
         setParams(fx, c.params);
         extras(comp, c);
         if (c.fxOff) fx.enabled = false;
@@ -228,8 +229,8 @@
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
-        // RANDAMU_REF_GPU = CUDA | OPENCL | ... (a GpuAccelType name): render the project on the GPU.
-        var gpu = $.getenv("RANDAMU_REF_GPU");
+        // DUPLIX_REF_GPU = CUDA | OPENCL | ... (a GpuAccelType name): render the project on the GPU.
+        var gpu = $.getenv("DUPLIX_REF_GPU");
         if (gpu) {
             var avail = [];
             try { for (var g = 0; g < app.availableGPUAccelTypes.length; g++) avail.push(String(app.availableGPUAccelTypes[g])); } catch (eg) {}
@@ -237,8 +238,8 @@
             app.project.gpuAccelType = GpuAccelType[gpu];
             log("gpu set: " + app.project.gpuAccelType);
         }
-        var cases = readJson($.getenv("RANDAMU_REF_CASES")).cases;
-        var only = $.getenv("RANDAMU_REF_ONLY") || "";
+        var cases = readJson($.getenv("DUPLIX_REF_CASES")).cases;
+        var only = $.getenv("DUPLIX_REF_ONLY") || "";
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;

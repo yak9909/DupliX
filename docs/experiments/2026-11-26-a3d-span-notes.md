@@ -76,9 +76,9 @@ rx > 0x8000 か ry > 0x8000 なら範囲平均（q 2: `PF_AreaSample_CPlusPlus<P
   実行中の PC で 255 個の結果を表にして使えば完全に一致する。
 - PF.dll 全体の `vrcpps` は 17 関数（`spike/ida/ida_scan_approx.py`）。Advanced3D 全体には近似命令も FMA もない。
 
-## 捕獲（`RANDAMU_A3D_DRAW=3`）
+## 捕獲（`DUPLIX_A3D_DRAW=3`）
 
-`RANDAMU_A3D_CAPSUB`（コピー番号）、`RANDAMU_A3D_CAPW`（描き込み先の幅、例 1920。隠れた AE は小さな縮小表示も描くため）、
-`RANDAMU_A3D_CAPDIR`。書き出すもの: surface.bin（232）、ctx.bin、d.bin、state.bin（v45 から 1024）、tex_hdr.bin・tex.bin、samples.bin、
+`DUPLIX_A3D_CAPSUB`（コピー番号）、`DUPLIX_A3D_CAPW`（描き込み先の幅、例 1920。隠れた AE は小さな縮小表示も描くため）、
+`DUPLIX_A3D_CAPDIR`。書き出すもの: surface.bin（232）、ctx.bin、d.bin、state.bin（v45 から 1024）、tex_hdr.bin・tex.bin、samples.bin、
 params.bin・params_b0.bin、target_hdr.bin、cpu.bin、rows.bin（行ごとに int32 row, y, x0, x1, nbytes、描く前のバイト列、後のバイト列）。
-例: `RANDAMU_A3D_DRAW=3 RANDAMU_A3D_CAPSUB=0 RANDAMU_A3D_CAPW=1920 RANDAMU_A3D_CAPDIR=<dir> pwsh tests/ae/run_user_time.ps1 -Aep "tests/ae/user/DupliX Test.aep" -Frames 1 -Count 3 -Variants off`
+例: `DUPLIX_A3D_DRAW=3 DUPLIX_A3D_CAPSUB=0 DUPLIX_A3D_CAPW=1920 DUPLIX_A3D_CAPDIR=<dir> pwsh tests/ae/run_user_time.ps1 -Aep "tests/ae/user/DupliX Test.aep" -Frames 1 -Count 3 -Variants off`

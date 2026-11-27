@@ -1,4 +1,4 @@
-// randamu core: CPU rasterizer of the fast mode. Draws perspective copies of one source image into one
+// DupliX core: CPU rasterizer of the fast mode. Draws perspective copies of one source image into one
 // output image (bilinear, "over", per-copy opacity, far copies first). No AE dependency.
 #pragma once
 

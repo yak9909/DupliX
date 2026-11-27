@@ -1,4 +1,4 @@
-# Speed: renders probe_<case> (randamu, N copies) and ref_<case> (N real duplicate layers) with aerender,
+# Speed: renders probe_<case> (DupliX, N copies) and ref_<case> (N real duplicate layers) with aerender,
 # each comp separately, over a frame range, and prints the wall time and the hook profile.
 #   pwsh tests/ae/run_perf.ps1 [-Frames 30] [-Gpu CUDA] [-SkipScene] [-Mfr OFF|ON]
 #   -ProbeOnly: skip the ref comps (real layers)
@@ -14,7 +14,7 @@ $sel = if ($Cases) { $Cases -split "," } else { @($all | ForEach-Object name) }
 $run = @($all | Where-Object { $sel -contains $_.name })
 
 if (-not $SkipScene) {
-    $dump = Join-Path $root "build\dump\randamu_dump.exe"
+    $dump = Join-Path $root "build\dump\duplix_dump.exe"
     foreach ($c in $run) {
         $p = $c.params
         $dargs = @("--count", $p.count, "--seed", $(if ($p.seed) { $p.seed } else { 0 }))
@@ -24,10 +24,10 @@ if (-not $SkipScene) {
         if ($p.opacity) { $dargs += @("--opacity") + $p.opacity }
         & $dump @dargs | Set-Content -Encoding utf8NoBOM (Join-Path $outDir "copies_$($c.name).json")
     }
-    $env:RANDAMU_REF_CASES = $casesFile
-    $env:RANDAMU_REF_IMAGE = Join-Path $root "spike\assets\probe_img.png"
-    $env:RANDAMU_REF_ONLY = $Cases
-    $env:RANDAMU_REF_GPU = $Gpu
+    $env:DUPLIX_REF_CASES = $casesFile
+    $env:DUPLIX_REF_IMAGE = Join-Path $root "spike\assets\probe_img.png"
+    $env:DUPLIX_REF_ONLY = $Cases
+    $env:DUPLIX_REF_GPU = $Gpu
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/make_ref.jsx -Name perf -TimeoutSec 900 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT FAILED|gpu"
     if ($LASTEXITCODE -ne 0) { Write-Host "scene build failed"; exit 1 }
@@ -40,8 +40,8 @@ foreach ($c in $run) {
     foreach ($kind in $(if ($ProbeOnly) { @("probe") } else { @("probe", "ref") })) {
         $comp = "${kind}_$($c.name)"
         $null = Repair-AeCrashState
-        $env:RANDAMU_LOG = Join-Path $outDir "plugin_$comp.log"
-        if (Test-Path $env:RANDAMU_LOG) { Remove-Item $env:RANDAMU_LOG }
+        $env:DUPLIX_LOG = Join-Path $outDir "plugin_$comp.log"
+        if (Test-Path $env:DUPLIX_LOG) { Remove-Item $env:DUPLIX_LOG }
         Get-ChildItem $outDir -Filter "p_*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
@@ -52,8 +52,8 @@ foreach ($c in $run) {
         $sec = $sw.Elapsed.TotalSeconds
         $n = @(Get-ChildItem $outDir -Filter "p_*.tif").Count
         Write-Host ("{0,-16} {1,7:N1} s for {2} frames ({3:N2} s/frame)" -f $comp, $sec, $n, ($sec / [Math]::Max($n, 1)))
-        $prof = Select-String -Path $env:RANDAMU_LOG -Pattern "prof:" -ErrorAction SilentlyContinue | Select-Object -Last 2
+        $prof = Select-String -Path $env:DUPLIX_LOG -Pattern "prof:" -ErrorAction SilentlyContinue | Select-Object -Last 2
         foreach ($l in $prof) { Write-Host ("    " + ($l.Line -split "\] ", 2)[-1]) }
-        Remove-Item env:RANDAMU_LOG
+        Remove-Item env:DUPLIX_LOG
     }
 }

@@ -1,6 +1,6 @@
 # THROWAWAY SPIKE: build the S1/S2 test project with AfterFX.com, render it with aerender,
-# then print the plugin log. Requires RandamuSpike.aex to be visible to AE
-# (MediaCore\randamu_dev junction -> spike\build\out).
+# then print the plugin log. Requires DupliXSpike.aex to be visible to AE
+# (MediaCore\duplix_dev junction -> spike\build\out).
 param([switch]$SkipScene, [string]$Mfr = "", [string]$S5Site = "pre", [int]$RenderTimeoutSec = 600)
 $ErrorActionPreference = "Stop"
 
@@ -11,20 +11,20 @@ $clean = @("*.png", "*.tif", "*.mp4", "plugin.log", "aerender.out.log")
 if (-not $SkipScene) { $clean += @("*.aep", "jsx.log") }
 Get-ChildItem "$outDir\*" -Include $clean -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
 
-$env:RANDAMU_SPIKE_DIR = ($outDir -replace '\\', '/')
-$env:RANDAMU_SPIKE_LOG = Join-Path $outDir "plugin.log"
-$env:RANDAMU_SPIKE_ASSETS = ((Join-Path $root "scenes\assets") -replace '\\', '/')
+$env:DUPLIX_SPIKE_DIR = ($outDir -replace '\\', '/')
+$env:DUPLIX_SPIKE_LOG = Join-Path $outDir "plugin.log"
+$env:DUPLIX_SPIKE_ASSETS = ((Join-Path $root "scenes\assets") -replace '\\', '/')
 # S5: where the plugin renders the target through AEGP (pre = PreRender, smart = SmartRender),
 # and a per-run salt mixed into the cache key so no run reuses an earlier run's disk cache.
-$env:RANDAMU_S5_SITE = $S5Site
-$env:RANDAMU_S5_SALT = [guid]::NewGuid().ToString("N")
-Write-Host "S5 site=$S5Site salt=$env:RANDAMU_S5_SALT mfr='$Mfr'"
+$env:DUPLIX_S5_SITE = $S5Site
+$env:DUPLIX_S5_SALT = [guid]::NewGuid().ToString("N")
+Write-Host "S5 site=$S5Site salt=$env:DUPLIX_S5_SALT mfr='$Mfr'"
 
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
 
 if (-not $SkipScene) {
     # AfterFX -r cannot take a script path containing spaces: copy to %TEMP% first.
-    $jsx = Join-Path $env:TEMP "randamu_make_s1.jsx"
+    $jsx = Join-Path $env:TEMP "duplix_make_s1.jsx"
     Copy-Item (Join-Path $root "scenes\make_s1.jsx") $jsx -Force
     # -noui does not run -r scripts reliably on this machine; use the UI app (script calls app.quit()).
     . (Join-Path $PSScriptRoot "ae_bg.ps1")
@@ -112,10 +112,10 @@ if (Select-String -Path (Join-Path $outDir "aerender.out.log") -Pattern "aerende
 Get-Content (Join-Path $outDir "aerender.out.log") | Select-Object -Last 30
 
 Write-Host "== plugin.log"
-if (Test-Path $env:RANDAMU_SPIKE_LOG) { Get-Content $env:RANDAMU_SPIKE_LOG } else { Write-Host "(no plugin log — plugin not loaded?)" }
+if (Test-Path $env:DUPLIX_SPIKE_LOG) { Get-Content $env:DUPLIX_SPIKE_LOG } else { Write-Host "(no plugin log — plugin not loaded?)" }
 Get-ChildItem "$outDir\*" -Include *.png, *.tif | Select-Object Name, Length
 
-$renders = @(Select-String -Path $env:RANDAMU_SPIKE_LOG -Pattern "SmartRender: bpc" -ErrorAction SilentlyContinue).Count
+$renders = @(Select-String -Path $env:DUPLIX_SPIKE_LOG -Pattern "SmartRender: bpc" -ErrorAction SilentlyContinue).Count
 Write-Host "SmartRender calls this run: $renders"
 if ($renders -eq 0) { Write-Host "WARNING: plugin never rendered - frames came from AE's cache" }
 

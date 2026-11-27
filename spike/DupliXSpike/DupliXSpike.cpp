@@ -5,9 +5,9 @@
 // S2: can we declare 64 layer params, and what does checkout_layer return for them?
 //     Do expressions on POINT_3D params give us toComp() positions?
 //
-// Everything interesting is written to the log file named by %RANDAMU_SPIKE_LOG%.
+// Everything interesting is written to the log file named by %DUPLIX_SPIKE_LOG%.
 
-#include "RandamuSpike.h"
+#include "DupliXSpike.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,10 +31,10 @@ static void Log(const char* fmt, ...)
 {
     std::lock_guard<std::mutex> lock(g_logMutex);
     char path[1024] = {0};
-    DWORD n = GetEnvironmentVariableA("RANDAMU_SPIKE_LOG", path, sizeof(path));
+    DWORD n = GetEnvironmentVariableA("DUPLIX_SPIKE_LOG", path, sizeof(path));
     if (n == 0 || n >= sizeof(path)) {
         GetTempPathA(sizeof(path), path);
-        strcat_s(path, "randamu_spike.log");
+        strcat_s(path, "duplix_spike.log");
     }
     FILE* f = nullptr;
     if (fopen_s(&f, path, "a") != 0 || !f) return;
@@ -224,7 +224,7 @@ static void EnsureRegistered(PF_InData* in_data, const char* where)
     if (g_registered) return;
     auto util = SUITE(AEGP_UtilitySuite6, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     if (!util) { Log("S5 register(%s): no UtilitySuite6", where); return; }
-    A_Err e = util->AEGP_RegisterWithAEGP(nullptr, "RandamuSpike", &g_pluginId);
+    A_Err e = util->AEGP_RegisterWithAEGP(nullptr, "DupliXSpike", &g_pluginId);
     g_registered = (e == A_Err_NONE);
     Log("S5 register(%s): err=%d plugin_id=%d", where, e, (int)g_pluginId);
 }
@@ -360,14 +360,14 @@ static void ResolveBeeROI()
     (void)done;
 }
 
-// RANDAMU_S5C_ROI: unset = "margin:30000", "none" = keep default, "margin:N" = grow by N px each side, "zero" = {0,0,0,0}
+// DUPLIX_S5C_ROI: unset = "margin:30000", "none" = keep default, "margin:N" = grow by N px each side, "zero" = {0,0,0,0}
 static void ApplyRoiExperiment(AEGP_LayerRenderOptionsH ro)
 {
     ResolveBeeROI();
     if (!g_setROI || !g_getROI) { Log("  S5c ROI: BEE_RenderOptions::SetROI/GetROI not found"); return; }
     MRect d = *g_getROI(ro);
     char v[64] = {0};
-    if (!GetEnvironmentVariableA("RANDAMU_S5C_ROI", v, sizeof(v)) || !v[0]) strcpy_s(v, "margin:30000");
+    if (!GetEnvironmentVariableA("DUPLIX_S5C_ROI", v, sizeof(v)) || !v[0]) strcpy_s(v, "margin:30000");
     MRect n = d;
     int margin = 0;
     if (strncmp(v, "margin:", 7) == 0) {
@@ -391,14 +391,14 @@ static void ApplyRoiExperiment(AEGP_LayerRenderOptionsH ro)
         auto ge = bee ? (BeeGetShort)GetProcAddress(bee, "?GetEffectsToRender@BEE_LayerRenderOptions@@QEBAFXZ") : nullptr;
         Log("  S5c knobs: LayerStage=%d LayerRenderType=%d EffectsToRender=%d", gs ? gs(ro) : -999,
             gt ? gt(ro) : -999, ge ? ge(ro) : -999);
-        // RANDAMU_S5C_STAGE=N / RANDAMU_S5C_RTYPE=N: try other values (experiment only).
+        // DUPLIX_S5C_STAGE=N / DUPLIX_S5C_RTYPE=N: try other values (experiment only).
         typedef void (*BeeSetShort)(void*, short);
         char sv[16] = {0};
-        if (bee && GetEnvironmentVariableA("RANDAMU_S5C_STAGE", sv, sizeof(sv)) && sv[0]) {
+        if (bee && GetEnvironmentVariableA("DUPLIX_S5C_STAGE", sv, sizeof(sv)) && sv[0]) {
             auto ss = (BeeSetShort)GetProcAddress(bee, "?SetLayerStage@BEE_LayerRenderOptions@@QEAAXF@Z");
             if (ss) ss(ro, (short)atoi(sv));
         }
-        if (bee && GetEnvironmentVariableA("RANDAMU_S5C_RTYPE", sv, sizeof(sv)) && sv[0]) {
+        if (bee && GetEnvironmentVariableA("DUPLIX_S5C_RTYPE", sv, sizeof(sv)) && sv[0]) {
             auto st = (BeeSetShort)GetProcAddress(bee, "?SetLayerRenderType@BEE_LayerRenderOptions@@QEAAXF@Z");
             if (st) st(ro, (short)atoi(sv));
         }
@@ -546,12 +546,12 @@ static bool RenderTarget(PF_InData* in_data, AEGP_LayerH L, int bpc, const char*
 // numbers from AEGP instead: layer -> world matrix, then the effect camera (world -> camera,
 // perspective divide by camera z, scaled by the distance to the image plane).
 // A_Matrix4 is row-major with row vectors: p' = [x y z 1] * M.
-// RANDAMU_S5B: unset/"0" = expressions only, "compare" = read both and log the difference
+// DUPLIX_S5B: unset/"0" = expressions only, "compare" = read both and log the difference
 // (geometry from AEGP), "1" = AEGP only (expression params are never checked out).
 static int S5bMode()
 {
     char v[16] = {0};
-    DWORD n = GetEnvironmentVariableA("RANDAMU_S5B", v, sizeof(v));
+    DWORD n = GetEnvironmentVariableA("DUPLIX_S5B", v, sizeof(v));
     if (n == 0 || n >= sizeof(v)) return 0;
     if (_stricmp(v, "compare") == 0) return 2;
     return v[0] == '1' ? 1 : 0;
@@ -694,14 +694,14 @@ static double LayerOpacity(PF_InData* in_data, AEGP_LayerH L)
 }
 
 // ---------------------------------------------------------------- S7: every layer is a target
-// RANDAMU_S7=1: no "Target" by name. Every layer AE would draw (except ourselves, layers that
+// DUPLIX_S7=1: no "Target" by name. Every layer AE would draw (except ourselves, layers that
 // carry this effect, and the spike's "BG") is rendered through AEGP; the overlay is their union.
 static void MixIn(PF_InData* in_data, void* ctx, const void* data, size_t n);   // defined below
 
 static bool S7Mode()
 {
     char v[8] = {0};
-    DWORD n = GetEnvironmentVariableA("RANDAMU_S7", v, sizeof(v));
+    DWORD n = GetEnvironmentVariableA("DUPLIX_S7", v, sizeof(v));
     return n > 0 && n < sizeof(v) && v[0] == '1';
 }
 
@@ -769,7 +769,7 @@ static bool LayerHasOurEffect(PF_InData* in_data, AEGP_LayerH L)
         AEGP_InstalledEffectKey key = 0;
         A_char mn[AEGP_MAX_EFFECT_MATCH_NAME_SIZE + 1] = {0};
         bool ours = !es->AEGP_GetInstalledKeyFromLayerEffect(ef, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
-                    strcmp(mn, "RNDM RandamuSpike") == 0;
+                    strcmp(mn, "RNDM DupliXSpike") == 0;
         es->AEGP_DisposeEffect(ef);
         if (ours) return true;
     }
@@ -976,7 +976,7 @@ static void DeletePre(void* p)
 static bool S5SiteSmart()
 {
     char v[32] = {0};
-    DWORD n = GetEnvironmentVariableA("RANDAMU_S5_SITE", v, sizeof(v));
+    DWORD n = GetEnvironmentVariableA("DUPLIX_S5_SITE", v, sizeof(v));
     return n > 0 && n < sizeof(v) && _stricmp(v, "smart") == 0;
 }
 
@@ -1095,7 +1095,7 @@ static PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderEx
     // Per-run salt so a second aerender pass (e.g. MFR on) cannot reuse the first pass's disk cache.
     {
         char salt[64] = {0};
-        DWORD n = GetEnvironmentVariableA("RANDAMU_S5_SALT", salt, sizeof(salt));
+        DWORD n = GetEnvironmentVariableA("DUPLIX_S5_SALT", salt, sizeof(salt));
         if (n > 0 && n < sizeof(salt) && extra->cb->GuidMixInPtr)
             extra->cb->GuidMixInPtr(in_data->effect_ref, n, salt);
     }
@@ -1209,10 +1209,10 @@ static PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderEx
         Log("S5 PreRender comp='%s' target index=%d site=%s", pre->compName.c_str(), tIdx,
             S5SiteSmart() ? "smart" : "pre");
         if (!S5SiteSmart()) {
-            // S4 negative control: RANDAMU_S4_NOGUID=1 leaves the target's receipt GUID out of the
+            // S4 negative control: DUPLIX_S4_NOGUID=1 leaves the target's receipt GUID out of the
             // cache key, so content-only changes of the target (mask, effect) must come out stale.
             char ng[8] = {0};
-            DWORD ngn = GetEnvironmentVariableA("RANDAMU_S4_NOGUID", ng, sizeof(ng));
+            DWORD ngn = GetEnvironmentVariableA("DUPLIX_S4_NOGUID", ng, sizeof(ng));
             const bool noGuid = ngn > 0 && ngn < sizeof(ng) && ng[0] == '1';
             if (noGuid) Log("S4 NOGUID: target receipt GUID not mixed");
             RenderTarget(in_data, pre->target, extra->input->bitdepth, "PreRender", &pre->aegp,
@@ -1288,9 +1288,9 @@ static PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderEx
                 key[i * 3 + 1] = pts[i]->y_value;
                 key[i * 3 + 2] = pts[i]->z_value;
             }
-            // negative control: RANDAMU_S5B_NOMIX=1 leaves the geometry out of the cache key
+            // negative control: DUPLIX_S5B_NOMIX=1 leaves the geometry out of the cache key
             char nm[8] = {0};
-            DWORD nmn = GetEnvironmentVariableA("RANDAMU_S5B_NOMIX", nm, sizeof(nm));
+            DWORD nmn = GetEnvironmentVariableA("DUPLIX_S5B_NOMIX", nm, sizeof(nm));
             if (nmn > 0 && nmn < sizeof(nm) && nm[0] == '1') Log("S5b NOMIX: geometry not mixed");
             else MixIn(in_data, extra, key, sizeof(key));
         } else {
@@ -1506,7 +1506,7 @@ static PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRend
 
 // ---------------------------------------------------------------- probe: hidden "Layer Sets"
 // AEGP_LayerH is the BEE_Layer* itself (AEGPDriver's CreateNullLayer passes it straight to
-// BEE_CmdSetLayerSwitch). RANDAMU_PROBE_SETS=create -> BEE_AVLayer::CreateSet on "Target";
+// BEE_CmdSetLayerSwitch). DUPLIX_PROBE_SETS=create -> BEE_AVLayer::CreateSet on "Target";
 // =switch -> only set switches 0x80000 and 128 (what CreateSet adds on top of the stream group).
 // ---- per-instance vtable copy with logging wrappers (only this layer object is affected)
 static const int kVtSlots = 243;
@@ -1582,7 +1582,7 @@ static void InstallVtLogger(void* obj)
 #undef WRAP8
 #undef WRAPD
     char mode[8] = {0};
-    GetEnvironmentVariableA("RANDAMU_PROBE_VTLOG", mode, sizeof(mode));
+    GetEnvironmentVariableA("DUPLIX_PROBE_VTLOG", mode, sizeof(mode));
     if (mode[0] == 'g') {
         // patch the shared vtable in place (every BEE_AVLayer, including render-thread clones)
         static bool done = false;
@@ -1606,12 +1606,12 @@ static void InstallVtLogger(void* obj)
 // ---- "fill": answer the sub-layer questions ourselves for one layer ID (shared vtable patch)
 static std::atomic<int> g_fillLayerId{-1};
 static int g_slotIsLayerType = 79, g_slotSep = 217, g_slotCount = 219, g_slotRects = 233;  // found at runtime
-// RANDAMU_FILL_RANDOM=N: N copies, offsets/rotations from a Park-Miller sequence (same in probe_3d.jsx)
+// DUPLIX_FILL_RANDOM=N: N copies, offsets/rotations from a Park-Miller sequence (same in probe_3d.jsx)
 static int FillN()
 {
     static int n = [] {
         char b[16] = {0};
-        return GetEnvironmentVariableA("RANDAMU_FILL_RANDOM", b, sizeof(b)) ? atoi(b) : 5;
+        return GetEnvironmentVariableA("DUPLIX_FILL_RANDOM", b, sizeof(b)) ? atoi(b) : 5;
     }();
     return n;
 }
@@ -1631,7 +1631,7 @@ static const double* RandomXform(int i)  // {tx,ty,tz,rx,ry,rz}
     }();
     return &tbl[6 * i];
 }
-static bool FillRandom() { return GetEnvironmentVariableA("RANDAMU_FILL_RANDOM", nullptr, 0) > 0; }
+static bool FillRandom() { return GetEnvironmentVariableA("DUPLIX_FILL_RANDOM", nullptr, 0) > 0; }
 typedef int (*BeeGetID)(const void* layer);
 static int LayerIdOf(const void* layer)
 {
@@ -1671,9 +1671,9 @@ static bool VecReserve(RawVec* v, size_t elem, size_t n)
     return true;
 }
 static SPBasicSuite* g_pica = nullptr;
-static thread_local double t_paramScale = 0;  // >0: scale read from the layer's slider (RANDAMU_FILL_PARAM)
+static thread_local double t_paramScale = 0;  // >0: scale read from the layer's slider (DUPLIX_FILL_PARAM)
 // Read the first "ADBE Slider Control" value on `layer` (a render-thread clone is fine) at layer time.
-// RANDAMU_FILL_BYEFFECT=1: "mine" = the layer carries an "ADBE Slider Control" (stand-in for our own effect).
+// DUPLIX_FILL_BYEFFECT=1: "mine" = the layer carries an "ADBE Slider Control" (stand-in for our own effect).
 static bool LayerHasMarker(void* layer)
 {
     if (!g_pica) return false;
@@ -1705,7 +1705,7 @@ static void RegisterMineId(int id)
 }
 static bool IsMine(void* layer)
 {
-    static bool byEffect = GetEnvironmentVariableA("RANDAMU_FILL_BYEFFECT", nullptr, 0) > 0;
+    static bool byEffect = GetEnvironmentVariableA("DUPLIX_FILL_BYEFFECT", nullptr, 0) > 0;
     int id = LayerIdOf(layer);
     if (!byEffect) return id == g_fillLayerId;
     int n = g_mineCount;
@@ -1749,18 +1749,18 @@ static void FillOffset(int i, double* tx, double* ty, double* tz)
 {
     static double spacing = [] {
         char b[32] = {0};
-        return GetEnvironmentVariableA("RANDAMU_FILL_SPACING", b, sizeof(b)) ? atof(b) : 60.0;
+        return GetEnvironmentVariableA("DUPLIX_FILL_SPACING", b, sizeof(b)) ? atof(b) : 60.0;
     }();
-    // RANDAMU_FILL_TABLE=1: fixed scattered offsets (same table in scenes/probe_3d.jsx)
+    // DUPLIX_FILL_TABLE=1: fixed scattered offsets (same table in scenes/probe_3d.jsx)
     static const double table[5][3] = {{0, 0, 0}, {-110, -40, 80}, {110, 30, -120}, {-60, 60, -200}, {70, -60, 150}};
-    static bool useTable = GetEnvironmentVariableA("RANDAMU_FILL_TABLE", nullptr, 0) > 0;
+    static bool useTable = GetEnvironmentVariableA("DUPLIX_FILL_TABLE", nullptr, 0) > 0;
     if (FillRandom()) {
         const double* r = RandomXform(i);
         *tx = r[0]; *ty = r[1]; *tz = r[2];
         return;
     }
     if (useTable) {
-        // RANDAMU_FILL_FILE: a text file holding a scale factor, re-read on every call (cache test)
+        // DUPLIX_FILL_FILE: a text file holding a scale factor, re-read on every call (cache test)
         double scale = 1.0;
         if (t_paramScale > 0) {
             *tx = table[i][0] * t_paramScale;
@@ -1769,7 +1769,7 @@ static void FillOffset(int i, double* tx, double* ty, double* tz)
             return;
         }
         char path[MAX_PATH] = {0};
-        if (GetEnvironmentVariableA("RANDAMU_FILL_FILE", path, sizeof(path))) {
+        if (GetEnvironmentVariableA("DUPLIX_FILL_FILE", path, sizeof(path))) {
             FILE* fp = nullptr;
             if (!fopen_s(&fp, path, "r") && fp) {
                 if (fscanf_s(fp, "%lf", &scale) != 1) scale = 1.0;
@@ -1811,7 +1811,7 @@ static uintptr_t FillCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
 {
     // Rasterize2DGraph asks with an empty cache and switches to the layer-set raster node when >=2;
     // answer the original there so the normal (whole-layer) raster is used.
-    static bool noCacheOrig = GetEnvironmentVariableA("RANDAMU_FILL_NOCACHE_ORIG", nullptr, 0) > 0;
+    static bool noCacheOrig = GetEnvironmentVariableA("DUPLIX_FILL_NOCACHE_ORIG", nullptr, 0) > 0;
     bool emptyCache = c && *(void**)c == nullptr;
     if (IsMine((void*)a) && !(noCacheOrig && emptyCache)) {
         int n = ++g_vtCalls[219];
@@ -1857,9 +1857,9 @@ static uintptr_t FillRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
     bool ok = m3id && m3tr && m4id && m4tr && VecReserve(vR, 32, kFillN) && VecReserve(v3, 72, kFillN) &&
               VecReserve(v4, 128, kFillN);
     if (ok) {
-        static bool anim = GetEnvironmentVariableA("RANDAMU_FILL_ANIM", nullptr, 0) > 0;
+        static bool anim = GetEnvironmentVariableA("DUPLIX_FILL_ANIM", nullptr, 0) > 0;
         const int* tm = (const int*)c;
-        static bool useParam = GetEnvironmentVariableA("RANDAMU_FILL_PARAM", nullptr, 0) > 0;
+        static bool useParam = GetEnvironmentVariableA("DUPLIX_FILL_PARAM", nullptr, 0) > 0;
         t_paramScale = 0;
         if (useParam) {
             double sv = 0;
@@ -1880,12 +1880,12 @@ static uintptr_t FillRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
             memcpy(vR->last, in, 32);
             vR->last += 32;
             m3id(v3->last);
-            static bool m3id_only = GetEnvironmentVariableA("RANDAMU_FILL_M3ID", nullptr, 0) > 0;
+            static bool m3id_only = GetEnvironmentVariableA("DUPLIX_FILL_M3ID", nullptr, 0) > 0;
             if (!m3id_only) m3tr(v3->last, tx, ty);
             v3->last += 72;
             m4id(v4->last);
-            static bool m4id_only = GetEnvironmentVariableA("RANDAMU_FILL_M4ID", nullptr, 0) > 0;
-            static bool useRot = GetEnvironmentVariableA("RANDAMU_FILL_ROT", nullptr, 0) > 0;
+            static bool m4id_only = GetEnvironmentVariableA("DUPLIX_FILL_M4ID", nullptr, 0) > 0;
+            static bool useRot = GetEnvironmentVariableA("DUPLIX_FILL_ROT", nullptr, 0) > 0;
             if (useRot) {
                 // rotation (degrees) about the rect centre, X then Y then Z, row vectors; then translate
                 static const double rot[5][3] = {{0, 0, 0}, {0, 0, 30}, {0, 40, 0}, {35, 0, 0}, {20, 30, 40}};
@@ -1911,7 +1911,7 @@ static uintptr_t FillRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
                 const double Tb[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {ax + tx, ay + ty, tz, 1}};
                 static std::string order = [] {
                     char b[8] = {0};
-                    return std::string(GetEnvironmentVariableA("RANDAMU_FILL_ROTORDER", b, sizeof(b)) ? b : "XYZ");
+                    return std::string(GetEnvironmentVariableA("DUPLIX_FILL_ROTORDER", b, sizeof(b)) ? b : "XYZ");
                 }();
                 for (char ch : order) {
                     if (ch == 'X') mul(Rx);
@@ -1923,7 +1923,7 @@ static uintptr_t FillRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
             } else if (!m4id_only) {
                 m4tr(v4->last, tx, ty, tz);
             }
-            static bool col = GetEnvironmentVariableA("RANDAMU_FILL_COL", nullptr, 0) > 0;
+            static bool col = GetEnvironmentVariableA("DUPLIX_FILL_COL", nullptr, 0) > 0;
             if (col) {  // move translation from row 4 to column 4
                 double* m = (double*)v4->last;
                 m[3] = m[12]; m[7] = m[13]; m[11] = m[14];
@@ -1935,9 +1935,9 @@ static uintptr_t FillRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
     int n = ++g_vtCalls[233];
     if (n <= 20) {
         Log("FILL rects this=%p in={%.1f,%.1f,%.1f,%.1f} ok=%d col=%d m3id=%d m4id=%d", (void*)a, in[0], in[1], in[2],
-            in[3], (int)ok, GetEnvironmentVariableA("RANDAMU_FILL_COL", nullptr, 0) > 0,
-            GetEnvironmentVariableA("RANDAMU_FILL_M3ID", nullptr, 0) > 0,
-            GetEnvironmentVariableA("RANDAMU_FILL_M4ID", nullptr, 0) > 0);
+            in[3], (int)ok, GetEnvironmentVariableA("DUPLIX_FILL_COL", nullptr, 0) > 0,
+            GetEnvironmentVariableA("DUPLIX_FILL_M3ID", nullptr, 0) > 0,
+            GetEnvironmentVariableA("DUPLIX_FILL_M4ID", nullptr, 0) > 0);
         if (ok && v4->first + 128 < v4->last) {
             const double* m = (const double*)(v4->first + 128);
             const double* m3 = (const double*)(v3->first + 72);
@@ -2050,7 +2050,7 @@ static void InstallTextLog(void* layer)
 
 // IsLayerType (slot 79): sub_180385CD0 (Artisan: "layer must render flattened" if AV with effects)
 // -> answer false for our layer only when called from there.
-static uintptr_t g_cd0Begin = 0, g_cd0End = 0;  // fixed-address mode (RANDAMU_FILL_FXBYPASS=addr)
+static uintptr_t g_cd0Begin = 0, g_cd0End = 0;  // fixed-address mode (DUPLIX_FILL_FXBYPASS=addr)
 static uintptr_t g_betaFn = 0;                  // BEE_BetaFeature_AreExpressionEffectsAlwaysAllowedEnabled
 // Is `ra` the return address of the IsLayerType(0) call in the Artisan "must flatten" check?
 // Code shape there (AE 2025): call [rax+IsLayerType]; test al,al; jnz short; call BEE_BetaFeature_...;
@@ -2110,7 +2110,7 @@ static int FindSlot(void** vt, const char* mangled)
     return -1;
 }
 
-// GetSubLayerOpacity (double, per copy): RANDAMU_FILL_OPACITY=1 -> 0.3 + 0.7*((i*37)%10)/9 (same in jsx)
+// GetSubLayerOpacity (double, per copy): DUPLIX_FILL_OPACITY=1 -> 0.3 + 0.7*((i*37)%10)/9 (same in jsx)
 static int g_slotOpacity = -1;
 static double FillOpacity(void* self, int i, const void* sp)
 {
@@ -2175,16 +2175,16 @@ static void InstallFillHooks(void* layer)
     Log("FILL target layer=%p id=%d", layer, (int)g_fillLayerId);
     PatchFillVtable(*(void***)layer);
 }
-// GLOBAL_SETUP path (RANDAMU_FILL_GLOBAL=1): patch BEE_AVLayer's vtable without any layer instance;
-// target layer ID from RANDAMU_FILL_LAYERID. Works for projects opened from disk / aerender.
+// GLOBAL_SETUP path (DUPLIX_FILL_GLOBAL=1): patch BEE_AVLayer's vtable without any layer instance;
+// target layer ID from DUPLIX_FILL_LAYERID. Works for projects opened from disk / aerender.
 static void InstallFillHooksGlobal(PF_InData* in_data)
 {
     char b[32] = {0};
-    if (!GetEnvironmentVariableA("RANDAMU_FILL_GLOBAL", b, sizeof(b))) return;
+    if (!GetEnvironmentVariableA("DUPLIX_FILL_GLOBAL", b, sizeof(b))) return;
     g_pica = in_data->pica_basicP;
-    if (GetEnvironmentVariableA("RANDAMU_FILL_LAYERID", b, sizeof(b))) g_fillLayerId = atoi(b);
+    if (GetEnvironmentVariableA("DUPLIX_FILL_LAYERID", b, sizeof(b))) g_fillLayerId = atoi(b);
     char ids[256] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_FILL_LAYERIDS", ids, sizeof(ids))) {  // "53,54" (BYEFFECT mode)
+    if (GetEnvironmentVariableA("DUPLIX_FILL_LAYERIDS", ids, sizeof(ids))) {  // "53,54" (BYEFFECT mode)
         for (char* s = ids; *s;) {
             RegisterMineId(atoi(s));
             while (*s && *s != ',') s++;
@@ -2219,7 +2219,7 @@ static void PatchFillVtable(void** vt)
         Log("FILL: VirtualProtect failed %lu", GetLastError());
         return;
     }
-    if (GetEnvironmentVariableA("RANDAMU_FILL_OPACITY", nullptr, 0) > 0) {
+    if (GetEnvironmentVariableA("DUPLIX_FILL_OPACITY", nullptr, 0) > 0) {
         g_slotOpacity = FindSlot(vt, "?GetSubLayerOpacity@BEE_AVLayer@@UEBANHAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z");
         Log("FILL opacity slot=%d (analysed 226)", g_slotOpacity);
         if (g_slotOpacity >= 0 && g_slotOpacity < kVtSlots) vt[g_slotOpacity] = (void*)&FillOpacity;
@@ -2232,7 +2232,7 @@ static void PatchFillVtable(void** vt)
     vt[sCnt] = (void*)&FillCount;
     vt[sRc] = (void*)&FillRects;
     char fx[16] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_FILL_FXBYPASS", fx, sizeof(fx)) > 0) {
+    if (GetEnvironmentVariableA("DUPLIX_FILL_FXBYPASS", fx, sizeof(fx)) > 0) {
         if (!strcmp(fx, "addr")) {  // old fixed-address mode (AE 2025 build analysed)
             uintptr_t base = (uintptr_t)GetModuleHandleA("BEE.dll");
             g_cd0Begin = base + 0x385CD0;
@@ -2246,11 +2246,11 @@ static void PatchFillVtable(void** vt)
     Log("FILL hooks installed on shared vtable %p", (void*)vt);
 }
 
-// RANDAMU_PROBE_SHADOWS=1: turn on "Casts Shadows" for every light, and for layers named Target/Copy*,
+// DUPLIX_PROBE_SHADOWS=1: turn on "Casts Shadows" for every light, and for layers named Target/Copy*,
 // in every comp of the project (setting it from ExtendScript blocks on a modal dialog in the hidden AE).
 static void ProbeSetShadows(PF_InData* in_data)
 {
-    if (GetEnvironmentVariableA("RANDAMU_PROBE_SHADOWS", nullptr, 0) == 0) return;
+    if (GetEnvironmentVariableA("DUPLIX_PROBE_SHADOWS", nullptr, 0) == 0) return;
     auto ps = SUITE(AEGP_ProjSuite6, kAEGPProjSuite, kAEGPProjSuiteVersion6);
     auto is = SUITE(AEGP_ItemSuite9, kAEGPItemSuite, kAEGPItemSuiteVersion9);
     auto cs = SUITE(AEGP_CompSuite12, kAEGPCompSuite, kAEGPCompSuiteVersion12);
@@ -2320,7 +2320,7 @@ typedef int (*BeeCmdSetLayerSwitch)(void* layer, int sw, unsigned char on);
 static void ProbeSets(PF_InData* in_data)
 {
     char mode[32] = {0};
-    if (!GetEnvironmentVariableA("RANDAMU_PROBE_SETS", mode, sizeof(mode))) return;
+    if (!GetEnvironmentVariableA("DUPLIX_PROBE_SETS", mode, sizeof(mode))) return;
     AEGP_LayerH L = nullptr;
     std::string compName;
     A_long idx = -1;
@@ -2330,7 +2330,7 @@ static void ProbeSets(PF_InData* in_data)
     auto sw = bee ? (BeeCmdSetLayerSwitch)GetProcAddress(bee, "?BEE_CmdSetLayerSwitch@@YAHPEAVBEE_Layer@@HE@Z") : nullptr;
     auto us = SUITE(AEGP_UtilitySuite6, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     Log("PROBE sets: mode=%s layer=%p create=%p sw=%p", mode, (void*)L, (void*)create, (void*)sw);
-    if (us) us->AEGP_StartUndoGroup("randamu probe sets");
+    if (us) us->AEGP_StartUndoGroup("DupliX probe sets");
     try {
         if (!strcmp(mode, "create") && create) {
             void* set = create((void*)L);
@@ -2339,7 +2339,7 @@ static void ProbeSets(PF_InData* in_data)
             InstallTextLog((void*)L);
         } else if (!strcmp(mode, "fill")) {
             g_pica = in_data->pica_basicP;
-            if (GetEnvironmentVariableA("RANDAMU_FILL_BYEFFECT", nullptr, 0) > 0) {
+            if (GetEnvironmentVariableA("DUPLIX_FILL_BYEFFECT", nullptr, 0) > 0) {
                 // register every layer of this comp that carries the marker effect (safe here: SEQUENCE_SETUP)
                 auto pfi = SUITE(AEGP_PFInterfaceSuite1, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
                 auto ls = SUITE(AEGP_LayerSuite9, kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
@@ -2356,7 +2356,7 @@ static void ProbeSets(PF_InData* in_data)
                 }
             }
             char vtlog[8] = {0};
-            if (GetEnvironmentVariableA("RANDAMU_PROBE_VTLOG", vtlog, sizeof(vtlog))) InstallVtLogger((void*)L);
+            if (GetEnvironmentVariableA("DUPLIX_PROBE_VTLOG", vtlog, sizeof(vtlog))) InstallVtLogger((void*)L);
             InstallFillHooks((void*)L);
         } else if (!strcmp(mode, "prop") && create) {
             // CreateSet, then BEE_LayerSet::AddProperty(spec of Position). AddProperty adds the
@@ -2427,9 +2427,9 @@ static void ProbeSets(PF_InData* in_data)
                         // vectors were allocated by BEE (ucrtbase heap); leak them in this probe.
                     }
                     char vtlog[8] = {0};
-                    if (GetEnvironmentVariableA("RANDAMU_PROBE_VTLOG", vtlog, sizeof(vtlog))) InstallVtLogger((void*)L);
+                    if (GetEnvironmentVariableA("DUPLIX_PROBE_VTLOG", vtlog, sizeof(vtlog))) InstallVtLogger((void*)L);
                     char extra[32] = {0};
-                    if (GetEnvironmentVariableA("RANDAMU_PROBE_SW", extra, sizeof(extra)) && sw) {
+                    if (GetEnvironmentVariableA("DUPLIX_PROBE_SW", extra, sizeof(extra)) && sw) {
                         int bit = (int)strtol(extra, nullptr, 0);
                         int r = sw((void*)L, bit, 1);
                         Log("PROBE sets: switch 0x%X -> %d, flags now 0x%llX", bit, r, getFlags());
@@ -2456,8 +2456,8 @@ extern "C" DllExport PF_Err PluginDataEntryFunction2(PF_PluginDataPtr inPtr, PF_
                                                      const char* inHostVersion)
 {
     PF_Err result = PF_Err_INVALID_CALLBACK;
-    result = PF_REGISTER_EFFECT_EXT2(inPtr, inPluginDataCallBackPtr, "RandamuSpike", "RNDM RandamuSpike",
-                                     "Randamu Dev", AE_RESERVED_INFO, "EffectMain", "https://example.invalid");
+    result = PF_REGISTER_EFFECT_EXT2(inPtr, inPluginDataCallBackPtr, "DupliXSpike", "RNDM DupliXSpike",
+                                     "DupliX Dev", AE_RESERVED_INFO, "EffectMain", "https://example.invalid");
     return result;
 }
 
@@ -2468,7 +2468,7 @@ PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_Param
     try {
         switch (cmd) {
         case PF_Cmd_ABOUT:
-            strcpy_s(out_data->return_msg, "RandamuSpike (throwaway)");
+            strcpy_s(out_data->return_msg, "DupliXSpike (throwaway)");
             break;
         case PF_Cmd_GLOBAL_SETUP:
             err = GlobalSetup(in_data, out_data);

@@ -1,4 +1,4 @@
-// randamu: the fast mode's rasterizer on the GPU (CUDA). The kernel (src/gpu/fast_raster.cu) is built into PTX
+// DupliX: the fast mode's rasterizer on the GPU (CUDA). The kernel (src/gpu/fast_raster.cu) is built into PTX
 // at build time and embedded; at run time it is loaded with the CUDA driver API from nvcuda.dll, so the user's
 // PC needs only the NVIDIA driver. No AE dependency.
 #pragma once

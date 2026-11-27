@@ -2,7 +2,7 @@
 // <interval ms>") in the viewer and, while AE is idle, moves the time one frame every <interval> ms
 // (the viewer renders each frame like when scrubbing). Writes step_done.txt at the end.
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     // the script arrived (run_preview.ps1 sends it again when this file does not appear; a late first copy and
     // the second one: only the first that arrives runs)
     var got = new File(outDir + "/script_got.txt");
@@ -27,7 +27,7 @@
                 s.comp.time = t;
                 // AE reuses identical frames; preview_setup.jsx animates the camera so each frame is new.
                 // Render the frame (one at a time, so the plugin's span is the frame's latency).
-                if ($.getenv("RANDAMU_PREVIEW_PURGE") === "1") app.purge(PurgeTarget.ALL_CACHES);
+                if ($.getenv("DUPLIX_PREVIEW_PURGE") === "1") app.purge(PurgeTarget.ALL_CACHES);
                 var t0 = new Date().getTime();
                 s.comp.saveFrameToPng(t, new File(s.out + "/frame_" + s.comp.name + "_" + s.n + ".png"));
                 // saveFrameToPng returns before the frame is rendered: frame_ms.txt "<comp> <frame> <start epoch ms>",
@@ -46,8 +46,8 @@
         }
     };
     comp.openInViewer();
-    // RANDAMU_PV_ZOOM (e.g. 4): the viewer zoomed in, so that AE draws only a part of the comp
-    var zoom = parseFloat($.getenv("RANDAMU_PV_ZOOM") || "");
+    // DUPLIX_PV_ZOOM (e.g. 4): the viewer zoomed in, so that AE draws only a part of the comp
+    var zoom = parseFloat($.getenv("DUPLIX_PV_ZOOM") || "");
     if (zoom > 0) {
         try { app.activeViewer.views[0].options.zoom = zoom; } catch (ez) {}
     }

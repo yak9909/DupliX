@@ -2,9 +2,10 @@
 // time 30 times and change parameters / the fx switch / undo, saving a PNG after every step.
 // Also builds "kf" (rotation range keyframed 0 -> 90) and saves its frame at 0.5 s, then saves ui.aep
 // with "kf" in the render queue so run_ui.ps1 can compare the UI frame with aerender.
-// Writes jsx.log ("STEP n OK <what>", "done") to $RANDAMU_TEST_DIR.
+// Writes jsx.log ("STEP n OK <what>", "done") to $DUPLIX_TEST_DIR.
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -35,10 +36,10 @@
         // in front of the wall; moves over the 2 s so that scrubbing changes the picture
         tg(L).property("ADBE Position").setValueAtTime(0, [160, 140, -100]);
         tg(L).property("ADBE Position").setValueAtTime(2, [240, 140, -100]);
-        var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-        fx.property(2).setValue(10);                                  // count
-        fx.property(3).setValue(1);                                   // seed
-        for (var q = 4; q <= 6; q++) fx.property(q).setValue(120);    // position range
+        var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
+        fx.property(dx(2)).setValue(10);                                  // count
+        fx.property(dx(3)).setValue(1);                                   // seed
+        for (var q = 4; q <= 6; q++) fx.property(dx(q)).setValue(120);    // position range
         return {comp: comp, layer: L, fx: fx};
     }
     try {
@@ -60,17 +61,17 @@
         comp.time = 1;
         png(comp, "a_base", 1);
         ok("base");
-        undoable("count", function () { fx.property(2).setValue(20); });
+        undoable("count", function () { fx.property(dx(2)).setValue(20); });
         png(comp, "b_count20", 1);
         ok("count 20");
-        undoable("seed", function () { fx.property(3).setValue(7); });
+        undoable("seed", function () { fx.property(dx(3)).setValue(7); });
         png(comp, "c_seed7", 1);
         ok("seed 7");
-        undoable("rot", function () { for (var r = 7; r <= 9; r++) fx.property(r).setValue(60); });
+        undoable("rot", function () { for (var r = 7; r <= 9; r++) fx.property(dx(r)).setValue(60); });
         png(comp, "d_rot60", 1);
         ok("rotation 60");
         app.executeCommand(16);   // Edit > Undo
-        log("after undo: rotX=" + fx.property(7).value + " seed=" + fx.property(3).value);
+        log("after undo: rotX=" + fx.property(dx(7)).value + " seed=" + fx.property(dx(3)).value);
         png(comp, "e_undo", 1);
         ok("undo");
         undoable("fx off", function () { fx.enabled = false; });
@@ -90,10 +91,10 @@
 
         // Keyframed rotation range: UI frame vs aerender (run_ui.ps1).
         var k = makeComp("kf");
-        var rx = k.fx.property(7);
+        var rx = k.fx.property(dx(7));
         rx.setValueAtTime(0, 0);
         rx.setValueAtTime(1, 90);
-        k.fx.property(8).setValue(45);
+        k.fx.property(dx(8)).setValue(45);
         k.comp.openInViewer();
         k.comp.time = 0.5;
         png(k.comp, "kf_ui", 0.5);

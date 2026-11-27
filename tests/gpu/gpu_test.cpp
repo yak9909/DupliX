@@ -1,4 +1,4 @@
-// randamu GPU tests (no AE): the CUDA rasterizer against the CPU one, in a CUDA context of our own.
+// DupliX GPU tests (no AE): the CUDA rasterizer against the CPU one, in a CUDA context of our own.
 // Build: pwsh tools/build.ps1 -Target gpu  ->  build\gpu\gpu_test.exe. Exit code = number of failed checks.
 #include <algorithm>
 #include <chrono>
@@ -157,8 +157,8 @@ static Compare Run(void* ctx, const std::vector<ARGB>& src, int sw, int sh, std:
     return r;
 }
 
-// gpu_ae_span: AE's span drawing on the GPU against captures of AE (RANDAMU_SPAN_CAP: directories separated by ';',
-// written by RANDAMU_A3D_DRAW=3): every captured pixel must be AE's.
+// gpu_ae_span: AE's span drawing on the GPU against captures of AE (DUPLIX_SPAN_CAP: directories separated by ';',
+// written by DUPLIX_A3D_DRAW=3): every captured pixel must be AE's.
 static std::vector<unsigned char> ReadAll(const std::string& path)
 {
     std::vector<unsigned char> b;
@@ -310,7 +310,7 @@ static void GpuAeBatch(int n, unsigned seed, int tw = 217, int th = 216, bool op
 }
 
 // gpu_ae_mbuf: the fragments of spans into AE's M buffer (GpuAeMbufSpans) against the CPU's (AeMbufSpan8, checked
-// against AE's own fragments in AE with RANDAMU_MBUF=2): every sample and every depth's bits. Surfaces drawn like
+// against AE's own fragments in AE with DUPLIX_MBUF=2): every sample and every depth's bits. Surfaces drawn like
 // GpuAeBatch's, perspective or not, minified or magnified, with a depth offset (params +0xA8); odd and even spans
 // (the depth of a pair's first pixel is rounded differently)
 static void GpuAeMbuf(int n, unsigned seed)
@@ -398,7 +398,7 @@ static void GpuAeMbuf(int n, unsigned seed)
     CHECK(frags > 0 && bad == 0);
 }
 
-// gpu_ae_replay (RANDAMU_BATCH_REPLAY=<file>, written by the plugin with RANDAMU_BATCH_DUMP): a real group's batch
+// gpu_ae_replay (DUPLIX_BATCH_REPLAY=<file>, written by the plugin with DUPLIX_BATCH_DUMP): a real group's batch
 // from AE drawn on the GPU and by the CPU reference (AE's arithmetic, in order), every pixel compared, and timed
 static void GpuAeReplay(const std::string& path)
 {
@@ -431,8 +431,8 @@ static void GpuAeReplay(const std::string& path)
     }
     rnd::AeTex8 t;
     t.data = tex.data(), t.rowbytes = trb, t.width = tw, t.height = th;
-    // RANDAMU_REPLAY_Q0=1 (timing only): every copy with nearest sampling (the cost without AE's area sampling)
-    if (GetEnvironmentVariableA("RANDAMU_REPLAY_Q0", nullptr, 0) > 0)
+    // DUPLIX_REPLAY_Q0=1 (timing only): every copy with nearest sampling (the cost without AE's area sampling)
+    if (GetEnvironmentVariableA("DUPLIX_REPLAY_Q0", nullptr, 0) > 0)
         for (auto& c : cores) c.quality = 0;
     std::vector<unsigned char> frame((size_t)W * H * 4);
     unsigned s = 5;
@@ -488,7 +488,7 @@ int main()
     });
     {
         char rp[MAX_PATH] = {0};
-        if (GetEnvironmentVariableA("RANDAMU_BATCH_REPLAY", rp, sizeof(rp)) > 0) GpuAeReplay(rp);
+        if (GetEnvironmentVariableA("DUPLIX_BATCH_REPLAY", rp, sizeof(rp)) > 0) GpuAeReplay(rp);
     }
     GpuAeBatch(300, 1);
     GpuAeBatch(2500, 2);
@@ -496,7 +496,7 @@ int main()
     GpuAeMbuf(200, 4);
     {
         char env[4096] = {0};
-        if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {
+        if (GetEnvironmentVariableA("DUPLIX_SPAN_CAP", env, sizeof(env)) > 0) {
             std::string all = env;
             size_t a = 0;
             while (a <= all.size()) {

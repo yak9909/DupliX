@@ -1,4 +1,4 @@
-// randamu: the fast mode's rasterizer on the GPU. Built into PTX by tools/build_ptx.ps1 (nvcc -ptx) and loaded
+// DupliX: the fast mode's rasterizer on the GPU. Built into PTX by tools/build_ptx.ps1 (nvcc -ptx) and loaded
 // at run time with the CUDA driver API (src/gpu/gpu_raster.cpp). The same drawing as src/core/raster.cpp
 // (DrawTile): copies nearest first, per pixel at most MAX_FRAGS fragments, those behind an opaque fragment
 // dropped, past the limit the farthest (and anything farther than what is already there) goes under a back

@@ -13,30 +13,30 @@ if (-not $SkipScene) {
     New-Item -ItemType Directory -Force $inDir | Out-Null
     $copy = Join-Path $inDir "user_copy.aep"
     Copy-Item (Resolve-Path $Aep).Path $copy -Force
-    $env:RANDAMU_USER_AEP = $copy -replace '\\', '/'
+    $env:DUPLIX_USER_AEP = $copy -replace '\\', '/'
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/user_scene.jsx -Name userscene -TimeoutSec 400 -Expect "^done" |
         Select-String "comp |layer |EXCEPTION|TIMEOUT|EXPECT"
-    Remove-Item env:RANDAMU_USER_AEP
+    Remove-Item env:DUPLIX_USER_AEP
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 . (Join-Path $root "spike\tools\ae_guard.ps1")
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
 $enc = [Text.Encoding]::GetEncoding(932)
 # AE keeps rendered frames in its disk cache across runs: a new salt makes the effect render again.
-$env:RANDAMU_CACHE_SALT = [guid]::NewGuid().ToString()
+$env:DUPLIX_CACHE_SALT = [guid]::NewGuid().ToString()
 foreach ($v in $Variants -split ",") {
     $null = Repair-AeCrashState
     $log = Join-Path $outDir "aerender_$v.log"
     Get-ChildItem $outDir -Filter "u_*.png" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
-    $env:RANDAMU_LOG = Join-Path $outDir "plugin_$v.log"
-    if (Test-Path $env:RANDAMU_LOG) { Remove-Item $env:RANDAMU_LOG }
+    $env:DUPLIX_LOG = Join-Path $outDir "plugin_$v.log"
+    if (Test-Path $env:DUPLIX_LOG) { Remove-Item $env:DUPLIX_LOG }
     $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow -RedirectStandardOutput $log `
         -ArgumentList (@("-project", "`"$(Join-Path $outDir 'variants.aep')`"", "-comp", $v, "-s", "0", "-e", ($Frames - 1),
                         "-mfr", $Mfr, "100",
                         "-output", "`"$(Join-Path $outDir 'u_[#####].tif')`"", "-v", "ERRORS_AND_PROGRESS") +
                       $(if ($RsTemplate) { @("-RStemplate", "`"$RsTemplate`"") } else { @() }))
     if (-not $p.WaitForExit(600 * 1000)) { $p.Kill(); Write-Host "TIMEOUT $v"; continue }
-    Remove-Item env:RANDAMU_LOG
+    Remove-Item env:DUPLIX_LOG
     Start-Sleep -Milliseconds 500  # aerender's child may still hold the redirected log
     $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
     $t = (New-Object IO.StreamReader($fs, $enc)).ReadToEnd()

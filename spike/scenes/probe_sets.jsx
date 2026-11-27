@@ -1,8 +1,8 @@
 // THROWAWAY SPIKE — can the hidden "ADBE Layer Sets" feature be reached from script,
 // and does AE draw the copies as separate planes?
-// Env: RANDAMU_SPIKE_DIR (output dir). Writes jsx.log, probe.aep, f_*.png.
+// Env: DUPLIX_SPIKE_DIR (output dir). Writes jsx.log, probe.aep, f_*.png.
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }

@@ -1,5 +1,5 @@
 // Installs the BEE.dll / AEGPDriver.aex replacements that make AE render a registered layer as n
-// classic-3D sub-layers. Spec: docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md section 3.
+// classic-3D sub-layers. Spec: docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md section 3.
 #pragma once
 
 #include "AE_GeneralPlug.h"
@@ -28,13 +28,13 @@ bool LayerHasThisEffect(const void* layer);  // AEGP_LayerH is a BEE_Layer*; tru
 bool LayerIsLive(const void* layer);
 
 struct ParamSnapshot;
-// Reads the randamu parameters of `eff` and the anchor point of its layer L at layer time t.
+// Reads the DupliX parameters of `eff` and the anchor point of its layer L at layer time t.
 // valid = false when the effect is switched off or L is not a 3D layer. Returns false if a read failed.
 // Needs InstallHooks to have run (it stores the suite pointer and plugin ID).
 bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, ParamSnapshot* out);
 // Anchor point of L at layer time t (layer-space px). Needs InstallHooks to have run.
 bool ReadLayerAnchor(AEGP_LayerH L, const A_Time& t, double* x, double* y);
-// Finds L's randamu effect and reads it at layer time t (render threads only). False if a read failed; an absent
+// Finds L's DupliX effect and reads it at layer time t (render threads only). False if a read failed; an absent
 // or switched-off effect gives true with out->valid = false. *effectIndex (optional): its AEGP index, *otherActive
 // (optional): the layer's other active effects. Needs InstallHooks to have run.
 bool ReadLayerParams(AEGP_LayerH L, const A_Time& t, ParamSnapshot* out, int* effectIndex = nullptr,

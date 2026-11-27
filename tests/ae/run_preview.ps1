@@ -1,4 +1,4 @@
-# Viewer (preview) timing of a user scene, measured inside the plugin (RANDAMU_TIMING):
+# Viewer (preview) timing of a user scene, measured inside the plugin (DUPLIX_TIMING):
 # starts AE hidden on a COPY of the scene, waits for startup, sends preview_setup.jsx (variant comps),
 # then for each variant sends preview_step.jsx (viewer steps one frame every -IntervalMs) and summarises
 # the plugin's "timing:" lines per comp. AE stays open between scripts (scripts sent with a second
@@ -8,7 +8,7 @@ param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 40, [int]$IntervalMs = 
       [string]$Variants = "pv_asis,pv_one,pv_real10", [string]$Layer = "", [int]$Edit = -1)
 # -Edit <frame>: instead of timing, preview_edit.jsx edits DupliX's parameters on the variants at that frame and
 # check_preview_edit.py compares each edited frame with a fresh duplicate's
-$env:RANDAMU_PV_LAYER = $Layer
+$env:DUPLIX_PV_LAYER = $Layer
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $out = Join-Path $root "build\test\preview"
@@ -21,15 +21,15 @@ $null = Repair-AeCrashState
 $exe = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files\AfterFX.exe"
 
 # AfterFX.exe cannot take paths with spaces: everything goes through %TEMP%. Never open the user's file.
-$scene = Join-Path $env:TEMP "randamu_preview.aep"
+$scene = Join-Path $env:TEMP "duplix_preview.aep"
 Copy-Item (Resolve-Path $Aep).Path $scene -Force
-foreach ($s in "preview_setup", "preview_step", "preview_edit") { Copy-Item (Join-Path $PSScriptRoot "$s.jsx") (Join-Path $env:TEMP "randamu_$s.jsx") -Force }
+foreach ($s in "preview_setup", "preview_step", "preview_edit") { Copy-Item (Join-Path $PSScriptRoot "$s.jsx") (Join-Path $env:TEMP "duplix_$s.jsx") -Force }
 
-$env:RANDAMU_TEST_DIR = $out -replace '\\', '/'
-$env:RANDAMU_LOG = Join-Path $out "plugin.log"
-$env:RANDAMU_TIMING = "1"
+$env:DUPLIX_TEST_DIR = $out -replace '\\', '/'
+$env:DUPLIX_LOG = Join-Path $out "plugin.log"
+$env:DUPLIX_TIMING = "1"
 $ae = Start-AeHidden -Exe $exe -Arguments $scene
-Remove-Item env:RANDAMU_LOG, env:RANDAMU_TIMING
+Remove-Item env:DUPLIX_LOG, env:DUPLIX_TIMING
 Add-Type -TypeDefinition @"
 using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
 public static class PvChild {
@@ -48,7 +48,7 @@ public static class PvChild {
 }
 "@
 function Send-Once([string]$name) {
-    $s = Start-AeHidden -Exe $exe -Arguments ("-r " + (Join-Path $env:TEMP "randamu_$name.jsx"))
+    $s = Start-AeHidden -Exe $exe -Arguments ("-r " + (Join-Path $env:TEMP "duplix_$name.jsx"))
     $null = $s.WaitForExit(30000)
 }
 # A script sent to the running AE sometimes never arrives (seen 11/26: the run then waited out every timeout and

@@ -1,26 +1,27 @@
-// Times a user's scene (run_user_time.ps1): opens the COPY named by RANDAMU_USER_AEP and, for every comp holding a
-// DupliX layer, renders RANDAMU_UT_FRAMES consecutive frames from RANDAMU_UT_START (MFR off) under each variant in
-// RANDAMU_UT_VARIANTS: asis (as saved), on / off (merge on / off on every DupliX layer), none (every DupliX layer
+// Times a user's scene (run_user_time.ps1): opens the COPY named by DUPLIX_USER_AEP and, for every comp holding a
+// DupliX layer, renders DUPLIX_UT_FRAMES consecutive frames from DUPLIX_UT_START (MFR off) under each variant in
+// DUPLIX_UT_VARIANTS: asis (as saved), on / off (merge on / off on every DupliX layer), none (every DupliX layer
 // off: the scene without copies). Logs "time <variant> <ms per frame>" (wall time of the render / frames).
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
-    var MERGE = "RANDAMU Scatter-0027";
+    var MERGE = "DupliX-0027";
     function dupli(L) {
         var p = L.property("ADBE Effect Parade");
         if (!p) return null;
-        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "DupliX") return p.property(i);
         return null;
     }
     try {
         app.beginSuppressDialogs();
         try { app.setMultiFrameRenderingConfig(false, 100); log("mfr off"); } catch (em) { log("mfr: " + em.message); }
-        app.open(new File($.getenv("RANDAMU_USER_AEP")));
+        app.open(new File($.getenv("DUPLIX_USER_AEP")));
         var P = app.project;
-        var n = parseInt($.getenv("RANDAMU_UT_FRAMES") || "30", 10), start = parseInt($.getenv("RANDAMU_UT_START") || "0", 10);
-        var variants = ($.getenv("RANDAMU_UT_VARIANTS") || "asis,on,off,none").split(",");
+        var n = parseInt($.getenv("DUPLIX_UT_FRAMES") || "30", 10), start = parseInt($.getenv("DUPLIX_UT_START") || "0", 10);
+        var variants = ($.getenv("DUPLIX_UT_VARIANTS") || "asis,on,off,none").split(",");
         var comps = [];
         for (var i = 1; i <= P.numItems; i++) {
             var it = P.item(i);
@@ -37,15 +38,15 @@
                     var L = cc.layer(j2), d = dupli(L);
                     if (!d) continue;
                     if (vn === "on" || vn === "off") d.property(MERGE).setValue(vn === "on" ? 1 : 0);
-                    var cnt = $.getenv("RANDAMU_UT_COUNT") || "";
-                    if (cnt && L.enabled) d.property(2).setValue(parseInt(cnt, 10));
+                    var cnt = $.getenv("DUPLIX_UT_COUNT") || "";
+                    if (cnt && L.enabled) d.property(dx(2)).setValue(parseInt(cnt, 10));
                     if (vn === "none") L.enabled = false;
-                    desc.push(L.name + (L.enabled ? "" : "(off)") + " count=" + d.property(2).value + " merge=" + d.property(MERGE).value);
+                    desc.push(L.name + (L.enabled ? "" : "(off)") + " count=" + d.property(dx(2)).value + " merge=" + d.property(MERGE).value);
                 }
                 log("comp " + src0.name + " variant " + vn + ": " + desc.join(", "));
                 var tag = src0.id + "_" + vn;
-                $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
-                $.setenv("RANDAMU_CACHE_SALT", "ut-" + tag + "-" + new Date().getTime());
+                $.setenv("DUPLIX_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
+                $.setenv("DUPLIX_CACHE_SALT", "ut-" + tag + "-" + new Date().getTime());
                 app.purge(PurgeTarget.ALL_CACHES);
                 var rq = P.renderQueue.items.add(cc);
                 var om = rq.outputModule(1);
@@ -70,7 +71,7 @@
                 log("time " + vn + " " + (ms / n).toFixed(1) + " ms/frame (" + n + " frames, " + ms + " ms)");
             }
         }
-        $.setenv("RANDAMU_LOG", "");
+        $.setenv("DUPLIX_LOG", "");
         log("done");
     } catch (e) {
         log("EXCEPTION " + e.message + " (line " + e.line + ")");

@@ -2,16 +2,17 @@
 // For every case builds mg_<case> (DupliX with merge on) and, when the case compares, nm_<case> (the same scene
 // with merge off). Each comp goes in the render queue (TIFF r_<comp>_[#####].tif); rq.txt lists "comp=index"
 // (1-based render queue indices) so run_merge.ps1 can render each one with its own plugin log. merge.aep is saved.
-// Env: RANDAMU_TEST_DIR (output), RANDAMU_MERGE_IMAGE (png source), RANDAMU_MERGE_ONLY (comma list, optional).
+// Env: DUPLIX_TEST_DIR (output), DUPLIX_MERGE_IMAGE (png source), DUPLIX_MERGE_ONLY (comma list, optional).
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
     var imgItem = null;
     var W = 400, H = 300;
-    var MERGE = "RANDAMU Scatter-0027";  // the merge checkbox (disk ID RD_MERGE)
+    var MERGE = "DupliX-0027";  // the merge checkbox (disk ID RD_MERGE)
 
     var scatter = {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]};
     var cases = [
@@ -48,11 +49,11 @@
 
     function setParams(fx, p, merge) {
         var pos = p.pos || [0, 0, 0], rot = p.rot || [0, 0, 0], sc = p.scale || [100, 100], op = p.opacity || [100, 100];
-        fx.property(2).setValue(p.count);
-        fx.property(3).setValue(p.seed || 0);
-        for (var k = 0; k < 3; k++) { fx.property(4 + k).setValue(pos[k]); fx.property(7 + k).setValue(rot[k]); }
-        fx.property(10).setValue(sc[0]); fx.property(11).setValue(sc[1]);
-        fx.property(12).setValue(op[0]); fx.property(13).setValue(op[1]);
+        fx.property("DupliX-0002").setValue(p.count);
+        fx.property("DupliX-0003").setValue(p.seed || 0);
+        for (var k = 0; k < 3; k++) { fx.property(dx(4 + k)).setValue(pos[k]); fx.property(dx(7 + k)).setValue(rot[k]); }
+        fx.property("DupliX-0010").setValue(sc[0]); fx.property("DupliX-0011").setValue(sc[1]);
+        fx.property("DupliX-0012").setValue(op[0]); fx.property("DupliX-0013").setValue(op[1]);
         fx.property(MERGE).setValue(merge ? 1 : 0);
     }
     function build(c, merge) {
@@ -70,19 +71,19 @@
         }
         if (c.light) comp.layers.addLight("Light", [200, 150]);
         if (!c.noCam) comp.layers.addCamera("Cam", [200, 150]);
-        if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_MERGE_IMAGE"))));
+        if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("DUPLIX_MERGE_IMAGE"))));
         var T = c.solid ? comp.layers.addSolid([1, 0.8, 0.1], "Target", 90, 70, 1) : comp.layers.add(imgItem);
         T.name = "Target";
         T.threeDLayer = true;
         tg(T).property("ADBE Position").setValue([W / 2, H / 2, 0]);
-        var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
+        var fx = T.property("ADBE Effect Parade").addProperty("DupliX");
         setParams(fx, c.params, merge);
         if (c.second) {  // another DupliX layer (the same image; a solid would not merge) mixed in depth with the first
             var S = comp.layers.add(imgItem);
             S.name = "Second";
             S.threeDLayer = true;
             tg(S).property("ADBE Position").setValue([W / 2, H / 2, 0]);
-            setParams(S.property("ADBE Effect Parade").addProperty("RANDAMU Scatter"), c.second, merge);
+            setParams(S.property("ADBE Effect Parade").addProperty("DupliX"), c.second, merge);
         }
         return comp;
     }
@@ -113,28 +114,28 @@
         rqLines.push(comp.name + "=" + app.project.renderQueue.numItems);
     }
 
-    // RANDAMU_MERGE_PASSES ("OFF,ON,ND,G,G16,..."; optional): render every comp in this AE, one render queue item at
+    // DUPLIX_MERGE_PASSES ("OFF,ON,ND,G,G16,..."; optional): render every comp in this AE, one render queue item at
     // a time, in each pass: OFF / ON = multi-frame rendering off / on, ND = MFR off with the draft quality of
-    // all-group layers off (RANDAMU_MERGE_DRAFT=0); G = group textures drawn on the GPU (RANDAMU_MERGE_GPU_DRAW=1,
+    // all-group layers off (DUPLIX_MERGE_DRAFT=0); G = group textures drawn on the GPU (DUPLIX_MERGE_GPU_DRAW=1,
     // every other pass draws them on the CPU), C = the CPU explicitly; a trailing 16 / 32 sets the project's bits
-    // per channel (8 otherwise). Each render gets its own plugin log (the plugin reads RANDAMU_LOG on every line), a
+    // per channel (8 otherwise). Each render gets its own plugin log (the plugin reads DUPLIX_LOG on every line), a
     // fresh cache salt and purged caches; outputs <comp>_<pass>.tif and plugin_<comp>_<pass>.log.
-    // RANDAMU_MERGE_FORCE_SEAM ("x,y,z"): RANDAMU_MERGE_FORCE_DW for the seam comps only.
+    // DUPLIX_MERGE_FORCE_SEAM ("x,y,z"): DUPLIX_MERGE_FORCE_DW for the seam comps only.
     function renderPasses(targets, passes) {
-        var forceSeam = $.getenv("RANDAMU_MERGE_FORCE_SEAM") || "";
+        var forceSeam = $.getenv("DUPLIX_MERGE_FORCE_SEAM") || "";
         for (var pi = 0; pi < passes.length; pi++) {
             var pass = passes[pi];
             app.setMultiFrameRenderingConfig(pass === "ON", 100);
-            $.setenv("RANDAMU_MERGE_DRAFT", pass === "ND" ? "0" : "");
-            $.setenv("RANDAMU_MERGE_GPU_DRAW", pass.charAt(0) === "G" ? "1" : "0");
+            $.setenv("DUPLIX_MERGE_DRAFT", pass === "ND" ? "0" : "");
+            $.setenv("DUPLIX_MERGE_GPU_DRAW", pass.charAt(0) === "G" ? "1" : "0");
             var bpcM = /(16|32)$/.exec(pass);
             app.project.bitsPerChannel = bpcM ? parseInt(bpcM[1], 10) : 8;
             for (var ti = 0; ti < targets.length; ti++) {
                 var tg0 = targets[ti], name = tg0.comp.name;
                 var t0 = new Date().getTime();
-                $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + name + "_" + pass + ".log").replace(/\//g, "\\"));
-                $.setenv("RANDAMU_CACHE_SALT", "merge-" + pass + "-" + name + "-" + t0);
-                $.setenv("RANDAMU_MERGE_FORCE_DW", (forceSeam && /_seam$/.test(name)) ? forceSeam : "");
+                $.setenv("DUPLIX_LOG", (outDir + "/plugin_" + name + "_" + pass + ".log").replace(/\//g, "\\"));
+                $.setenv("DUPLIX_CACHE_SALT", "merge-" + pass + "-" + name + "-" + t0);
+                $.setenv("DUPLIX_MERGE_FORCE_DW", (forceSeam && /_seam$/.test(name)) ? forceSeam : "");
                 var old = new File(outDir + "/plugin_" + name + "_" + pass + ".log");
                 if (old.exists) old.remove();
                 app.purge(PurgeTarget.ALL_CACHES);
@@ -150,14 +151,14 @@
                 log("rendered " + name + " " + pass + " " + (new Date().getTime() - t0) + " ms" + (out.exists ? "" : " (no output)"));
             }
         }
-        $.setenv("RANDAMU_LOG", "");
+        $.setenv("DUPLIX_LOG", "");
     }
 
     try {
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
-        var only = $.getenv("RANDAMU_MERGE_ONLY") || "";
+        var only = $.getenv("DUPLIX_MERGE_ONLY") || "";
         var targets = [];
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
@@ -175,7 +176,7 @@
         var f = new File(outDir + "/rq.txt");
         f.encoding = "UTF-8"; f.open("w"); f.write(rqLines.join("\n")); f.close();
         app.project.save(new File(outDir + "/merge.aep"));
-        var passes = $.getenv("RANDAMU_MERGE_PASSES") || "";
+        var passes = $.getenv("DUPLIX_MERGE_PASSES") || "";
         if (passes) {
             // the queue items made for aerender are not rendered here
             for (var q = 1; q <= app.project.renderQueue.numItems; q++) app.project.renderQueue.item(q).render = false;

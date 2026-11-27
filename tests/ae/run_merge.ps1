@@ -1,7 +1,7 @@
 # Merge optimisation checks: builds the scenes with tests/ae/merge.jsx in one hidden AE, which also renders every
 # comp in every pass (default), and judges with check_merge.py. Exit 1 on any failure.
 #   pwsh tests/ae/run_merge.ps1 [-Cases scene_basic,scene_light] [-Mfrs OFF,ON] [-CompareDraft] [-Gpu CUDA]
-# -ForceD "x,y,z": the seam comps' group planes at the camera depth of that world point (RANDAMU_MERGE_FORCE_DW)
+# -ForceD "x,y,z": the seam comps' group planes at the camera depth of that world point (DUPLIX_MERGE_FORCE_DW)
 # -CompareDraft: one more pass (MFR off, the draft quality of all-group layers off) that must equal the OFF pass
 # -Aerender [-SkipScene] [-Parallel 4]: the old way, one aerender per comp (AE's own command-line renderer)
 param([string]$Cases = "", [string[]]$Mfrs = @("OFF"), [switch]$SkipScene, [int]$RenderTimeoutSec = 600,
@@ -22,19 +22,19 @@ if (-not $Aerender) {
     # -GpuDraw: also G (group textures on the GPU, compared with OFF) and the 16 / 32 bpc passes C16, G16, C32, G32
     $passes = @($Mfrs) + $(if ($CompareDraft) { @("ND") } else { @() }) +
               $(if ($GpuDraw) { @("G", "C16", "G16", "C32", "G32") } else { @() })
-    $env:RANDAMU_MERGE_IMAGE = Join-Path $root "spike\assets\probe_img.png"
-    $env:RANDAMU_MERGE_ONLY = $Cases
-    $env:RANDAMU_MERGE_GPU = $Gpu
-    $env:RANDAMU_MERGE_PASSES = $passes -join ","
-    $env:RANDAMU_MERGE_FORCE_SEAM = $ForceD
+    $env:DUPLIX_MERGE_IMAGE = Join-Path $root "spike\assets\probe_img.png"
+    $env:DUPLIX_MERGE_ONLY = $Cases
+    $env:DUPLIX_MERGE_GPU = $Gpu
+    $env:DUPLIX_MERGE_PASSES = $passes -join ","
+    $env:DUPLIX_MERGE_FORCE_SEAM = $ForceD
     New-Item -ItemType Directory -Force $outDir | Out-Null
-    $env:RANDAMU_LOG = Join-Path $outDir "plugin_build.log"  # logging on; the script switches the file per render
+    $env:DUPLIX_LOG = Join-Path $outDir "plugin_build.log"  # logging on; the script switches the file per render
     Get-ChildItem $outDir -Filter "*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
     $t0 = Get-Date
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/merge.jsx -Name merge -TimeoutSec 1800 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT"
     $jsxFail = $LASTEXITCODE -ne 0
-    Remove-Item env:RANDAMU_LOG, env:RANDAMU_MERGE_PASSES, env:RANDAMU_MERGE_FORCE_SEAM -ErrorAction SilentlyContinue
+    Remove-Item env:DUPLIX_LOG, env:DUPLIX_MERGE_PASSES, env:DUPLIX_MERGE_FORCE_SEAM -ErrorAction SilentlyContinue
     Write-Host ("one AE: {0:N0} s" -f ((Get-Date) - $t0).TotalSeconds)
     if ($jsxFail) { Write-Host "scene build / render failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }
     Get-Content (Join-Path $outDir "jsx.log") | Select-String "no output|EXCEPTION"
@@ -62,9 +62,9 @@ if (-not $Aerender) {
 }
 
 if (-not $SkipScene) {
-    $env:RANDAMU_MERGE_IMAGE = Join-Path $root "spike\assets\probe_img.png"
-    $env:RANDAMU_MERGE_ONLY = $Cases
-    $env:RANDAMU_MERGE_GPU = $Gpu
+    $env:DUPLIX_MERGE_IMAGE = Join-Path $root "spike\assets\probe_img.png"
+    $env:DUPLIX_MERGE_ONLY = $Cases
+    $env:DUPLIX_MERGE_GPU = $Gpu
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/merge.jsx -Name merge -TimeoutSec 900 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT"
     if ($LASTEXITCODE -ne 0) { Write-Host "scene build failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }
@@ -96,8 +96,8 @@ foreach ($mfr in $Mfrs) {
             Get-ChildItem $outDir -Filter "r_${comp}_*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
             $log = Join-Path $outDir "plugin_${comp}_$mfr.log"
             if (Test-Path $log) { Remove-Item $log }
-            $envs = @{ RANDAMU_LOG = $log; RANDAMU_CACHE_SALT = "merge-$(Get-Random)" }
-            if ($ForceD -and $comp -like "*_seam") { $envs["RANDAMU_MERGE_FORCE_DW"] = $ForceD }  # the seam case only
+            $envs = @{ DUPLIX_LOG = $log; DUPLIX_CACHE_SALT = "merge-$(Get-Random)" }
+            if ($ForceD -and $comp -like "*_seam") { $envs["DUPLIX_MERGE_FORCE_DW"] = $ForceD }  # the seam case only
             $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
                 -RedirectStandardOutput (Join-Path $outDir "aerender_${comp}_$mfr.log") `
                 -Environment $envs `

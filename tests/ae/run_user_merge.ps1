@@ -2,8 +2,8 @@
 # compares each frame (cmp_merge_frames.py: statistics and a difference image per frame).
 #   pwsh tests/ae/run_user_merge.ps1 -Aep "tests/ae/user/DupliX Test A.aep" [-Frames 8] [-At "0,12,40"]
 param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 8, [string]$At = "", [string]$Disable = "", [string]$MoveZ = "")
-$env:RANDAMU_UM_DISABLE = $Disable
-$env:RANDAMU_UM_MOVEZ = $MoveZ
+$env:DUPLIX_UM_DISABLE = $Disable
+$env:DUPLIX_UM_MOVEZ = $MoveZ
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\user_merge"
@@ -14,11 +14,11 @@ $inDir = Join-Path $root "build\test\user_merge_in"  # run_jsx.ps1 empties $outD
 New-Item -ItemType Directory -Force $inDir | Out-Null
 $copy = Join-Path $inDir "user_copy.aep"
 Copy-Item (Resolve-Path $Aep).Path $copy -Force
-$env:RANDAMU_USER_AEP = $copy -replace '\\', '/'
-$env:RANDAMU_UM_FRAMES = "$Frames"
-$env:RANDAMU_UM_AT = $At
+$env:DUPLIX_USER_AEP = $copy -replace '\\', '/'
+$env:DUPLIX_UM_FRAMES = "$Frames"
+$env:DUPLIX_UM_AT = $At
 & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/user_merge.jsx -Name user_merge -TimeoutSec 1200 -Expect "^done" |
     Select-String "EXCEPTION|TIMEOUT|EXPECT"
-Remove-Item env:RANDAMU_USER_AEP, env:RANDAMU_UM_FRAMES, env:RANDAMU_UM_AT -ErrorAction SilentlyContinue
+Remove-Item env:DUPLIX_USER_AEP, env:DUPLIX_UM_FRAMES, env:DUPLIX_UM_AT -ErrorAction SilentlyContinue
 Get-Content (Join-Path $outDir "jsx.log") | Select-String -NotMatch "^rendered"
 & (Join-Path $root "spike\.venv\Scripts\python.exe") -I (Join-Path $PSScriptRoot "cmp_merge_frames.py") $outDir

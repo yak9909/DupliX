@@ -1,4 +1,4 @@
-// randamu: the merge plan of the frame a hook is asked about (render threads only).
+// DupliX: the merge plan of the frame a hook is asked about (render threads only).
 #pragma once
 
 #include <memory>

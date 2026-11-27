@@ -253,10 +253,10 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
         else if (compLayer[r] != cs[i].layer) compOk[r] = 0;
     }
     size_t at = 0;
-    // (diagnostics, RANDAMU_PLAN_MEETS=1: every overlapping pair of copies in ok components tested for meeting in 3D,
+    // (diagnostics, DUPLIX_PLAN_MEETS=1: every overlapping pair of copies in ok components tested for meeting in 3D,
     // counted in fb[13]; tests that groups with crossing copies are drawn as AE draws them)
     {
-        const char* ev = std::getenv("RANDAMU_PLAN_MEETS");
+        const char* ev = std::getenv("DUPLIX_PLAN_MEETS");
         if (ev && ev[0] == '1')
             for (size_t a = 0; a < byX.size(); a++) {
                 const C& A = cs[byX[a]];

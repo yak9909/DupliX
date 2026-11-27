@@ -1,11 +1,11 @@
-# Build randamu.
-#   pwsh tools/build.ps1                 # effect -> dev_plugins\randamu.aex (AE loads it via the junction)
+# Build DupliX.
+#   pwsh tools/build.ps1                 # effect -> dev_plugins\DupliX.aex (AE loads it via the junction)
 #   pwsh tools/build.ps1 -Target unit    # tests\unit -> build\unit\unit_tests.exe
-#   pwsh tools/build.ps1 -Target dump    # tests\tools -> build\dump\randamu_dump.exe
+#   pwsh tools/build.ps1 -Target dump    # tests\tools -> build\dump\duplix_dump.exe
 #   pwsh tools/build.ps1 -Target gpu     # tests\gpu -> build\gpu\gpu_test.exe (runs on an NVIDIA GPU)
 #   pwsh tools/build.ps1 -Target all
 param([ValidateSet("effect", "unit", "dump", "gpu", "all")][string]$Target = "effect",
-      [string]$Configuration = "Release")  # the user's AE loads dev_plugins\randamu.aex: Release unless debugging
+      [string]$Configuration = "Release")  # the user's AE loads dev_plugins\DupliX.aex: Release unless debugging
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
@@ -26,11 +26,11 @@ foreach ($t in $targets) {
         "effect" {
             $dev = Join-Path $root "dev_plugins"
             if (-not (Test-Path $dev)) { New-Item -ItemType Directory $dev | Out-Null }
-            Invoke-Build (Join-Path $root "src\effect\randamu.vcxproj") $dev
-            Get-Item (Join-Path $dev "randamu.aex") | Select-Object FullName, Length, LastWriteTime
+            Invoke-Build (Join-Path $root "src\effect\duplix.vcxproj") $dev
+            Get-Item (Join-Path $dev "DupliX.aex") | Select-Object FullName, Length, LastWriteTime
         }
         "unit" { Invoke-Build (Join-Path $root "tests\unit\unit_tests.vcxproj") (Join-Path $root "build\unit") }
-        "dump" { Invoke-Build (Join-Path $root "tests\tools\randamu_dump.vcxproj") (Join-Path $root "build\dump") }
+        "dump" { Invoke-Build (Join-Path $root "tests\tools\duplix_dump.vcxproj") (Join-Path $root "build\dump") }
         "gpu" { Invoke-Build (Join-Path $root "tests\gpu\gpu_test.vcxproj") (Join-Path $root "build\gpu") }
     }
 }

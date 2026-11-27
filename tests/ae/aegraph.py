@@ -1,4 +1,4 @@
-# AE classic 3D's ordering graph rebuilt from a plan dump (RANDAMU_MERGE_DUMP): nodes = copies + other planes;
+# AE classic 3D's ordering graph rebuilt from a plan dump (DUPLIX_MERGE_DUMP): nodes = copies + other planes;
 # for two nodes whose screen quads overlap, the depth difference at the overlap polygon's vertices gives
 # "a in front somewhere" / "b in front somewhere" -> edges; then strongly connected components (Tarjan).
 #   python aegraph.py plan.txt [copy ...]   (prints the SCCs with more than one node, and where the copies are)

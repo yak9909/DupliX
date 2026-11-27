@@ -1,4 +1,4 @@
-// randamu core: deterministic per-copy transforms. No After Effects dependency.
+// DupliX core: deterministic per-copy transforms. No After Effects dependency.
 #pragma once
 
 namespace rnd {

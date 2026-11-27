@@ -18,7 +18,7 @@
 #include "core/fast_plane.h"
 #include "core/scatter.h"
 #include "core/world.h"
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 #include "hook/bee_abi.h"
 #include "hook/env_cache.h"
 #include "hook/flatten_site.h"
@@ -183,7 +183,7 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     one(RP_OPACITY_MIN, &r.p.opacityMin);
     one(RP_OPACITY_MAX, &r.p.opacityMax);
     one(RP_KEEP_FIRST, &keep);
-    one(RP_FAST, &fast);
+    one(RP_RENDER_MODE, &fast);
     for (int k = 0; k < 3; k++) {  // AEGP gives angles in degrees, percent sliders in percent
         one(RP_WORLD_POS_X + k, &r.world.pos[k]);
         one(RP_WORLD_ROT_X + k, &r.world.rotDeg[k]);
@@ -200,7 +200,7 @@ bool ReadParamsFromEffect(AEGP_EffectRefH eff, AEGP_LayerH L, const A_Time& t, P
     r.p.count = count < 0 ? 0 : (int)(count + 0.5);
     r.p.seed = (int)(seed + 0.5);
     r.p.keepFirst = keep != 0;
-    r.p.fast = fast != 0;
+    r.p.fast = IsFastMode((int)fast);
     r.valid = !r.p.fast;  // fast mode is drawn by the effect itself: the hooks leave the layer alone
     *out = r;
     return true;
@@ -223,7 +223,7 @@ bool ReadLayerParams(AEGP_LayerH L, const A_Time& t, ParamSnapshot* out, int* ef
         AEGP_InstalledEffectKey key = 0;
         A_char mn[AEGP_MAX_EFFECT_MATCH_NAME_SIZE + 1] = {0};
         if (!eff && !es->AEGP_GetInstalledKeyFromLayerEffect(e, &key) && !es->AEGP_GetEffectMatchName(key, mn) &&
-            !std::strcmp(mn, RANDAMU_MATCH_NAME)) {
+            !std::strcmp(mn, DUPLIX_MATCH_NAME)) {
             eff = e;
             index = (int)i;
             continue;
@@ -248,14 +248,14 @@ bool ReadLayerParams(AEGP_LayerH L, const A_Time& t, ParamSnapshot* out, int* ef
 
 namespace {
 
-// Finds this layer's randamu effect and reads it at layer time t. Render threads only.
+// Finds this layer's DupliX effect and reads it at layer time t. Render threads only.
 // Returns false if the read failed; an absent or inactive effect gives true with out->valid = false.
 bool ReadParamsAegp(const void* layer, const A_Time& t, ParamSnapshot* out)
 {
     return ReadLayerParams((AEGP_LayerH)layer, t, out);
 }
 
-// ---- profiling (RANDAMU_LOG only): calls and total time per hook, logged every 2^k calls
+// ---- profiling (DUPLIX_LOG only): calls and total time per hook, logged every 2^k calls
 enum ProfId { PF_SEP, PF_CNT, PF_RECTS, PF_ISTYPE, PF_OPAC, PF_AEGP, PF_N };
 const char* const kProfNames[PF_N] = {"Separately", "Count", "Rects", "IsLayerType", "Opacity", "AEGP read"};
 std::atomic<long long> g_profTicks[PF_N], g_profCalls[PF_N];
@@ -388,27 +388,27 @@ int MergeSeenOf(const void* layer)
 }
 
 // The merge checkbox now means: the copies are drawn by DupliX on the GPU with AE's own arithmetic, one by one in
-// AE's order (HookA3dDraw, core/ae_span). The earlier group planes (merge plans) only with RANDAMU_MERGE_OLD=1.
+// AE's order (HookA3dDraw, core/ae_span). The earlier group planes (merge plans) only with DUPLIX_MERGE_OLD=1.
 bool OldMerge()
 {
-    static EnvCache e("RANDAMU_MERGE_OLD");
+    static EnvCache e("DUPLIX_MERGE_OLD");
     return e.Is('1');
 }
 
-// The group drawing (BuildIsolatedGroupPlan): RANDAMU_GROUP=0 turns it off (every copy one by one)
+// The group drawing (BuildIsolatedGroupPlan): DUPLIX_GROUP=0 turns it off (every copy one by one)
 bool GroupDrawOn()
 {
-    static EnvCache e("RANDAMU_GROUP");
+    static EnvCache e("DUPLIX_GROUP");
     return !e.Is('0');
 }
 
-// The front and back groups (BuildFrontBackGroupPlan): on unless RANDAMU_GROUP_FB=0, and only while the hook that
+// The front and back groups (BuildFrontBackGroupPlan): on unless DUPLIX_GROUP_FB=0, and only while the hook that
 // moves their representatives in AE's order is in (HookGraph)
 std::atomic<bool> g_graphHooked{false};
 }  // namespace
 bool FrontBackGroupsOn()
 {
-    static EnvCache e("RANDAMU_GROUP_FB");
+    static EnvCache e("DUPLIX_GROUP_FB");
     return g_graphHooked.load() && !e.Is('0');
 }
 namespace {
@@ -478,7 +478,7 @@ const int* CountTimeOf(const LayerKey& k)
     return nullptr;
 }
 
-// ---- per-frame timing (RANDAMU_TIMING): an event for `layer` at hook time `tm` that started at t0
+// ---- per-frame timing (DUPLIX_TIMING): an event for `layer` at hook time `tm` that started at t0
 void MarkTiming(const void* layer, const void* tm, TimingKind kind, long long t0)
 {
     if (!TimingEnabled() || !tm) return;
@@ -758,13 +758,13 @@ void SwapGroupTexture(void* trace, void** world, double* m3, const char* which)
     if (g_texSwaps.Take(5, true, &n)) RLog("merge: texture swapped %d (%s, comp %d layer %d sub %d)", n, which, k.compItemId, k.layerId, index);
 }
 
-// experiment (RANDAMU_A3D_DRAW set): the time AE spends getting each sub-layer's texture
+// experiment (DUPLIX_A3D_DRAW set): the time AE spends getting each sub-layer's texture
 LogLimit g_texTimeLog;
 void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_point t0)
 {
     char ev[8] = {0};
-    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
-    static EnvCache s_draw("RANDAMU_A3D_DRAW");
+    static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
+    static EnvCache s_draw("DUPLIX_A3D_DRAW");
     if ((!s_time && s_draw.Get(nullptr, 0) <= 0) || !g_texTimeLog.Take(4000)) return;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     int sub = -9;
@@ -776,11 +776,11 @@ void LogTexTime(void* trace, const char* which, std::chrono::steady_clock::time_
 }
 // a new texture may have been made: the GPU copy of AE's textures (core/ae_span) is uploaded again
 std::atomic<unsigned long long> g_texGen{1};
-// RANDAMU_A3D_TIME=1: what each texture request asked and got (are the copies' textures the same?)
+// DUPLIX_A3D_TIME=1: what each texture request asked and got (are the copies' textures the same?)
 LogLimit g_texArgLog;
 void LogTexArgs(void* trace, unsigned u, const double* v2, const double* rect, void** world, const double* m3)
 {
-    static const bool on = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    static const bool on = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
     if (!on || !world || !*world || *(int*)((uintptr_t)*world + 44) < 64 || !g_texArgLog.Take(3000)) return;
     int sub = -9;
     const void* layer = nullptr;
@@ -818,7 +818,7 @@ struct SharedTex {
 std::atomic<unsigned long long> g_masterSerial{0};
 thread_local std::vector<SharedTex> t_shared;
 thread_local int t_inGroup = 0;  // inside a group's drawing (its surfaces' draws are ordinary copies)
-thread_local bool t_inGroupIter = false;  // RANDAMU_GROUP_TRACE: the draw of a group's surface
+thread_local bool t_inGroupIter = false;  // DUPLIX_GROUP_TRACE: the draw of a group's surface
 thread_local int t_inA3dDraw = 0;           // inside HookA3dDraw on this thread
 thread_local bool t_shareOn = false;        // the drawn surface's layer has the merge on
 thread_local uintptr_t t_shareCtx = 0;      // the drawing context the shared textures belong to
@@ -873,7 +873,7 @@ AEGP_WorldH CopyOfWorld(AEGP_WorldH src)
 // ---- the shared textures without a copy per sub-layer: AE disposes each sub-layer's texture after its draw
 // (Canvas Suite AEGP_DisposeTexture, Advanced3D's v10 table). With that hooked, a shared texture request gets the
 // shared master itself, and its dispose is skipped (the masters are disposed at the end of the frame's drawing,
-// DropSharedTextures). Without the hook: a copy of the master, as before. RANDAMU_TEX_NOCOPY=0: copies.
+// DropSharedTextures). Without the hook: a copy of the master, as before. DUPLIX_TEX_NOCOPY=0: copies.
 typedef A_Err (*DisposeTexFn)(PR_RenderContextH, AEGP_RenderLayerContextH, AEGP_WorldH);
 DisposeTexFn g_origDisposeTex = nullptr;
 bool g_disposeHooked = false;
@@ -891,7 +891,7 @@ bool TexNoCopy()
 {
     static const bool on = [] {
         char v[4] = {0};
-        return !(GetEnvironmentVariableA("RANDAMU_TEX_NOCOPY", v, sizeof(v)) > 0 && v[0] == '0');
+        return !(GetEnvironmentVariableA("DUPLIX_TEX_NOCOPY", v, sizeof(v)) > 0 && v[0] == '0');
     }();
     return on && g_disposeHooked;
 }
@@ -963,7 +963,7 @@ bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned
 
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
-    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr && t_inGroupIter) RLog("group trace: texture request (shared %zu)", t_shared.size());
     const auto t0 = std::chrono::steady_clock::now();
     const void* shareLayer = nullptr;
@@ -1064,9 +1064,9 @@ A_Err HookGetLayerQuality(AEGP_LayerH L, AEGP_LayerQuality* q)
     const MergeLayerPlan* lp = nullptr;
     auto plan = MergePlanOf(layer, tm, s, false, &lp);
     if (!lp || !AllGroups(*lp)) return err;
-    // diagnosis / tests: RANDAMU_MERGE_DRAFT=0 keeps the layer's own quality (cached briefly: test scripts in AE
+    // diagnosis / tests: DUPLIX_MERGE_DRAFT=0 keeps the layer's own quality (cached briefly: test scripts in AE
     // switch it between renders)
-    static EnvCache s_draft("RANDAMU_MERGE_DRAFT");
+    static EnvCache s_draft("DUPLIX_MERGE_DRAFT");
     if (s_draft.Is('0')) return err;
     *q = AEGP_LayerQual_DRAFT;
     int d = 0;
@@ -1095,7 +1095,7 @@ A_Err HookGetDsf(PR_RenderContextH ctx, AEGP_DownsampleFactor* f)
 // ms each in the viewer). The copies are the same layer at the same time: within one pass (from its
 // AEGP_GetNumLayersToRender, on one thread) a later sub-layer of a layer with the merge on gets the first answer.
 std::atomic<DWORD> g_profTid{0};  // see ProfLoop
-// RANDAMU_A3D_PROF: 1 a copy's setup, 2 the drawing thread all the time, 3 a pass (its AEGP_GetNumLayersToRender
+// DUPLIX_A3D_PROF: 1 a copy's setup, 2 the drawing thread all the time, 3 a pass (its AEGP_GetNumLayersToRender
 // to its last surface drawn)
 int g_profMode = 0;
 typedef A_Err (*GetNumLayersFn)(PR_RenderContextH, A_long*);
@@ -1120,7 +1120,7 @@ struct SharedStream {  // see HookLayerStreamValue
     AEGP_StreamType type;
 };
 thread_local std::vector<SharedStream> t_streams;
-// RANDAMU_A3D_TIME=1: a pass's preparation (its start to its first surface drawn) and drawing (to its last)
+// DUPLIX_A3D_TIME=1: a pass's preparation (its start to its first surface drawn) and drawing (to its last)
 thread_local std::chrono::steady_clock::time_point t_passStart, t_passFirstDraw;
 thread_local int t_passDraws = 0;
 // the group drawing's depth-bias indices in a pass (HookGetLayerIndex)
@@ -1129,7 +1129,7 @@ thread_local const void* t_biasLayer = nullptr;
 void ClosePass()
 {
     t_biasShift = 0, t_biasLayerSubs = 0, t_biasBase = 0, t_biasLayer = nullptr;
-    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
     if (s_time && t_passOpen && t_passDraws > 0) {
         const auto now = std::chrono::steady_clock::now();
         static LogLimit lg;
@@ -1152,7 +1152,7 @@ A_Err HookGetNumLayers(PR_RenderContextH rc, A_long* n)
     ClosePass();  // a new pass
     t_passOpen = true;
     t_passStart = std::chrono::steady_clock::now();
-    if (g_profMode == 3) g_profTid = GetCurrentThreadId();  // RANDAMU_A3D_PROF=3: from the pass's start to its last draw
+    if (g_profMode == 3) g_profTid = GetCurrentThreadId();  // DUPLIX_A3D_PROF=3: from the pass's start to its last draw
     return g_origGetNumLayers(rc, n);
 }
 
@@ -1169,12 +1169,12 @@ bool MergeOnFor(const void* L)
 
 A_Err HookGetBounds(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_Time* t, A_LegacyRect* r)
 {
-    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
-    // RANDAMU_BOUNDS_SHARE=0 (diagnostics): never share; with RANDAMU_A3D_TIME every answer of a merged layer is
+    static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
+    // DUPLIX_BOUNDS_SHARE=0 (diagnostics): never share; with DUPLIX_A3D_TIME every answer of a merged layer is
     // compared with the first one of its pass
     static const bool s_noShare = [] {
         char v[4] = {0};
-        return GetEnvironmentVariableA("RANDAMU_BOUNDS_SHARE", v, sizeof(v)) > 0 && v[0] == '0';
+        return GetEnvironmentVariableA("DUPLIX_BOUNDS_SHARE", v, sizeof(v)) > 0 && v[0] == '0';
     }();
     AEGP_LayerH L = nullptr;
     AEGP_SubLayerIndex sub = -1;
@@ -1219,8 +1219,8 @@ A_Err HookLayerStreamValue(AEGP_LayerH L, AEGP_LayerStream which, AEGP_LTimeMode
                            AEGP_StreamVal2* v, AEGP_StreamType* type)
 {
     {
-        // RANDAMU_A3D_TIME=1: why reads are not shared (0 no pass, 1 not merged, 2 first of its kind, 3 shared)
-        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        // DUPLIX_A3D_TIME=1: why reads are not shared (0 no pass, 1 not merged, 2 first of its kind, 3 shared)
+        static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
         static std::atomic<long long> why[4];
         if (s_time) {
             const int k = !t_passOpen ? 0 : !MergeOnFor(L) ? 1 : 2;
@@ -1240,11 +1240,11 @@ A_Err HookLayerStreamValue(AEGP_LayerH L, AEGP_LayerStream which, AEGP_LTimeMode
     if (!t_passOpen || !t || !v || !MergeOnFor(L)) return g_origLayerStreamValue(L, which, mode, t, pre, v, type);
     static const bool s_check = [] {
         char e[4] = {0};
-        return GetEnvironmentVariableA("RANDAMU_BOUNDS_SHARE", e, sizeof(e)) > 0 && e[0] == '0';
+        return GetEnvironmentVariableA("DUPLIX_BOUNDS_SHARE", e, sizeof(e)) > 0 && e[0] == '0';
     }();
     for (const SharedStream& s : t_streams)
         if (s.layer == L && s.which == which && s.mode == mode && s.t.value == t->value && s.t.scale == t->scale && s.pre == pre) {
-            if (s_check) {  // RANDAMU_BOUNDS_SHARE=0: compare instead of sharing
+            if (s_check) {  // DUPLIX_BOUNDS_SHARE=0: compare instead of sharing
                 const A_Err e = g_origLayerStreamValue(L, which, mode, t, pre, v, type);
                 if (g_streamCheckLog.Take(2000))
                     RLog("merge: stream %d %s", (int)which, !e && !std::memcmp(v, &s.v, sizeof(*v)) ? "same" : "DIFFERENT");
@@ -1282,7 +1282,7 @@ void InstallStreamHook()
     RLog("merge: stream hook %s", ok ? "installed" : "failed");
 }
 
-// ---- RANDAMU_XF_CHECK=1 (diagnostics, the group drawing's inputs): the world matrix AE gets for a copy
+// ---- DUPLIX_XF_CHECK=1 (diagnostics, the group drawing's inputs): the world matrix AE gets for a copy
 // (AEGP_GetRenderLayerToWorldXform) compared bit by bit with the copy's matrix (as the Rects hook gave it) times
 // the layer's world matrix (AEGP_GetLayerToWorldXform), both orders, multiplied with AE's M_Matrix4::operator*= (U.dll)
 typedef A_Err (*GetRenderXformFn)(PR_RenderContextH, AEGP_RenderLayerContextH, const A_Time*, A_Matrix4*);
@@ -1363,7 +1363,7 @@ void InstallBoundsHook(void** t10)
         g_m4Scale = u ? (M4ScaleFn)GetProcAddress(u, "?Scale@M_Matrix4@@QEAAXNNN@Z") : nullptr;
         RLog("merge: U.dll matrix functions %p %p", (void*)g_m4Mul, (void*)g_m4Scale);
     }
-    if (GetEnvironmentVariableA("RANDAMU_XF_CHECK", ev, sizeof(ev)) > 0 && ev[0] == '1') {
+    if (GetEnvironmentVariableA("DUPLIX_XF_CHECK", ev, sizeof(ev)) > 0 && ev[0] == '1') {
         int sx = -1;
         for (int i = 0; i < 60; i++)
             if (t10[i] == (void*)g_canvas8->AEGP_GetRenderLayerToWorldXform) { sx = i; break; }
@@ -1406,7 +1406,7 @@ void InstallDownsampleHook(uintptr_t a3dLo, uintptr_t a3dHi)
 // ---- experiment (11/26): classic 3D draws each surface (SY_TRLayer, 232 bytes, an element of Advanced3D's surface
 // vector) through its vtable slot 1, in the order of its own graph (sub_180014470 -> sub_180014800). The surface's
 // int at +224 is the index of its layer in the render (BEE_GetArtisanNthLayerToRender -> the render trace -> the
-// art layer -> the layer and the sub-layer index). RANDAMU_A3D_DRAW: 1 log every surface drawn, 2 also skip the
+// art layer -> the layer and the sub-layer index). DUPLIX_A3D_DRAW: 1 log every surface drawn, 2 also skip the
 // copies (to see that AE's frame is left without them).
 namespace a3d {
 constexpr uintptr_t kTRLayerVtRva = 0x80438, kTRLayerSlot0Rva = 0x11240, kTRLayerDrawRva = 0x12B30;
@@ -1427,7 +1427,7 @@ typedef bool (*BuildSurfaceFn)(uintptr_t entry, double zBias, uintptr_t entry2, 
 typedef void (*SurfaceLightsFn)(uintptr_t entry, uintptr_t lights, uintptr_t surface);
 
 // A copy's layer entry: the template's (the same layer: scale, bounds, material, lights) with the copy's world matrix
-// (the copy's matrix times the layer's, as BEE makes it: checked equal with RANDAMU_XF_CHECK), scaled as sub_180008710
+// (the copy's matrix times the layer's, as BEE makes it: checked equal with DUPLIX_XF_CHECK), scaled as sub_180008710
 // does (M_Matrix4::Scale(s, 1, 1)), the copy's opacity (AE's layer opacity times the copy's) and the index its depth
 // bias is made from (+0x34: index * 1e-7 in sub_180013160). +0x30 stays the template's: the render layer the
 // surface's texture and draw parameters are fetched for (the surface's +56).
@@ -1474,7 +1474,7 @@ bool BuildSurface(uintptr_t ctx, uintptr_t entry, int index, unsigned char* s)
 }
 void FreeSurface(unsigned char* s) { (**(void (***)(void*, int))s)(s, 0); }
 
-// RANDAMU_GROUP_CLONE=1 (diagnostics): every copy drawn by DupliX is drawn from a surface rebuilt as above; the rebuilt
+// DUPLIX_GROUP_CLONE=1 (diagnostics): every copy drawn by DupliX is drawn from a surface rebuilt as above; the rebuilt
 // surface is compared with AE's (its 232 bytes and its sample records) and the differences are logged
 LogLimit g_cloneLog;
 std::atomic<long long> g_cloneN{0}, g_cloneSame{0};
@@ -1597,10 +1597,10 @@ constexpr uintptr_t kDrawParamsRva = 0x50FD0;
 // What sub_180014800 does for a surface without motion blur, without its BEE_ArtisanLayerCapsuleParamsHelper (the
 // representative's is alive for the same layer; a second one for it waits forever): the draw parameters
 // (sub_180050FD0) and the surface's draw (vtable slot 1). False: not drawn this way (motion blur path).
-// RANDAMU_A3D_TIME (diagnostics): a group's draws, summed: AE's draw parameters, AE's draw up to its row callback,
+// DUPLIX_A3D_TIME (diagnostics): a group's draws, summed: AE's draw parameters, AE's draw up to its row callback,
 // the row callback (ours), AE's draw after it
 thread_local std::chrono::steady_clock::time_point t_gIterIn, t_gIterOut;
-// (diagnostics, RANDAMU_A3D_TIME) a frame's clusters: their time, the resolve's, AE's rows of copies into M buffers
+// (diagnostics, DUPLIX_A3D_TIME) a frame's clusters: their time, the resolve's, AE's rows of copies into M buffers
 thread_local double t_mbIterMs = 0, t_mbClusterMs = 0, t_mbResolveMs = 0, t_mbNewMs = 0, t_mbFlushMs = 0, t_mbGpuMs = 0,
                     t_mbKeptMs = 0;  // (the kept surfaces' flushes: MbufFlush)
 thread_local int t_mbKeptFlushes = 0;
@@ -1640,10 +1640,10 @@ bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
     } acc{tg0, tg1};
     const uintptr_t cam = ctx + 8 * (*(const unsigned char*)(sf + 135) ? 7 : 9);
     const auto draw = *(SurfDrawFn*)(*(uintptr_t*)sf + 8);
-    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr) RLog("group trace: direct draw %p via %p (hook %p)", (void*)sf, (void*)draw, (void*)&HookA3dDraw);
     t_inGroupIter = true;
-    if (g_profMode == 4) g_profTid = GetCurrentThreadId();  // RANDAMU_A3D_PROF=4: where a group's draw spends its time
+    if (g_profMode == 4) g_profTid = GetCurrentThreadId();  // DUPLIX_A3D_PROF=4: where a group's draw spends its time
     try {
         draw(sf, ctx, cam, *(const unsigned char*)(ctx + 104), (uintptr_t)params, (uintptr_t)*(const int*)(prep + 428),
              (uintptr_t)kt);
@@ -1666,12 +1666,12 @@ bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
 bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const ParamSnapshot& s,
                const MergeCluster& g, int rep)
 {
-    // RANDAMU_GROUP_TRACE=1 (diagnostics): every step logged (finding where AE stops)
-    static const bool tr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    // DUPLIX_GROUP_TRACE=1 (diagnostics): every step logged (finding where AE stops)
+    static const bool tr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
 #define GTRACE(...) \
     if (tr) RLog(__VA_ARGS__)
     GTRACE("group trace: start rep %d copies %zu", rep, g.copies.size());
-    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
     const auto tg0 = std::chrono::steady_clock::now();
     auto gms = [](std::chrono::steady_clock::time_point a) {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
@@ -1779,10 +1779,10 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
             // the target), so the pixels are AE's where they cross. sub_180013470 itself is not called: its draw of
             // each surface (sub_180014800) makes a capsule helper, which waits forever for the representative's;
             // DrawSurfaceDirect draws as it does without one. (11/27: drawn one after another before, bigS3271 had
-            // 9-12 pixels unlike AE's.) RANDAMU_GROUP_CLUSTER=1 (diagnostics): the old drawing, one after another.
+            // 9-12 pixels unlike AE's.) DUPLIX_GROUP_CLUSTER=1 (diagnostics): the old drawing, one after another.
             static const int s_cl = [] {
                 char v[4] = {0};
-                return GetEnvironmentVariableA("RANDAMU_GROUP_CLUSTER", v, sizeof(v)) > 0 ? atoi(v) : 0;
+                return GetEnvironmentVariableA("DUPLIX_GROUP_CLUSTER", v, sizeof(v)) > 0 ? atoi(v) : 0;
             }();
             if (g_groupLog.Take(10)) RLog("group: a cluster of %llu copies (%s)", (unsigned long long)j[3], s_cl == 1 ? "one by one" : "M buffer");
             const uintptr_t inner = j[2];
@@ -2060,7 +2060,7 @@ bool RedirectCall(uintptr_t lo, const unsigned char* site, void* fn, const char*
     return true;
 }
 
-// ---- RANDAMU_GRAPH_PROF=1 (diagnostics): AE's pair test in its graph (sub_18002AB40 +0x2ACEA calls sub_18002A630)
+// ---- DUPLIX_GRAPH_PROF=1 (diagnostics): AE's pair test in its graph (sub_18002AB40 +0x2ACEA calls sub_18002A630)
 // counted and timed: all pairs, pairs whose screen boxes overlap (surface +8 .. +0x20), and the time in each
 typedef void (*PairTestFn)(uintptr_t a, uintptr_t b, unsigned char* aFront, unsigned char* bFront);
 PairTestFn g_origPairTest = nullptr;
@@ -2153,10 +2153,10 @@ void PairOurs(uintptr_t A, uintptr_t B, unsigned char* f1, unsigned char* f2)
 void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
 {
     const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
-    // RANDAMU_PAIR_OURS=0: AE's own pair test
+    // DUPLIX_PAIR_OURS=0: AE's own pair test
     static const bool s_aePair = [] {
         char v[4] = {0};
-        return GetEnvironmentVariableA("RANDAMU_PAIR_OURS", v, sizeof(v)) > 0 && v[0] == '0';
+        return GetEnvironmentVariableA("DUPLIX_PAIR_OURS", v, sizeof(v)) > 0 && v[0] == '0';
     }();
     const auto pair = s_aePair ? (PairTestFn)(g_a3dLo + a3d::kPairTestRva) : &PairOurs;
     ((ClearNodesFn)(g_a3dLo + a3d::kClearNodesRva))(a2, *a2);
@@ -2248,10 +2248,10 @@ void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
     long long nCand = 0;
     for (int a = 0; a < n; a++)
         for (int b = a + 1; b < n && bs[b].x0 < bs[a].x1; b++) nCand++;  // (diagnostics: cheap next to the tests)
-    // RANDAMU_EDGE_THREADS (diagnostics): the number of threads
+    // DUPLIX_EDGE_THREADS (diagnostics): the number of threads
     static const int s_threads = [] {
         char v[8] = {0};
-        return GetEnvironmentVariableA("RANDAMU_EDGE_THREADS", v, sizeof(v)) > 0 ? std::max(1, atoi(v)) : 0;
+        return GetEnvironmentVariableA("DUPLIX_EDGE_THREADS", v, sizeof(v)) > 0 ? std::max(1, atoi(v)) : 0;
     }();
     int nt = s_aePair || nCand < 4096 ? 1 : std::max(1, std::min(8, (int)std::thread::hardware_concurrency()));
     if (s_threads && !s_aePair) nt = s_threads;
@@ -2372,10 +2372,10 @@ std::vector<std::vector<int>> EdgesOf(uintptr_t* a2)
 }
 void HookBuildEdges(uintptr_t** surfaces, uintptr_t* a2)
 {
-    // RANDAMU_GRAPH_FAST=0: AE's own enumeration
+    // DUPLIX_GRAPH_FAST=0: AE's own enumeration
     static const bool s_off = [] {
         char v[4] = {0};
-        return GetEnvironmentVariableA("RANDAMU_GRAPH_FAST", v, sizeof(v)) > 0 && v[0] == '0';
+        return GetEnvironmentVariableA("DUPLIX_GRAPH_FAST", v, sizeof(v)) > 0 && v[0] == '0';
     }();
     bool nan = false;
     for (uintptr_t* i = (uintptr_t*)(*surfaces)[0]; i != *surfaces && !nan; i = (uintptr_t*)i[0]) {
@@ -2386,7 +2386,7 @@ void HookBuildEdges(uintptr_t** surfaces, uintptr_t* a2)
     const auto te0 = std::chrono::steady_clock::now();
     BuildEdgesFast(surfaces, a2);
     {
-        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
         static LogLimit el;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - te0).count();
         if (s_time && a2[1] > 500 && el.Take(50))
@@ -2394,8 +2394,8 @@ void HookBuildEdges(uintptr_t** surfaces, uintptr_t* a2)
                  "%.2f samples per surface, %.1f vertices per sample)",
                  (unsigned long long)a2[1], ms, t_edgeCand, t_edgePairMs, t_edgeSortMs, t_edgeCount, t_edgeSamples, t_edgeVerts);
     }
-    // RANDAMU_GRAPH_CHECK=1 (tests): AE's own edges too, into a list of our own, compared
-    static const bool s_check = GetEnvironmentVariableA("RANDAMU_GRAPH_CHECK", nullptr, 0) > 0;
+    // DUPLIX_GRAPH_CHECK=1 (tests): AE's own edges too, into a list of our own, compared
+    static const bool s_check = GetEnvironmentVariableA("DUPLIX_GRAPH_CHECK", nullptr, 0) > 0;
     if (!s_check) return;
     const auto aeNew = (AeNewFn)(g_a3dLo + a3d::kNewRva);
     const auto aeFree = (AeFreeFn)(g_a3dLo + a3d::kFreeRva);
@@ -2451,7 +2451,7 @@ void InstallGraphHook(HMODULE a3d)
     }
     g_graphHooked = true;
     RLog("group: reorder hook installed");
-    if (GetEnvironmentVariableA("RANDAMU_GRAPH_PROF", nullptr, 0) > 0) InstallPairTestProf(lo);
+    if (GetEnvironmentVariableA("DUPLIX_GRAPH_PROF", nullptr, 0) > 0) InstallPairTestProf(lo);
     InstallBuildEdgesHook(lo);
     InstallFrameBatchHooks(lo);
 }
@@ -2503,10 +2503,10 @@ bool SpanJobFor(uintptr_t d, a3d::SpanJob* j, const char** why)
 {
     const uintptr_t ctx = *(uintptr_t*)d, st = *(uintptr_t*)(d + 8), lp = *(uintptr_t*)(d + 16), a7 = *(uintptr_t*)(d + 56);
     const int kind = *(int*)a7;
-    // kind 2 (an M buffer, a cluster's surfaces): RANDAMU_MBUF=0 leaves it to AE
+    // kind 2 (an M buffer, a cluster's surfaces): DUPLIX_MBUF=0 leaves it to AE
     static const bool s_mbuf = [] {
         char v[4] = {0};
-        return !(GetEnvironmentVariableA("RANDAMU_MBUF", v, sizeof(v)) > 0 && v[0] == '0');
+        return !(GetEnvironmentVariableA("DUPLIX_MBUF", v, sizeof(v)) > 0 && v[0] == '0');
     }();
     if (kind != 1 && !(kind == 2 && s_mbuf)) return *why = "target kind", false;
     const uintptr_t tgt = *(uintptr_t*)(a7 + 8), tex = *(uintptr_t*)(st + 16);
@@ -2627,7 +2627,7 @@ int OurMbRowBody(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
     return 0;
 }
 
-// RANDAMU_MBUF=2 (diagnostics): AE draws the surface into its M buffer, and every fragment it adds is compared with
+// DUPLIX_MBUF=2 (diagnostics): AE draws the surface into its M buffer, and every fragment it adds is compared with
 // ours (colour, opacity, transfer, opaque flag, depth bits); a pixel AE gives none must get none from us
 std::atomic<long long> g_mbChecked{0}, g_mbBad{0};
 void MbufCheck(const a3d::SpanJob& j, uintptr_t n, uintptr_t d, uintptr_t cb, int (*iter)(uintptr_t, uintptr_t, uintptr_t),
@@ -2740,7 +2740,7 @@ thread_local bool t_aeGpu = false;  // this draw's rows on the GPU (else on AE's
 // copies drawing fewer pixels are left to AE (see OurIterate). 0: with the texture kept on the GPU, the GPU and AE
 // were equally fast for the user's small flowers (Test A 100 / 380 copies 42-44 / 109-112 ms either way)
 constexpr long long kGpuMinPx = 0;
-// RANDAMU_A3D_TIME=1 (diagnostics): the last GPU draw's times on this thread, logged per copy by HookA3dDraw
+// DUPLIX_A3D_TIME=1 (diagnostics): the last GPU draw's times on this thread, logged per copy by HookA3dDraw
 thread_local rnd::GpuAeSpanTimes t_gt;
 thread_local double t_gtAll = 0;
 thread_local int t_gtRows = 0;
@@ -2760,7 +2760,7 @@ struct GroupJob {
     AEGP_WorldH texMaster = nullptr;  // the shared master the texture is a copy of (null: unknown)
 };
 thread_local std::vector<GroupJob> t_groupJobs;
-// (diagnostics, RANDAMU_A3D_TIME) this frame's flushes, copies drawn by them, texture bytes kept by KeepTexture
+// (diagnostics, DUPLIX_A3D_TIME) this frame's flushes, copies drawn by them, texture bytes kept by KeepTexture
 thread_local long long t_bFlushes = 0, t_bCopies = 0, t_bTexBytes = 0;
 // the last kept texture (the group's copies share one: kept once). *master: t's shared master, if known
 // the last texture kept for a shared master in this frame (by its serial, unique for the frame): kept again after a
@@ -2879,7 +2879,7 @@ uintptr_t HookFrameDraw(uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, 
 uintptr_t HookCtxEnd(uintptr_t ctx)
 {
     FlushGroupJobs();
-    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
     static LogLimit bl, ml;
     if (s_time && t_bCopies && bl.Take(200))
         RLog("batch: frame drawn with %lld flushes of %lld copies, %.1f MB of textures kept", t_bFlushes, t_bCopies,
@@ -3130,7 +3130,7 @@ unsigned long long TexKeyOf(const rnd::AeTex8& t)
 }
 int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
-    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr && t_inGroupIter) RLog("group trace: nested iterate (%llu rows)", (unsigned long long)n);
     t_iterIn = t_gIterIn = std::chrono::steady_clock::now();
     if (g_profMode == 1) g_profTid = 0;
@@ -3144,7 +3144,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         g_aeDraws++;
         FlushGroupJobs();  // the kept copies first: AE draws this one into the target now
         MbufFlushAll();    // and the kept M buffer surfaces (AE may draw into one of them: its fragments after ours)
-        // (diagnostics, RANDAMU_A3D_TIME) AE's rows into an M buffer (target kind 2): their time and pixels
+        // (diagnostics, DUPLIX_A3D_TIME) AE's rows into an M buffer (target kind 2): their time and pixels
         if (cb == g_a3dLo + a3d::kRowPolygonRva && *(int*)*(uintptr_t*)(d + 56) == 2) {
             const auto t0 = std::chrono::steady_clock::now();
             const int e = t_origIter(n, d, cb);
@@ -3158,17 +3158,17 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
     }
     if (job.mb) {
         // into an M buffer: our fragments, inserted on AE's row threads (the target is not touched: the kept copies
-        // stay kept). RANDAMU_MBUF=2: AE's, checked against ours
+        // stay kept). DUPLIX_MBUF=2: AE's, checked against ours
         static const int s_mbMode = [] {
             char v[4] = {0};
-            return GetEnvironmentVariableA("RANDAMU_MBUF", v, sizeof(v)) > 0 ? atoi(v) : 1;
+            return GetEnvironmentVariableA("DUPLIX_MBUF", v, sizeof(v)) > 0 ? atoi(v) : 1;
         }();
         const auto t0 = std::chrono::steady_clock::now();
         int e = 0;
-        // RANDAMU_MBUF_BATCH=0 (diagnostics): each surface's fragments at once (one GPU call each)
+        // DUPLIX_MBUF_BATCH=0 (diagnostics): each surface's fragments at once (one GPU call each)
         static const bool s_mbBatch = [] {
             char v[4] = {0};
-            return !(GetEnvironmentVariableA("RANDAMU_MBUF_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
+            return !(GetEnvironmentVariableA("DUPLIX_MBUF_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
         }();
         if (s_mbMode == 2) {
             MbufFlushAll();
@@ -3189,7 +3189,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
             if (slot < 0) {
                 e = t_origIter(n, d, cb);
             } else {
-                // the fragments on the GPU (RANDAMU_MBUF=3: on the CPU, in the row callback), inserted in the rows
+                // the fragments on the GPU (DUPLIX_MBUF=3: on the CPU, in the row callback), inserted in the rows
                 std::vector<unsigned char> mcol;
                 std::vector<float> mdep;
                 std::vector<long long> rowOff;
@@ -3235,8 +3235,8 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         for (uintptr_t row = 0; row < n; row++) t_mbPx += sp[2 * row + 1] - sp[2 * row];
         return e;
     }
-    // RANDAMU_GROUP_NOGPU=1 (diagnostics): a group's copies are not drawn (the cost of AE's draw setup alone)
-    static const bool s_noGpu = GetEnvironmentVariableA("RANDAMU_GROUP_NOGPU", nullptr, 0) > 0;
+    // DUPLIX_GROUP_NOGPU=1 (diagnostics): a group's copies are not drawn (the cost of AE's draw setup alone)
+    static const bool s_noGpu = GetEnvironmentVariableA("DUPLIX_GROUP_NOGPU", nullptr, 0) > 0;
     if (s_noGpu && t_inGroup) return 0;
     if (t_aeGpu) {
         // all rows on the GPU at once (sub_180016900's rows: y = row + first y, every field row, AE's spans)
@@ -3253,10 +3253,10 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
             if (len > 0) tri.push_back(y), tri.push_back(x0), tri.push_back(x0 + len), px += len;
         }
         // a small copy: AE's own loop (the same arithmetic on its threads) is faster than a GPU round trip
-        // (~0.45 ms however small). RANDAMU_GPU_MINPX overrides the size (0: always the GPU)
+        // (~0.45 ms however small). DUPLIX_GPU_MINPX overrides the size (0: always the GPU)
         static const long long s_minPx = [] {
             char v[16] = {0};
-            return GetEnvironmentVariableA("RANDAMU_GPU_MINPX", v, sizeof(v)) > 0 ? atoll(v) : kGpuMinPx;
+            return GetEnvironmentVariableA("DUPLIX_GPU_MINPX", v, sizeof(v)) > 0 ? atoll(v) : kGpuMinPx;
         }();
         if (px < s_minPx) {
             g_aeDraws++;
@@ -3270,16 +3270,16 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
         gj.texKey = TexKeyOf(job.tex);
         // a group's copies: kept, drawn together at the end of the group (FlushGroupJobs) in this order
-        // (RANDAMU_GROUP_BATCH=0, diagnostics: each one at once)
+        // (DUPLIX_GROUP_BATCH=0, diagnostics: each one at once)
         static const bool s_batch = [] {
             char v[4] = {0};
-            return !(GetEnvironmentVariableA("RANDAMU_GROUP_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
+            return !(GetEnvironmentVariableA("DUPLIX_GROUP_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
         }();
-        // single copies too, within a frame (HookFrameDraw) once its flushes are in place (RANDAMU_BATCH_SINGLES=0:
+        // single copies too, within a frame (HookFrameDraw) once its flushes are in place (DUPLIX_BATCH_SINGLES=0:
         // each at once, diagnostics)
         static const bool s_singles = [] {
             char v[4] = {0};
-            return !(GetEnvironmentVariableA("RANDAMU_BATCH_SINGLES", v, sizeof(v)) > 0 && v[0] == '0');
+            return !(GetEnvironmentVariableA("DUPLIX_BATCH_SINGLES", v, sizeof(v)) > 0 && v[0] == '0');
         }();
         if ((t_inGroup || (s_singles && g_batchHooks && t_frameDepth > 0)) && gj.nRows > 0 && s_batch) {
             GroupJob pj;
@@ -3343,7 +3343,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 
 uintptr_t DrawCopyOurs(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
 {
-    static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+    static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr && t_inGroupIter) RLog("group trace: DrawCopyOurs %p", (void*)self);
     IterFnO* slot = (IterFnO*)(ctx + 224);
     const IterFnO saved = t_origIter;
@@ -3359,21 +3359,21 @@ uintptr_t DrawCopyOurs(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4
 
 uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
 {
-    // RANDAMU_A3D_DRAW (diagnostics): 0 AE draws everything, 1 log, 2 skip copies, 3 capture, 4 no pixel loop,
+    // DUPLIX_A3D_DRAW (diagnostics): 0 AE draws everything, 1 log, 2 skip copies, 3 capture, 4 no pixel loop,
     // 5 ours on the CPU, 6 ours on the GPU. Unset: the copies of a layer with the merge on are drawn on the GPU.
     char ev[8] = {0};
-    static EnvCache s_drawMode("RANDAMU_A3D_DRAW");
+    static EnvCache s_drawMode("DUPLIX_A3D_DRAW");
     const int mode = s_drawMode.Get(ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
     if (!mode) return FlushGroupJobs(), g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     if (mode < 0) {
-        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
-        static const bool s_prof = GetEnvironmentVariableA("RANDAMU_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1';
+        static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
+        static const bool s_prof = GetEnvironmentVariableA("DUPLIX_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1';
         if (g_profMode == 2) g_profTid = GetCurrentThreadId();
         const auto tA = std::chrono::steady_clock::now();
         auto since = [](std::chrono::steady_clock::time_point t) {
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
         };
-        static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
+        static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
         if (s_gtr && t_inGroup) RLog("group trace: nested draw %p enter", (void*)self);
         const void* L = nullptr;
         int sb = -9;
@@ -3409,8 +3409,8 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
                 }
             }
         } inDraw(ctx, ours);
-        // RANDAMU_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels
-        static const bool s_aePix = GetEnvironmentVariableA("RANDAMU_A3D_AEPIX", ev, sizeof(ev)) > 0 && ev[0] == '1';
+        // DUPLIX_A3D_AEPIX=1 (diagnostics): the shared textures, but AE draws the pixels
+        static const bool s_aePix = GetEnvironmentVariableA("DUPLIX_A3D_AEPIX", ev, sizeof(ev)) > 0 && ev[0] == '1';
         // the group drawing: the representative of a group draws the whole group
         if (ours && !t_inGroup && GroupDrawOn() && IsMineInPass(L)) {
             ParamSnapshot gs;
@@ -3432,7 +3432,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
                 }
                 const long long tg0 = TimingNow();
                 const bool drewGroup = DrawGroup(self, ctx, a7, L, gs, gc, lp->subs[sb].copy);
-                // RANDAMU_TIMING: the frame's span reaches the end of the group's drawing (the hooks before it end
+                // DUPLIX_TIMING: the frame's span reaches the end of the group's drawing (the hooks before it end
                 // earlier: without this the span left the group out)
                 MarkTiming(L, tm, TK_HOOK, tg0);
                 if (drewGroup) {
@@ -3452,7 +3452,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             t_iterIn = t_iterOut = tB;
             for (int k = 0; k < 4; k++) t_helperMs[k] = 0, t_helperN[k] = 0;
             if (s_prof) g_profTid = GetCurrentThreadId();
-            static const bool s_clone = GetEnvironmentVariableA("RANDAMU_GROUP_CLONE", ev, sizeof(ev)) > 0 && ev[0] == '1';
+            static const bool s_clone = GetEnvironmentVariableA("DUPLIX_GROUP_CLONE", ev, sizeof(ev)) > 0 && ev[0] == '1';
             alignas(16) unsigned char clone[a3d::kSurfaceSize], entryBuf[a3d::kEntrySize];
             alignas(16) double cm4[16];
             const bool useClone = s_clone && CloneForCheck(self, ctx, L, sb, clone, entryBuf, cm4);
@@ -3518,10 +3518,10 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         ((void (*)(void*, uintptr_t, uintptr_t))(**pr))(pr, (uintptr_t)(unsigned)n, *(unsigned*)(ctx + a3d::kCtxProgressTotal));
         return 0;
     }
-    // RANDAMU_A3D_DRAW=3: capture the first draw of copy RANDAMU_A3D_CAPSUB (default 0) into RANDAMU_A3D_CAPDIR:
+    // DUPLIX_A3D_DRAW=3: capture the first draw of copy DUPLIX_A3D_CAPSUB (default 0) into DUPLIX_A3D_CAPDIR:
     // the draw's raster state and texture, the surface, and every row's target span before and after AE drew it
     // (the reference for an exact copy of AE's span drawing)
-    // RANDAMU_A3D_CAPSUB may list several copies ("0,5,9"); each goes to RANDAMU_A3D_CAPDIR\s<copy>
+    // DUPLIX_A3D_CAPSUB may list several copies ("0,5,9"); each goes to DUPLIX_A3D_CAPDIR\s<copy>
     static std::mutex s_capDoneMu;
     static std::vector<int> s_capDone;
     static bool s_cap = false;
@@ -3536,7 +3536,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     if (mode == 3 && mine) {
         char sv[256] = {0}, dir[512] = {0};
         bool listed = false;
-        if (GetEnvironmentVariableA("RANDAMU_A3D_CAPSUB", sv, sizeof(sv)) > 0) {
+        if (GetEnvironmentVariableA("DUPLIX_A3D_CAPSUB", sv, sizeof(sv)) > 0) {
             for (const char* q = sv; *q;) {
                 if (atoi(q) == sub) listed = true;
                 const char* c = strchr(q, ',');
@@ -3546,8 +3546,8 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
         } else {
             listed = sub == 0;
         }
-        // RANDAMU_A3D_CAPW: only a target of this width (buffer: +32 data, +40 rowbytes, +44 width, +48 height)
-        const int wantW = GetEnvironmentVariableA("RANDAMU_A3D_CAPW", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
+        // DUPLIX_A3D_CAPW: only a target of this width (buffer: +32 data, +40 rowbytes, +44 width, +48 height)
+        const int wantW = GetEnvironmentVariableA("DUPLIX_A3D_CAPW", sv, sizeof(sv)) > 0 ? atoi(sv) : 0;
         const unsigned char* tgt = *(int*)a7 == 1 ? *(const unsigned char**)(a7 + 8) : nullptr;
         const bool widthOk = !wantW || (tgt && *(const int*)(tgt + 44) == wantW);
         bool first = false;
@@ -3556,7 +3556,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             first = std::find(s_capDone.begin(), s_capDone.end(), sub) == s_capDone.end();
             if (first) s_capDone.push_back(sub);
         }
-        if (first && GetEnvironmentVariableA("RANDAMU_A3D_CAPDIR", dir, sizeof(dir)) > 0) {
+        if (first && GetEnvironmentVariableA("DUPLIX_A3D_CAPDIR", dir, sizeof(dir)) > 0) {
             CreateDirectoryA(dir, nullptr);
             s_cap = true, s_capDir = std::string(dir) + "\\s" + std::to_string(sub);
             s_capRows.clear();
@@ -3572,12 +3572,12 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             RLog("a3d capture: sub %d into %s (kind %d)", sub, s_capDir.c_str(), *(int*)a7);
         }
     }
-    // RANDAMU_A3D_DRAW=5: the copy's pixels drawn by DupliX with AE's arithmetic
+    // DUPLIX_A3D_DRAW=5: the copy's pixels drawn by DupliX with AE's arithmetic
     if ((mode == 5 || mode == 6) && mine) {
         t_aeGpu = mode == 6;
         return DrawCopyOurs(self, ctx, a3, a4, a5, a6, a7);
     }
-    // RANDAMU_A3D_DRAW=4: AE's draw of a copy without its pixel loop (the setup's cost)
+    // DUPLIX_A3D_DRAW=4: AE's draw of a copy without its pixel loop (the setup's cost)
     if (mode == 4 && mine) {
         typedef int (*IterFn4)(uintptr_t, uintptr_t, uintptr_t);
         IterFn4* slot4 = (IterFn4*)(ctx + 224);
@@ -3718,7 +3718,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     return r;
 }
 
-// RANDAMU_A3D_TIME=1 (diagnostics): the time of each summed area table AE builds for a surface's texture
+// DUPLIX_A3D_TIME=1 (diagnostics): the time of each summed area table AE builds for a surface's texture
 typedef void* (*SatCtorFn)(void*, const void*, bool);
 SatCtorFn g_origSatCtor = nullptr;
 LogLimit g_satLog;
@@ -3735,7 +3735,7 @@ void* HookSatCtor(void* self, const void* world, bool b)
 }
 void** FindImportSlot(HMODULE mod, const char* dll, const char* name);
 
-// RANDAMU_A3D_PROF=1 (diagnostics): samples the instruction pointer of the thread inside a copy's draw (between
+// DUPLIX_A3D_PROF=1 (diagnostics): samples the instruction pointer of the thread inside a copy's draw (between
 // the draw's start and its pixel loop: AE's setup) and logs the most frequent module+offset every 4000 samples
 }  // namespace
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -3743,7 +3743,7 @@ namespace {
 std::mutex g_profMu;
 std::map<std::string, int> g_profHits;
 int g_profTotal = 0;
-// ras: the innermost return address in Advanced3D, the innermost and the outermost (below it) in randamu
+// ras: the innermost return address in Advanced3D, the innermost and the outermost (below it) in DupliX
 void ProfUnwind(CONTEXT u, uintptr_t* ras, uintptr_t* frames, int* nFrames)
 {
     *nFrames = 0;
@@ -3790,7 +3790,7 @@ void ProfLoop()
             // resumed before the unwinding (taking a lock while the thread is suspended can deadlock); the stack may
             // change meanwhile, which only spoils a sample now and then
             ResumeThread(h);
-            // the innermost return address inside Advanced3D and inside randamu
+            // the innermost return address inside Advanced3D and inside DupliX
             uintptr_t ras[3] = {0, 0, 0}, frames[48];
             int nf = 0;
             if (ok) ProfUnwind(c, ras, frames, &nf);
@@ -3834,9 +3834,9 @@ void ProfLoop()
                 }
                 std::lock_guard<std::mutex> lk(g_profMu);
                 g_profHits[key]++;
-                static const int s_every = [] {  // RANDAMU_A3D_PROF_N: log every this many samples
+                static const int s_every = [] {  // DUPLIX_A3D_PROF_N: log every this many samples
                     char v[16] = {0};
-                    return GetEnvironmentVariableA("RANDAMU_A3D_PROF_N", v, sizeof(v)) > 0 ? std::max(100, atoi(v)) : 20000;
+                    return GetEnvironmentVariableA("DUPLIX_A3D_PROF_N", v, sizeof(v)) > 0 ? std::max(100, atoi(v)) : 20000;
                 }();
                 if (++g_profTotal % s_every == 0) {
                     std::vector<std::pair<int, std::string>> v;
@@ -3857,7 +3857,7 @@ void ProfLoop()
     }
 }
 
-// RANDAMU_A3D_TIME=1: time in AE's helpers during one copy's draw (this thread): 0 NewMatchingWorld, 1 CopyWorld,
+// DUPLIX_A3D_TIME=1: time in AE's helpers during one copy's draw (this thread): 0 NewMatchingWorld, 1 CopyWorld,
 // 2 PF_IterateGeneric, 3 U_PurgeLoop
 typedef void* (*NewMatchingFn)(const void*, int);
 typedef void (*CopyWorldFn)(void*, const void*);
@@ -3897,7 +3897,7 @@ int HookPurgeLoop(size_t n, void* fn, void* r, int f)
     return g_origPurgeLoop(n, fn, r, f);
 }
 
-// RANDAMU_GROUP_TRACE=1: Advanced3D's failed internal checks (U_ReportFailedVerification, then it throws 3)
+// DUPLIX_GROUP_TRACE=1: Advanced3D's failed internal checks (U_ReportFailedVerification, then it throws 3)
 typedef void (*ReportFailedFn)(int, int, int, const char*);
 ReportFailedFn g_origReportFailed = nullptr;
 void HookReportFailed(int a, int line, int c, const char* msg)
@@ -3908,14 +3908,14 @@ void HookReportFailed(int a, int line, int c, const char* msg)
 
 void InstallA3dDrawHook(HMODULE a3d)
 {
-    if (GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0) {
+    if (GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0) {
         void** s = FindImportSlot(a3d, "U.dll", "U_ReportFailedVerification");
         if (s) g_origReportFailed = (ReportFailedFn)*s, WritePtr(s, (void*)&HookReportFailed);
         RLog("a3d check hook: %s", s ? "installed" : "not found");
     }
     {
         char ev[8] = {0};
-        if (GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1') {
+        if (GetEnvironmentVariableA("DUPLIX_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1') {
             void** s = FindImportSlot(a3d, "PF.dll", "??0PF_SummedAreaTable@@QEAA@PEBVPF_World@@_N@Z");
             if (s) g_origSatCtor = (SatCtorFn)*s, WritePtr(s, (void*)&HookSatCtor);
             RLog("a3d sat hook: %s", s ? "installed" : "not found");
@@ -3934,7 +3934,7 @@ void InstallA3dDrawHook(HMODULE a3d)
                 RLog("a3d helper hook %s: %s", h.name, sl ? "installed" : "not found");
             }
         }
-        if (GetEnvironmentVariableA("RANDAMU_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1') {
+        if (GetEnvironmentVariableA("DUPLIX_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1') {
             g_profMode = ev[0] - '0';
             std::thread(ProfLoop).detach();
             RLog("a3d prof: sampler started");
@@ -4136,10 +4136,10 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
     g_origCount = (Fwd8)vt[sCnt];
     g_origRects = (Fwd8)vt[sRc];
     g_origArtOpacity = (ArtOpacityFn)*iat;
-    // dbg: RANDAMU_HOOKMASK (diagnosis only): 1 Separately, 2 Count, 4 Rects, 8 IsLayerType, 16 opacity
+    // dbg: DUPLIX_HOOKMASK (diagnosis only): 1 Separately, 2 Count, 4 Rects, 8 IsLayerType, 16 opacity
     unsigned mask = 31;
     char mb[32] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_HOOKMASK", mb, sizeof(mb)) > 0) mask = (unsigned)strtoul(mb, nullptr, 0);
+    if (GetEnvironmentVariableA("DUPLIX_HOOKMASK", mb, sizeof(mb)) > 0) mask = (unsigned)strtoul(mb, nullptr, 0);
     RLog("dbg: hook mask %u", mask);
     bool ok = (!(mask & 1) || WritePtr(&vt[sSep], (void*)&HookSeparately)) &&
               (!(mask & 2) || WritePtr(&vt[sCnt], (void*)&HookCount)) &&

@@ -40,7 +40,7 @@ src/core/raster_ref.h, raster_ref.cpp  … 今の CPU 版をそのまま残し�
 src/gpu/fast_raster.cu                 … CUDA のカーネル（ビルド時に PTX → src/gpu/fast_raster_ptx.h）
 tools/build_ptx.ps1                    … nvcc で PTX を作り、C++ のヘッダーに埋め込む
 src/effect/gpu_raster.h, gpu_raster.cpp… ドライバー API の読み込み、文脈ごとのモジュール、転送と起動
-src/effect/randamu.cpp                 … 前処理で GPU を可能にし、GPU の描画で gpu_raster を呼ぶ
+src/effect/duplix.cpp                 … 前処理で GPU を可能にし、GPU の描画で gpu_raster を呼ぶ
 tests/unit/unit_tests.cpp              … tiles・raster の単体テスト
 tests/gpu/gpu_test.cpp, gpu_test.vcxproj … 自前の CUDA の文脈でカーネルを動かし、CPU 版と比べる（AE なし）
 tests/ae/run_fast_mode.ps1, fast_mode.jsx, check_gpu_cpu.py … GPU 設定での AE の試験
@@ -56,8 +56,8 @@ AE の GPU の絵の形式と、今の時間の内訳を確かめる。結果で
 - Create: `spike/gpu_probe/`（使い捨て）
 - Modify: `docs/experiments/2026-11-25-dev-log.md`
 
-- [ ] **Step 1: 時間の内訳** — 利用者のシーンのコピー（`run_user.ps1` の仕組み）で、高速モードのコピー 10・100・1000 枚を、CPU 設定の aerender（MFR オフ）とビューアー（`run_preview.ps1`）で測る。プラグイン内の計測（`RANDAMU_TIMING=1`）で、前処理・入力の取り込み・描画（`RasterizeCopies`）・それ以外に分ける。プロジェクトの GPU 設定を CUDA にした場合も同じく測る（今は CPU に戻されるので、往復の費用が分かる）。
-- [ ] **Step 2: GPU の絵の形式** — 一時的な分岐（環境変数 `RANDAMU_PROBE_GPU=1`）で、高速モードの前処理に `GPU_RENDER_POSSIBLE` を立て、`SMART_RENDER_GPU` で入力の GPU の絵の数画素を `cuMemcpyDtoH` で読んでログに出す。入力は既知の半透明の絵（例: 色 (1, 0.5, 0.25)、アルファ 0.5 の平面）。確かめること: 画素の形式（`PF_PixelFormat_GPU_BGRA128` か）、チャンネルの並び、ストレートかプリマルチプライか、行の長さ（rowbytes）、入力・出力の原点（`origin_x/y`）と縮小表示での大きさ。
+- [ ] **Step 1: 時間の内訳** — 利用者のシーンのコピー（`run_user.ps1` の仕組み）で、高速モードのコピー 10・100・1000 枚を、CPU 設定の aerender（MFR オフ）とビューアー（`run_preview.ps1`）で測る。プラグイン内の計測（`DUPLIX_TIMING=1`）で、前処理・入力の取り込み・描画（`RasterizeCopies`）・それ以外に分ける。プロジェクトの GPU 設定を CUDA にした場合も同じく測る（今は CPU に戻されるので、往復の費用が分かる）。
+- [ ] **Step 2: GPU の絵の形式** — 一時的な分岐（環境変数 `DUPLIX_PROBE_GPU=1`）で、高速モードの前処理に `GPU_RENDER_POSSIBLE` を立て、`SMART_RENDER_GPU` で入力の GPU の絵の数画素を `cuMemcpyDtoH` で読んでログに出す。入力は既知の半透明の絵（例: 色 (1, 0.5, 0.25)、アルファ 0.5 の平面）。確かめること: 画素の形式（`PF_PixelFormat_GPU_BGRA128` か）、チャンネルの並び、ストレートかプリマルチプライか、行の長さ（rowbytes）、入力・出力の原点（`origin_x/y`）と縮小表示での大きさ。
 - [ ] **Step 3: PTX の読み込み** — 同じ分岐で、`nvcc -ptx`（v12.2、`-arch=compute_52`）で作った最小のカーネル（出力を一色で塗る）を `cuModuleLoadData`・`cuModuleGetFunction`・`cuLaunchKernel` で AE の文脈（`PF_GPUDeviceInfo::contextPV`）とストリーム（`command_queuePV`）で動かし、画面にその色が出ることを確かめる。
 - [ ] **Step 4: 記録して分岐を消す** — 開発記録に事実と数値を書く。`git diff src/` が空に戻ること。
 - [ ] **Step 5: Commit** — `git commit -m "docs: GPU world format and fast-mode timing breakdown"`
@@ -95,7 +95,7 @@ AE の GPU の絵の形式と、今の時間の内訳を確かめる。結果で
 
 **Files:**
 - Create: `src/gpu/fast_raster.cu`, `tools/build_ptx.ps1`, `src/effect/gpu_raster.h`, `src/effect/gpu_raster.cpp`, `tests/gpu/gpu_test.cpp`, `tests/gpu/gpu_test.vcxproj`
-- Modify: `tools/build.ps1`（`-Target gpu`、`effect`・`gpu` の前に `build_ptx.ps1` を呼ぶ）、`src/effect/randamu.vcxproj`（生成した `src/gpu/fast_raster_ptx.h` をインクルードできるように）、`.gitignore`（生成物）
+- Modify: `tools/build.ps1`（`-Target gpu`、`effect`・`gpu` の前に `build_ptx.ps1` を呼ぶ）、`src/effect/duplix.vcxproj`（生成した `src/gpu/fast_raster_ptx.h` をインクルードできるように）、`.gitignore`（生成物）
 
 **Interfaces:**
 - Consumes: Task 2 の `TileLists`・`BuildTiles`、`RasterCopy`。
@@ -116,7 +116,7 @@ AE の GPU の絵の形式と、今の時間の内訳を確かめる。結果で
 ### Task 4: エフェクトへのつなぎ込みと AE での試験
 
 **Files:**
-- Modify: `src/effect/randamu.cpp`、`tests/ae/run_fast_mode.ps1`、`tests/ae/fast_mode.jsx`
+- Modify: `src/effect/duplix.cpp`、`tests/ae/run_fast_mode.ps1`、`tests/ae/fast_mode.jsx`
 - Create: `tests/ae/check_gpu_cpu.py`
 
 **Interfaces:**
@@ -125,7 +125,7 @@ AE の GPU の絵の形式と、今の時間の内訳を確かめる。結果で
 
 - [ ] **Step 1: 前処理** — 高速モードで、`extra->input->what_gpu == PF_GPU_Framework_CUDA` かつ `GpuRasterAvailable()` なら `PF_RenderOutputFlag_GPU_RENDER_POSSIBLE` を立てる。`GPU_DEVICE_SETUP` では CUDA のとき `GpuRasterAvailable()` を条件にする。
 - [ ] **Step 2: GPU の描画** — `SMART_RENDER_GPU` で高速モードなら、入力・出力の GPU の絵（`GetGPUWorldData`）を `GpuImage` にし、`BuildFastCopies`・奥から順の並べ替え・`BuildTiles` のあと `GpuRasterize`。失敗したら `PF_Err_INTERNAL_STRUCT_DAMAGED` を返し、ログに理由を出す（AE が CPU で描き直すかは Task 1 の結果に従う。描き直さないなら、前処理で失敗の記録を見て GPU を可能にしない）。
-- [ ] **Step 3: AE の試験** — `fast_mode.jsx` は `RANDAMU_GPU=CUDA` のときプロジェクトの GPU 設定を CUDA にする（`run_ref.ps1 -Gpu CUDA` と同じ方法）。`run_fast_mode.ps1 -Gpu CUDA` は出力を `build/test/fast_gpu` に分け、通常どおり fm と nm を比べたうえで、`check_gpu_cpu.py build/test/fast build/test/fast_gpu` で GPU と CPU の fm を比べる（差の最大 2、平均 0.1 以下）。プラグインのログに GPU の描画の行（`fast: gpu render`）が出たことも確かめる（GPU を本当に使った証拠）。ケース `fast_gpu_switch`: 同じセッションで GPU 設定を CUDA → ソフトウェアのみに変えて描いた絵が、CPU 版と差の最大 1。
+- [ ] **Step 3: AE の試験** — `fast_mode.jsx` は `DUPLIX_GPU=CUDA` のときプロジェクトの GPU 設定を CUDA にする（`run_ref.ps1 -Gpu CUDA` と同じ方法）。`run_fast_mode.ps1 -Gpu CUDA` は出力を `build/test/fast_gpu` に分け、通常どおり fm と nm を比べたうえで、`check_gpu_cpu.py build/test/fast build/test/fast_gpu` で GPU と CPU の fm を比べる（差の最大 2、平均 0.1 以下）。プラグインのログに GPU の描画の行（`fast: gpu render`）が出たことも確かめる（GPU を本当に使った証拠）。ケース `fast_gpu_switch`: 同じセッションで GPU 設定を CUDA → ソフトウェアのみに変えて描いた絵が、CPU 版と差の最大 1。
 - [ ] **Step 4: 合格を確認** — `pwsh tests/ae/run_fast_mode.ps1`（CPU）→ `FAST ALL PASS`、`pwsh tests/ae/run_fast_mode.ps1 -Gpu CUDA` → `FAST ALL PASS` と `GPU vs CPU ALL PASS`（MFR オフ・オン）。`run_ref.ps1`、`run_ui.ps1`、fx_remove、`run_transfer.ps1` → 合格。
 - [ ] **Step 5: Commit** — `git commit -m "feat: fast mode renders on the GPU (CUDA)"`
 
@@ -134,7 +134,7 @@ AE の GPU の絵の形式と、今の時間の内訳を確かめる。結果で
 ### Task 5: 速さの比較と手引き
 
 **Files:**
-- Modify: `docs/randamu-quickstart.md`、`docs/experiments/2026-11-25-dev-log.md`、`HANDOFF.md`
+- Modify: `docs/duplix-quickstart.md`、`docs/experiments/2026-11-25-dev-log.md`、`HANDOFF.md`
 
 - [ ] **Step 1: 測る** — Task 1 Step 1 と同じ条件（コピー 10・100・1000 枚、aerender とビューアー、CPU 設定と CUDA 設定）で測り、前後の表を開発記録に書く。
 - [ ] **Step 2: 手引き** — 高速モードの節に「GPU（CUDA）の設定では GPU で描く。それ以外は CPU」「1 画素に 64 枚を超えて重なる所だけ近似」「目安の速さの表」を書く。

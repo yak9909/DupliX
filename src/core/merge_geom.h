@@ -1,4 +1,4 @@
-// randamu core: geometry of the merge optimisation (spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md
+// DupliX core: geometry of the merge optimisation (spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md
 // 5.4, 5.5). No After Effects dependency. Matrices are row vectors (p' = p * M), row 3 = translation.
 #pragma once
 

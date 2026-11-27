@@ -1,8 +1,9 @@
-// Smoke test: randamu loads, can be applied to a 3D solid, and turns it into copies.
+// Smoke test: DupliX loads, can be applied to a 3D solid, and turns it into copies.
 // one.png: count 1, all ranges 0 (= the plain layer). many.png: count 10, position range 120.
-// Writes jsx.log (parameter names, TARGET_ID/COMP_ID, "SMOKE OK") to $RANDAMU_TEST_DIR.
+// Writes jsx.log (parameter names, TARGET_ID/COMP_ID, "SMOKE OK") to $DUPLIX_TEST_DIR.
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -21,7 +22,7 @@
         var L = comp.layers.addSolid([1, 1, 1], "Target", 40, 40, 1);
         L.threeDLayer = true;
         log("before addProperty");
-        var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
+        var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
         log("effect " + (fx ? fx.matchName : "null") + " params=" + fx.numProperties);
         for (var i = 1; i <= fx.numProperties; i++) {
             var p = fx.property(i);
@@ -30,11 +31,11 @@
             log(" #" + i + " " + p.matchName + " [" + p.name + "] = " + v);
         }
         log("TARGET_ID=" + L.id + " COMP_ID=" + comp.id);
-        fx.property(2).setValue(1);                          // count
-        for (var r = 4; r <= 9; r++) fx.property(r).setValue(0);  // position / rotation ranges
+        fx.property("DupliX-0002").setValue(1);                          // count
+        for (var r = 4; r <= 9; r++) fx.property(dx(r)).setValue(0);  // position / rotation ranges
         png(comp, "one");
-        fx.property(2).setValue(10);
-        for (var q = 4; q <= 6; q++) fx.property(q).setValue(120);
+        fx.property("DupliX-0002").setValue(10);
+        for (var q = 4; q <= 6; q++) fx.property(dx(q)).setValue(120);
         png(comp, "many");
         log("SMOKE OK");
         log("done");

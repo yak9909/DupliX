@@ -2,7 +2,7 @@
 // PF_Cmd_USER_CHANGED_PARAM. Public AEGP calls only, in one undo group.
 #pragma once
 
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 #include "core/world.h"
 
 enum class TransferResult {

@@ -8,8 +8,8 @@
 resource 'PiPL' (16000) {
 	{
 		Kind { AEEffect },
-		Name { "RandamuSpike" },
-		Category { "Randamu Dev" },
+		Name { "DupliXSpike" },
+		Category { "DupliX Dev" },
 #ifdef AE_OS_WIN
 	#if defined(AE_PROC_INTELx64)
 		CodeWin64X86 {"EffectMain"},
@@ -28,7 +28,7 @@ resource 'PiPL' (16000) {
 		AE_Effect_Global_OutFlags { 0x02000000 },
 		/* SUPPORTS_SMART_RENDER | FLOAT_COLOR_AWARE | I_MIX_GUID_DEPENDENCIES | SUPPORTS_THREADED_RENDERING */
 		AE_Effect_Global_OutFlags_2 { 0x08201400 },
-		AE_Effect_Match_Name { "RNDM RandamuSpike" },
+		AE_Effect_Match_Name { "RNDM DupliXSpike" },
 		AE_Reserved_Info { 0 },
 		AE_Effect_Support_URL { "https://example.invalid" }
 	}

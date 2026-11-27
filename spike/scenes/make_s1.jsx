@@ -1,7 +1,7 @@
 // THROWAWAY SPIKE — builds spike/logs/s1/s1.aep with S1/S2 test comps.
-// Run via spike/tools/run_s1.ps1 (reads env RANDAMU_SPIKE_DIR).
+// Run via spike/tools/run_s1.ps1 (reads env DUPLIX_SPIKE_DIR).
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -14,7 +14,7 @@
         try { log("workingSpace=" + app.project.workingSpace + " linearBlending=" + app.project.linearBlending +
                   " colorManagementSystem=" + app.project.colorManagementSystem); } catch (e) { log("color info err " + e); }
 
-        var FX = "RNDM RandamuSpike";
+        var FX = "RNDM DupliXSpike";
 
         // om.templates sometimes comes back garbled after many render-queue items
         // ("TIFF ????? is not a valid template name"): look it up once and reuse it.
@@ -47,7 +47,7 @@
 
             var fx = src.property("ADBE Effect Parade").addProperty(FX);
             // S5b product-like scene: no slots, no expressions (the plugin takes everything from AEGP)
-            if ($.getenv("RANDAMU_S1_NOSLOT") === "1") {
+            if ($.getenv("DUPLIX_S1_NOSLOT") === "1") {
                 log(name + " NOSLOT: no slots / expressions");
             } else {
             fx.property("Slot 1").setValue(target.index);
@@ -56,7 +56,7 @@
             fx.property("Self X").expression = "var p=toComp([100,0]); [p[0],p[1],0]";
             fx.property("Self Y").expression = "var p=toComp([0,100]); [p[0],p[1],0]";
             function slotExpr(u, v, slot) {
-                return "var L=effect('RandamuSpike')('" + (slot || "Slot 1") + "');" +
+                return "var L=effect('DupliXSpike')('" + (slot || "Slot 1") + "');" +
                        "var p=L.toComp([" + u + "," + v + ",0]);" +
                        "var c=thisComp.activeCamera;" +
                        "var z=c ? c.fromWorld(L.toWorld([" + u + "," + v + ",0]))[2] : -1;" +
@@ -145,7 +145,7 @@
         });
 
         // ---- S2b: what does checkout_layer return for other layer types?
-        var assets = $.getenv("RANDAMU_SPIKE_ASSETS");
+        var assets = $.getenv("DUPLIX_SPIKE_ASSETS");
         var discItem = app.project.importFile(new ImportOptions(new File(assets + "/disc.png")));
         function noop() {}
 

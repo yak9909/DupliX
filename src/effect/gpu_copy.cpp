@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <mutex>
 
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 
 namespace rnd {
 

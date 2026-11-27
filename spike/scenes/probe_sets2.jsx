@@ -1,10 +1,10 @@
 // THROWAWAY SPIKE — Layer Sets, part 2: let the plugin call BEE_AVLayer::CreateSet (or set the
 // switches) on "Target" from PF_Cmd_SEQUENCE_SETUP, then render.
-// Env: RANDAMU_SPIKE_DIR, RANDAMU_PROBE_SETS (create|switch). With "switch" the script adds the
+// Env: DUPLIX_SPIKE_DIR, DUPLIX_PROBE_SETS (create|switch). With "switch" the script adds the
 // set group itself first. Writes jsx.log, f_*.png.
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
-    var mode = $.getenv("RANDAMU_PROBE_SETS");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
+    var mode = $.getenv("DUPLIX_PROBE_SETS");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -31,7 +31,7 @@
         var comp = app.project.items.addComp("probe", 400, 300, 1, 1 / 30, 30);
         comp.layers.addSolid([0, 0, 0], "BG", 400, 300, 1);
         var L;
-        if ($.getenv("RANDAMU_TARGET_KIND") === "shape") {
+        if ($.getenv("DUPLIX_TARGET_KIND") === "shape") {
             L = comp.layers.addShape();
             L.name = "Target";
             var grp = L.property("ADBE Root Vectors Group").addProperty("ADBE Vector Group");
@@ -39,7 +39,7 @@
             vecs.addProperty("ADBE Vector Shape - Rect").property("ADBE Vector Rect Size").setValue([100, 100]);
             vecs.addProperty("ADBE Vector Graphic - Fill").property("ADBE Vector Fill Color").setValue([1, 1, 1]);
             log("target=shape");
-        } else if ($.getenv("RANDAMU_TARGET_KIND") === "text") {
+        } else if ($.getenv("DUPLIX_TARGET_KIND") === "text") {
             L = comp.layers.addText("AB");
             L.name = "Target";
             var tp = L.property("ADBE Text Properties").property("ADBE Text Document");
@@ -55,7 +55,7 @@
             L = comp.layers.addSolid([1, 1, 1], "Target", 100, 100, 1);
         }
         L.threeDLayer = true;
-        if ($.getenv("RANDAMU_EFFECT_ON_TARGET") === "1") {
+        if ($.getenv("DUPLIX_EFFECT_ON_TARGET") === "1") {
             var fx = L.property("ADBE Effect Parade").addProperty("ADBE Fill");
             fx.property("ADBE Fill-0002").setValue([1, 0, 0, 1]);
             log("effect on target added");
@@ -69,7 +69,7 @@
         }
         var T = comp.layers.addSolid([0, 0, 0], "T", 10, 10, 1);
         log("before applying effect");
-        T.property("ADBE Effect Parade").addProperty("RNDM RandamuSpike");
+        T.property("ADBE Effect Parade").addProperty("RNDM DupliXSpike");
         log("effect applied");
         T.enabled = false;
         var sets = L.property("ADBE Layer Sets");

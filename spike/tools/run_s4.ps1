@@ -19,20 +19,20 @@ $aepSrc = Join-Path $s1Dir "s1.aep"
 if (-not (Test-Path $aepSrc)) { throw "missing $aepSrc (run run_s1.ps1 first)" }
 Copy-Item $aepSrc (Join-Path $outDir "s1.aep") -Force
 
-$env:RANDAMU_SPIKE_DIR = ($outDir -replace '\\', '/')
-$env:RANDAMU_SPIKE_LOG = Join-Path $outDir "plugin.log"
-$env:RANDAMU_S5_SITE = "pre"
-$env:RANDAMU_S5_SALT = [guid]::NewGuid().ToString("N")
-$env:RANDAMU_S4_STEPS = if ($Step0Only) { "0" } else { "all" }
-$env:RANDAMU_S4_NOGUID = if ($NoGuid) { "1" } else { "0" }
-$env:RANDAMU_S5B = $S5b
-$env:RANDAMU_S4_NOSLOT = if ($NoSlot) { "1" } else { "0" }
-$env:RANDAMU_S5B_NOMIX = if ($NoMix) { "1" } else { "0" }
-$env:RANDAMU_S7 = if ($S7) { "1" } else { "0" }
-Write-Host "S4 s5b=$S5b noslot=$env:RANDAMU_S4_NOSLOT nomix=$env:RANDAMU_S5B_NOMIX steps=$env:RANDAMU_S4_STEPS noguid=$env:RANDAMU_S4_NOGUID salt=$env:RANDAMU_S5_SALT"
+$env:DUPLIX_SPIKE_DIR = ($outDir -replace '\\', '/')
+$env:DUPLIX_SPIKE_LOG = Join-Path $outDir "plugin.log"
+$env:DUPLIX_S5_SITE = "pre"
+$env:DUPLIX_S5_SALT = [guid]::NewGuid().ToString("N")
+$env:DUPLIX_S4_STEPS = if ($Step0Only) { "0" } else { "all" }
+$env:DUPLIX_S4_NOGUID = if ($NoGuid) { "1" } else { "0" }
+$env:DUPLIX_S5B = $S5b
+$env:DUPLIX_S4_NOSLOT = if ($NoSlot) { "1" } else { "0" }
+$env:DUPLIX_S5B_NOMIX = if ($NoMix) { "1" } else { "0" }
+$env:DUPLIX_S7 = if ($S7) { "1" } else { "0" }
+Write-Host "S4 s5b=$S5b noslot=$env:DUPLIX_S4_NOSLOT nomix=$env:DUPLIX_S5B_NOMIX steps=$env:DUPLIX_S4_STEPS noguid=$env:DUPLIX_S4_NOGUID salt=$env:DUPLIX_S5_SALT"
 
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
-$jsx = Join-Path $env:TEMP "randamu_make_s4.jsx"
+$jsx = Join-Path $env:TEMP "duplix_make_s4.jsx"
 Copy-Item (Join-Path $root "scenes\make_s4.jsx") $jsx -Force
 if ($jsx -match '\s') { throw "script path must not contain spaces: $jsx" }
 

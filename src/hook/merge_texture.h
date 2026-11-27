@@ -1,4 +1,4 @@
-// randamu: the texture of a group plane (spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md 5.3).
+// DupliX: the texture of a group plane (spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md 5.3).
 #pragma once
 
 #include "AE_GeneralPlug.h"

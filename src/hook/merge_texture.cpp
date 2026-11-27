@@ -10,7 +10,7 @@
 #include "core/fast_plane.h"
 #include "core/merge_geom.h"
 #include "core/raster.h"
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 #include "gpu/gpu_raster.h"
 #include "hook/bee_hooks.h"
 

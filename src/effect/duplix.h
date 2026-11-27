@@ -1,5 +1,5 @@
-// randamu: After Effects 2025 effect that scatters the layer as n real 3D copies
-// (classic 3D sub-layers). See docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md.
+// DupliX: After Effects 2025 effect that scatters the layer as n real 3D copies
+// (classic 3D sub-layers). See docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md.
 #pragma once
 
 #define PF_DEEP_COLOR_AWARE 1
@@ -18,15 +18,15 @@
 #include "AE_EffectSuites.h"
 #include "AE_GeneralPlug.h"
 
-#include "randamu_params.h"
+#include "duplix_params.h"
 
 #include <atomic>
 
-// Writes one line to the file named by the RANDAMU_LOG environment variable (no-op if unset).
+// Writes one line to the file named by the DUPLIX_LOG environment variable (no-op if unset).
 void RLog(const char* fmt, ...);
-// The merge may draw its group textures on the GPU (AE's GPU acceleration is CUDA; RANDAMU_MERGE_GPU_DRAW overrides).
+// The merge may draw its group textures on the GPU (AE's GPU acceleration is CUDA; DUPLIX_MERGE_GPU_DRAW overrides).
 bool MergeGpuAllowed();
-// The log's generation: it changes when RANDAMU_LOG names another file (tests switch logs between comps).
+// The log's generation: it changes when DUPLIX_LOG names another file (tests switch logs between comps).
 int RLogGeneration();
 // "Log only the first few" counters that start again in each log generation (each test comp's log gets them).
 struct LogLimit {

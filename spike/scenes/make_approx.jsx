@@ -4,9 +4,9 @@
 //   Approx  : the copy is on TOP, its alpha cut by X's alpha (track matte, inverted alpha),
 //             X is below it over the background. That is exactly what A' produces.
 // Columns: X at 100% / 75% / 50% / 25% opacity, feathered edge, Add, Multiply.
-// Env: RANDAMU_SPIKE_DIR (output dir).
+// Env: DUPLIX_SPIKE_DIR (output dir).
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }

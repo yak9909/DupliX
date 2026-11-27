@@ -9,7 +9,7 @@ if (-not ("AeBg" -as [type])) {
 Add-Type @"
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
 public class AeBg {
-  public const string DesktopName = "randamu_bg";
+  public const string DesktopName = "duplix_bg";
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
     public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;

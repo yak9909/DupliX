@@ -3,12 +3,12 @@
 // Each case builds "c_<name>" (layer that had the effect) and "r_<name>" (same layer, never had it) and
 // saves both PNGs; check_fx_remove.py compares them. Writes jsx.log ("CASE <name>", "done").
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
-    var noFx = $.getenv("RANDAMU_NOFX") === "1";  // run without the plugin (control experiment)
+    var noFx = $.getenv("DUPLIX_NOFX") === "1";  // run without the plugin (control experiment)
     function png(comp, name) {
         var f = new File(outDir + "/" + name + ".png");
         comp.saveFrameToPng(0, f);
@@ -23,8 +23,8 @@
         return {comp: comp, layer: L};
     }
     function addFx(L) {
-        var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-        fx.property(2).setValue(5);
+        var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
+        fx.property("DupliX-0002").setValue(5);
         return fx;
     }
     // ops: list of "3d" | "2d" | "fx" | "unfx" | "dup" | "hidedup" | "png" (png the intermediate state)

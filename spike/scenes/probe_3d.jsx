@@ -1,18 +1,18 @@
 // THROWAWAY SPIKE — sub-layer copies vs real duplicated layers, in a classic-3D scene with a light,
 // shadows, a floor and a wall that intersects the copies.
 // "probe": Target (+ hidden effect layer T whose SEQUENCE_SETUP installs the fill hooks, copies from
-//          the fixed table, RANDAMU_FILL_TABLE=1).
+//          the fixed table, DUPLIX_FILL_TABLE=1).
 // "ref":   5 real duplicates of Target at the same offsets.
-// Env: RANDAMU_SPIKE_DIR. Writes jsx.log, f_probe.png, f_ref.png.
+// Env: DUPLIX_SPIKE_DIR. Writes jsx.log, f_probe.png, f_ref.png.
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function frame(comp, name) {
         var f = new File(outDir + "/" + name + ".png");
         try {
-            comp.saveFrameToPng(parseFloat($.getenv("RANDAMU_3D_TIME") || "0"), f);
+            comp.saveFrameToPng(parseFloat($.getenv("DUPLIX_3D_TIME") || "0"), f);
             for (var i = 0; i < 100 && !f.exists; i++) $.sleep(100);
             log("frame " + name + " exists=" + f.exists);
         } catch (e) { log("frame " + name + " EXC " + e); }
@@ -39,7 +39,7 @@
         log(" light type=" + light.lightType);
         light.property("ADBE Transform Group").property("ADBE Position").setValue([120, -150, -250]);
         log(" light pos");
-        if ($.getenv("RANDAMU_3D_LIGHTDUMP") === "1") {
+        if ($.getenv("DUPLIX_3D_LIGHTDUMP") === "1") {
             var lo = light.property("ADBE Light Options Group");
             log("  opts n=" + lo.numProperties);
             for (var q = 1; q <= lo.numProperties; q++) {
@@ -52,7 +52,7 @@
                 log("  opt#" + q + " value=" + vq);
             }
         }
-        if ($.getenv("RANDAMU_3D_SHADOWS") === "1") {
+        if ($.getenv("DUPLIX_3D_SHADOWS") === "1") {
             // Reading "ADBE Light Color" (option #6) blocks the hidden-desktop AE on a modal dialog, and a
             // lookup by match name seems to touch it too: walk the options by index from #7, match names only.
             var lo2 = light.property("ADBE Light Options Group");
@@ -68,7 +68,7 @@
     var imgItem = null;
     function makeTarget(comp, name, off) {
         var L;
-        var imgPath = $.getenv("RANDAMU_3D_IMAGE");
+        var imgPath = $.getenv("DUPLIX_3D_IMAGE");
         if (imgPath) {
             if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File(imgPath)));
             L = comp.layers.add(imgItem);
@@ -78,7 +78,7 @@
         }
         L.threeDLayer = true;
         L.property("ADBE Transform Group").property("ADBE Position").setValue([P0[0] + off[0], P0[1] + off[1], P0[2] + off[2]]);
-        if ($.getenv("RANDAMU_3D_SHADOWS") === "1") {
+        if ($.getenv("DUPLIX_3D_SHADOWS") === "1") {
             var mo = L.property("ADBE Material Options Group");
             for (var q3 = 1; q3 <= mo.numProperties; q3++)
                 if (mo.property(q3).matchName === "ADBE Casts Shadows") mo.property(q3).setValue(1);
@@ -86,8 +86,8 @@
         return L;
     }
     log("start");
-    // RANDAMU_3D_EXTRA: comma list of dof, adj, mb
-    var extraOpt = "," + ($.getenv("RANDAMU_3D_EXTRA") || "") + ",";
+    // DUPLIX_3D_EXTRA: comma list of dof, adj, mb
+    var extraOpt = "," + ($.getenv("DUPLIX_3D_EXTRA") || "") + ",";
     function extra(comp) {
         var cam = null;
         for (var i = 1; i <= comp.numLayers; i++) if (comp.layer(i).name === "Cam") cam = comp.layer(i);
@@ -125,8 +125,8 @@
         var ref = app.project.items.addComp("ref", 400, 300, 1, 2, 30);
         scene(ref);
         var rot = [[0, 0, 0], [0, 0, 30], [0, 40, 0], [35, 0, 0], [20, 30, 40]];
-        var useRot = $.getenv("RANDAMU_FILL_ROT") === "1";
-        var nRand = parseInt($.getenv("RANDAMU_FILL_RANDOM") || "0", 10);
+        var useRot = $.getenv("DUPLIX_FILL_ROT") === "1";
+        var nRand = parseInt($.getenv("DUPLIX_FILL_RANDOM") || "0", 10);
         if (nRand > 0) {
             // same Park-Miller sequence as RandomXform() in the plugin (products stay below 2^53)
             var sx = 12345;
@@ -139,12 +139,12 @@
             }
             log("random table n=" + nRand + " first=" + table[0].join(",") + " rot0=" + rot[0].join(","));
         }
-        var noRef = $.getenv("RANDAMU_3D_NOREF") === "1";  // timing runs: no reference copies
+        var noRef = $.getenv("DUPLIX_3D_NOREF") === "1";  // timing runs: no reference copies
         for (var k = 0; k < (noRef ? 0 : table.length); k++) {
             var C = makeTarget(ref, "Copy" + k, table[k]);
-            if ($.getenv("RANDAMU_FILL_OPACITY") === "1")
+            if ($.getenv("DUPLIX_FILL_OPACITY") === "1")
                 C.property("ADBE Transform Group").property("ADBE Opacity").setValue(100 * (0.3 + 0.7 * ((k * 37) % 10) / 9));
-            if ($.getenv("RANDAMU_FILL_ANIM") === "1") {
+            if ($.getenv("DUPLIX_FILL_ANIM") === "1") {
                 // copy k moves +300 px in x per second (same as the plugin's time-dependent offset)
                 var pp = C.property("ADBE Transform Group").property("ADBE Position");
                 var pv = pp.value;
@@ -158,8 +158,8 @@
                 tg.property("ADBE Rotate Z").setValue(rot[k][2]);
             }
         }
-        // RANDAMU_3D_MULTI: a second target ("Target2", slider 5 -> offsets x0.5) at P1
-        var multi = $.getenv("RANDAMU_3D_MULTI") === "1";
+        // DUPLIX_3D_MULTI: a second target ("Target2", slider 5 -> offsets x0.5) at P1
+        var multi = $.getenv("DUPLIX_3D_MULTI") === "1";
         var P1 = [80, 40, 120];  // offset of Target2 from P0
         if (multi) {
             for (var k3 = 0; k3 < table.length; k3++) {
@@ -189,11 +189,11 @@
         }
         extra(probe);
         var T = probe.layers.addSolid([0, 0, 0], "T", 10, 10, 1);
-        T.property("ADBE Effect Parade").addProperty("RNDM RandamuSpike");
+        T.property("ADBE Effect Parade").addProperty("RNDM DupliXSpike");
         T.enabled = false;
         log("built");
         frame(ref, "f_ref");
-        if ($.getenv("RANDAMU_3D_CACHETEST") === "1") {
+        if ($.getenv("DUPLIX_3D_CACHETEST") === "1") {
             // second reference at half the offsets
             var ref2 = app.project.items.addComp("ref2", 400, 300, 1, 2, 30);
             scene(ref2);
@@ -211,7 +211,7 @@
             var tgt = null;
             for (var m = 1; m <= probe.numLayers; m++) if (probe.layer(m).name === "Target") tgt = probe.layer(m);
             var slider = tgt.property("ADBE Effect Parade").addProperty("ADBE Slider Control");
-            var sf = new File($.getenv("RANDAMU_FILL_FILE"));
+            var sf = new File($.getenv("DUPLIX_FILL_FILE"));
             function setScale(v) { sf.open("w"); sf.write(String(v)); sf.close(); log("scale file=" + v); }
             setScale(1);
             frame(probe, "f_p1");
@@ -224,7 +224,7 @@
             return;
         }
         frame(probe, "f_probe");
-        if ($.getenv("RANDAMU_3D_SAVE") === "1") {
+        if ($.getenv("DUPLIX_3D_SAVE") === "1") {
             for (var m2 = 1; m2 <= probe.numLayers; m2++)
                 if (probe.layer(m2).name.indexOf("Target") === 0) log("TARGET_ID=" + probe.layer(m2).id);
             function addRQ(c, n) {
@@ -239,7 +239,7 @@
                     om.saveAsTemplate("RNDM_TIFF_A");
                 }
                 om.file = new File(outDir + "/r_" + n + "_[#####].tif");
-                rq.timeSpanStart = parseFloat($.getenv("RANDAMU_3D_TIME") || "0");
+                rq.timeSpanStart = parseFloat($.getenv("DUPLIX_3D_TIME") || "0");
                 rq.timeSpanDuration = 1 / 30;
                 log("rq " + n + " format=" + om.getSettings(GetSettingsFormat.STRING)["Format"]);
             }

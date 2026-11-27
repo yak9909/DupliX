@@ -1,4 +1,4 @@
-# randamu 設計書: 深度テスト付きランダム配置エフェクト（After Effects 2025）
+# DupliX 設計書: 深度テスト付きランダム配置エフェクト（After Effects 2025）
 
 - 日付: 2026-11-22
 - 状態: 下書き（実験 S1〜S4 の結果待ちの項目あり。「未確定」と書いた所）。2026-11-23: 絶対条件（第 2 節）と、他レイヤーの画素を AEGP の描画で取る方針（4.2 節）を追記
@@ -180,7 +180,7 @@ AE 標準の 3D はレイヤー単位でしか前後を並べ替えないため�
 
 - ビルド: Visual Studio 2022 Build Tools（MSVC v143）、Windows SDK 10.0.26100、MSBuild。PATH の cmake は devkitPro 用なので使わない。
 - PiPL: SDK の `PiPLTool` は空白を含むパスを扱えないため、作業フォルダに移ってファイル名だけを渡す。
-- プラグインの配置: `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\randamu_dev` → `randamu\dev_plugins` へのジャンクション（利用者が管理者権限で一度だけ作成。未作成）。
+- プラグインの配置: `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\duplix_dev` → `DupliX\dev_plugins` へのジャンクション（利用者が管理者権限で一度だけ作成。未作成）。
 - AE は日本語版のため、出力テンプレート名などはスクリプト側で名前に依存しないように扱う。
 
 ## 10. 実装者に任せること

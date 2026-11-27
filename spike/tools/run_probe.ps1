@@ -6,7 +6,7 @@ $root   = Resolve-Path (Join-Path $PSScriptRoot "..")
 $outDir = Join-Path $root "logs\probe_$Name"
 New-Item -ItemType Directory -Force $outDir | Out-Null
 Get-ChildItem "$outDir\*" -Include *.png, *.log, *.aep -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
-$env:RANDAMU_SPIKE_DIR = ($outDir -replace '\\', '/')
+$env:DUPLIX_SPIKE_DIR = ($outDir -replace '\\', '/')
 $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
 
 . (Join-Path $PSScriptRoot "ae_bg.ps1")
@@ -15,7 +15,7 @@ $running = @(Get-Process AfterFX, aerender -ErrorAction SilentlyContinue)
 if ($running) { throw "AfterFX/aerender is already running (pid $($running.Id -join ',')). Close it first." }
 $null = Repair-AeCrashState
 
-$tmp = Join-Path $env:TEMP "randamu_probe_$Name.jsx"
+$tmp = Join-Path $env:TEMP "duplix_probe_$Name.jsx"
 Copy-Item (Join-Path $root $Jsx) $tmp -Force
 $p = Start-AeHidden -Exe (Join-Path $sf "AfterFX.exe") -Arguments "-r $tmp"
 $jsxLog = Join-Path $outDir "jsx.log"

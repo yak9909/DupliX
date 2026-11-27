@@ -106,7 +106,7 @@ TransferResult TransferLayerToWorld(PF_InData* in_data, AEGP_PluginID id, const 
 
     // 3. the layer to its initial 2D state, as one undo step
     bool dropped = false, failed = false;
-    us->AEGP_StartUndoGroup("Fast Mode");
+    us->AEGP_StartUndoGroup("DupliX Render Mode");
     auto reset = [&](AEGP_LayerStream which, double x, double y, double z) {
         AEGP_StreamRefH s = nullptr;
         if (ss->AEGP_GetNewLayerStream(id, L, which, &s) || !s) {

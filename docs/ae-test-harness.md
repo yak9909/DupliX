@@ -1,7 +1,7 @@
 # AE プラグインの自動テスト環境（Windows）
 
 After Effects のエフェクトプラグインを、ビルドからレンダー結果の判定まで自動で確かめるための環境と、つまずいた点をまとめる。
-randamu のために作ったが、ほかのプラグインのプロジェクトでも同じ方式を使う前提で書く。
+DupliX のために作ったが、ほかのプラグインのプロジェクトでも同じ方式を使う前提で書く。
 
 確認した環境は Windows 10、After Effects 2025（25.6、日本語版）、AE SDK 25.6、Visual Studio 2022 Build Tools。
 経緯の詳細は `docs/experiments/2026-11-22-spike-log.md` の 3〜5 節と 8 節にある。
@@ -95,7 +95,7 @@ if (-not (Stop-AeHidden -Process $p)) { $null = Repair-AeCrashState }   # false 
 
 ### 4.3 見えないデスクトップ
 
-- 仕組み: `CreateDesktop("randamu_bg")` で作ったデスクトップを、`CreateProcess` の `STARTUPINFO.lpDesktop = "WinSta0\randamu_bg"` で指定して AE を起動する。デスクトップのハンドルは、起動した側のプロセスが生きている間は保たれる。
+- 仕組み: `CreateDesktop("duplix_bg")` で作ったデスクトップを、`CreateProcess` の `STARTUPINFO.lpDesktop = "WinSta0\duplix_bg"` で指定して AE を起動する。デスクトップのハンドルは、起動した側のプロセスが生きている間は保たれる。
 - ウィンドウの列挙は `EnumWindows` では見えない。`EnumDesktopWindows` を使う。
 - 撮影は `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` で、AE のウィンドウだけを撮る。画面からコピーする方式（`CopyFromScreen`）は利用者の画面を写すので使わない。
 - `PostMessage` でキーやメッセージを送れる（デスクトップが違っても届く）。
@@ -140,7 +140,7 @@ if (-not (Stop-AeHidden -Process $p)) { $null = Repair-AeCrashState }   # false 
 | 時間を 1 フレームずつ進めても、2 フレーム目以降が描かれない | 動きのないシーンでは、AE は同じ内容のフレームを見分けて最初の結果を使い回す | 比較用のコンプのカメラに `value + [time * 40, 0, 0]` のエクスプレッションを付けて、フレームごとに内容を変える。素材のキャッシュは残るので、実際の使い方に近い。`app.purge(ALL_CACHES)` は素材の作り直しまで含んで大きく出るので使わない |
 | 条件を変えたのに描かれない（例: サンプリングをバイリニアに） | その条件で絵が変わらないと、ほかのコンプの結果が使い回される | 「描かれなかった」こと自体を結果として読む。必要なら別の試験（`tests/ae/sampling.jsx`）で確かめる |
 
-**プラグインの中での計測**（`RANDAMU_TIMING=1` と `RANDAMU_LOG`、`src/hook/timing.*`）: コンプと時刻ごとに、そのフレームでの DupliX の処理の最初から最後のコピーの描画（不透明度のフック）までの時間と、プラグインの処理の時間をログに 1 行ずつ出す（`timing: comp ... span=... in-plugin=...`）。コピーの描画が 0 回の行は、AE がコンプの全フレームについて前処理だけを呼んだもの（コンプを開いたときに約 1600 回）なので、集計から外す。
+**プラグインの中での計測**（`DUPLIX_TIMING=1` と `DUPLIX_LOG`、`src/hook/timing.*`）: コンプと時刻ごとに、そのフレームでの DupliX の処理の最初から最後のコピーの描画（不透明度のフック）までの時間と、プラグインの処理の時間をログに 1 行ずつ出す（`timing: comp ... span=... in-plugin=...`）。コピーの描画が 0 回の行は、AE がコンプの全フレームについて前処理だけを呼んだもの（コンプを開いたときに約 1600 回）なので、集計から外す。
 
 **起動したままの AE にスクリプトを送る**（`tests/ae/run_preview.ps1`）:
 - AE を見えないデスクトップで普通に起動しておき（aep を引数に渡す）、あとから 2 つ目の `AfterFX.exe -r <jsx>` を、これも見えないデスクトップで起動すると、スクリプトは起動中の AE で実行され、AE は終わらない（`-r` で起動した AE は、スクリプトの終了とともに閉じる）。
@@ -166,7 +166,7 @@ if (-not (Stop-AeHidden -Process $p)) { $null = Repair-AeCrashState }   # false 
 
 ## 5. ほかのプロジェクトで使うときの手順
 
-1. `ae_bg.ps1` と `ae_guard.ps1` をコピーする。`AeBg.DesktopName`（`randamu_bg`）はプロジェクトごとに変えてもよい。
+1. `ae_bg.ps1` と `ae_guard.ps1` をコピーする。`AeBg.DesktopName`（`duplix_bg`）はプロジェクトごとに変えてもよい。
 2. 3 節の準備（ジャンクション、スクリプトの書き込み許可、Python）を行う。
 3. プラグインに、ログを書く仕組みとキャッシュ対策（4.4 節）を最初から入れる。
 4. `run_s1.ps1` を手本に、シーン生成の jsx・aerender・判定をつなぐ。

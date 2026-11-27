@@ -35,8 +35,8 @@
 ## ファイル構成
 
 ```
-src/effect/randamu_params.h     … RP_MERGE / RD_MERGE を末尾に追加
-src/effect/randamu.cpp          … パラメータの定義・説明、高速モードのとき灰色、状態の欄に理由
+src/effect/duplix_params.h     … RP_MERGE / RD_MERGE を末尾に追加
+src/effect/duplix.cpp          … パラメータの定義・説明、高速モードのとき灰色、状態の欄に理由
 src/hook/registry.h, scatter.h  … ParamSnapshot / ScatterParams に merge を追加
 src/core/merge_geom.h/.cpp      … 純粋な幾何（画面の四角形、重なり、平面のどちら側か、奥行きの範囲、群れの面の M3/M4）
 src/core/merge_plan.h/.cpp      … 群れ分け（入力: カメラ・コピー・ほかの面。出力: サブレイヤーの一覧と群れ）
@@ -46,7 +46,7 @@ src/hook/merge_texture.h/.cpp   … 群れの絵を描いて AEGP の絵にす�
 src/hook/bee_hooks.cpp          … Count/Rects/Opacity が群れ分けを使う。BEE_RenderTextureForArtisan(+WithReceipt) の差し替え
 tests/unit/unit_tests.cpp       … merge_geom / merge_plan / merge_cache の単体試験
 tests/ae/merge.jsx, run_merge.ps1, check_merge.py … AE の試験（置き方・前後・継ぎ目・速さ・経路）
-docs/randamu-quickstart.md      … 使い方の節
+docs/duplix-quickstart.md      … 使い方の節
 ```
 
 ---
@@ -54,9 +54,9 @@ docs/randamu-quickstart.md      … 使い方の節
 ### Task 1: パラメータ「軽量化（群れをまとめる）」
 
 **Files:**
-- Modify: `src/effect/randamu_params.h`（`RP_MERGE` を `RP_WORLD_TOPIC_END` の後、`RD_MERGE` を末尾に）
+- Modify: `src/effect/duplix_params.h`（`RP_MERGE` を `RP_WORLD_TOPIC_END` の後、`RD_MERGE` を末尾に）
 - Modify: `src/core/scatter.h`（`ScatterParams` に `bool merge = false;`）
-- Modify: `src/effect/randamu.cpp`（`ParamsSetup` にチェック。`ParamsFromArray` で読む。`UpdateParamsUi` で高速モードのとき灰色）
+- Modify: `src/effect/duplix.cpp`（`ParamsSetup` にチェック。`ParamsFromArray` で読む。`UpdateParamsUi` で高速モードのとき灰色）
 - Modify: `src/hook/bee_hooks.cpp`（`ReadParamsFromEffect` で `RP_MERGE` を読む）
 - Test: `tests/unit/unit_tests.cpp`
 
@@ -73,7 +73,7 @@ docs/randamu-quickstart.md      … 使い方の節
 
 **Files:**
 - Create: `src/hook/merge_scene.h/.cpp`
-- Modify: `src/hook/bee_hooks.cpp`（診断用に、`RANDAMU_LOG` のとき Count のフックから 1 回呼んでログに出す）
+- Modify: `src/hook/bee_hooks.cpp`（診断用に、`DUPLIX_LOG` のとき Count のフックから 1 回呼んでログに出す）
 - Test: `tests/unit/unit_tests.cpp`（理由の判定は純粋関数で）、AE の試験 `tests/ae/merge.jsx` の `scene_*` ケース
 
 **Interfaces:**
@@ -175,9 +175,9 @@ AEGP_WorldH RenderGroupTexture(AEGP_WorldH layerTex, const double texM3[9], cons
 - Modify: `tests/ae/merge.jsx`・`check_merge.py`（ケース `seam`）、開発記録
 
 **Interfaces:**
-- Consumes: Task 3（試験用に、群れの d を環境変数 `RANDAMU_MERGE_FORCE_D`（カメラ空間の z）で固定できるようにする。製品では使わない診断）
+- Consumes: Task 3（試験用に、群れの d を環境変数 `DUPLIX_MERGE_FORCE_D`（カメラ空間の z）で固定できるようにする。製品では使わない診断）
 
-- [ ] **Step 1: 試験を書く** — `seam`: 不透明な 3D の壁を Y 軸 60° に回し、群れ（コピー 2 枚を壁の左右の空き場所に置き、壁とは画面上で重ならない）の面が、絵の透明な部分で壁と交差する d を `RANDAMU_MERGE_FORCE_D` で与える。比べる: 同じシーンの軽量化オフ。判定: 群れのコピーの縁から 2 画素より外の画素が差 0。
+- [ ] **Step 1: 試験を書く** — `seam`: 不透明な 3D の壁を Y 軸 60° に回し、群れ（コピー 2 枚を壁の左右の空き場所に置き、壁とは画面上で重ならない）の面が、絵の透明な部分で壁と交差する d を `DUPLIX_MERGE_FORCE_D` で与える。比べる: 同じシーンの軽量化オフ。判定: 群れのコピーの縁から 2 画素より外の画素が差 0。
 - [ ] **Step 2: 実行** `pwsh tests/ae/run_merge.ps1 -Cases seam`。
 - [ ] **Step 3: 結果を開発記録に書き、決める** — 差 0 なら「色がある画素だけで判定」（設計書 5.5 の緩い条件）を Task 5 で使う。差があれば「群れの絵の矩形の範囲で交差しない d」（Global Constraints の原則）を使う。ledger に Ruling として残す。
 - [ ] **Step 4: Commit** `test(merge): seam check where a group plane crosses a wall in its transparent part`
@@ -267,8 +267,8 @@ MergePlan BuildMergePlan(const MergeSceneInput& in, const MergeOptions& opt);
 ### Task 8: 状態の表示・手引き・計測
 
 **Files:**
-- Modify: `src/effect/randamu.cpp`（`UpdateParamsUi`: 軽量化オンで、まとめない理由（`MergeBlockReasons` と同じ判定をメインスレッドの AEGP で）を状態の欄に）
-- Modify: `docs/randamu-quickstart.md`（「軽量化」の節: 使い方、まとめない条件、差が出る所、速さの表）
+- Modify: `src/effect/duplix.cpp`（`UpdateParamsUi`: 軽量化オンで、まとめない理由（`MergeBlockReasons` と同じ判定をメインスレッドの AEGP で）を状態の欄に）
+- Modify: `docs/duplix-quickstart.md`（「軽量化」の節: 使い方、まとめない条件、差が出る所、速さの表）
 - Modify: 開発記録
 
 - [ ] **Step 1: 試験** — `run_ui.ps1` に、ライトのあるシーンで軽量化をオンにすると状態の欄の文字に「ライト」が入ることを足す（UI の試験の読み取り方式に従う）。

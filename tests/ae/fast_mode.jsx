@@ -6,16 +6,17 @@
 //   fast_anim: single_<frame>.png  (fm_fast_anim frames rendered one by one, out of order)
 //   fast_remove: rm_on.png, rm_off.png (effect removed), rm_plain.png (never had it)
 // nohooks_rq.txt: the render queue index of fm_fast_nohooks (run_fast_mode.ps1 renders it again without hooks).
-// Env: RANDAMU_TEST_DIR (output), RANDAMU_FAST_IMAGE (png source), RANDAMU_FAST_ONLY (comma list, optional).
+// Env: DUPLIX_TEST_DIR (output), DUPLIX_FAST_IMAGE (png source), DUPLIX_FAST_ONLY (comma list, optional).
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
     var imgItem = null;
     var W = 400, H = 300;
-    var FAST = 15, WPOS = 17, WROT = 20, WSCALE = 23;  // effect property indices (= RP_*)
+    var FAST = "DupliX-0037", WPOS = 17, WROT = 20, WSCALE = 23;  // Render Mode; World Transform disk IDs
+    function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a parameter by its disk ID
 
     var scatter = {count: 10, seed: 3, pos: [140, 90, 250], rot: [0, 0, 90], scale: [60, 130]};
     var world = {pos: [0, -10, 0], rot: [0, 0, 0]};
@@ -29,13 +30,13 @@
         {name: "fast_half", params: scatter, world: world, half: true},
         {name: "fast_nocam", params: scatter, world: world, noCam: true},
         {name: "fast_count0", params: {count: 0}, world: world},
-        // an effect before randamu grows the layer: the input's origin is negative
+        // an effect before DupliX grows the layer: the input's origin is negative
         {name: "fast_grow", params: scatter, world: world, shadow: true},
         // the layer's 2D position moves the whole drawing (compared with fm_fast_move2d_ref; no Back layer, which
         // would not move)
         {name: "fast_move2d", params: scatter, world: world, move2d: [50, 20], noBack: true},
         {name: "fast_move2d_ref", params: scatter, world: world, move2d: [0, 0], noBack: true},
-        // rendered again by run_fast_mode.ps1 with RANDAMU_HOOKMASK=0 (compared with fm_fast_scatter)
+        // rendered again by run_fast_mode.ps1 with DUPLIX_HOOKMASK=0 (compared with fm_fast_scatter)
         {name: "fast_nohooks", params: scatter, world: world, nohooks: true},
         // removing the effect while fast mode is on (same session): the plain layer again (PNGs only)
         {name: "fast_remove", params: scatter, world: world, remove: true}
@@ -44,15 +45,15 @@
     function setParams(fx, p, w, fast) {
         var pos = p.pos || [0, 0, 0], rot = p.rot || [0, 0, 0], sc = p.scale || [100, 100], op = p.opacity || [100, 100];
         // fast mode first: switching it on transfers the layer's transform, here the initial state (no change)
-        fx.property(FAST).setValue(fast ? 1 : 0);
-        fx.property(2).setValue(p.count);
-        fx.property(3).setValue(p.seed || 0);
-        for (var k = 0; k < 3; k++) { fx.property(4 + k).setValue(pos[k]); fx.property(7 + k).setValue(rot[k]); }
-        fx.property(10).setValue(sc[0]); fx.property(11).setValue(sc[1]);
-        fx.property(12).setValue(op[0]); fx.property(13).setValue(op[1]);
+        fx.property(FAST).setValue(fast ? 2 : 1);
+        fx.property("DupliX-0002").setValue(p.count);
+        fx.property("DupliX-0003").setValue(p.seed || 0);
+        for (var k = 0; k < 3; k++) { fx.property(dx(4 + k)).setValue(pos[k]); fx.property(dx(7 + k)).setValue(rot[k]); }
+        fx.property("DupliX-0010").setValue(sc[0]); fx.property("DupliX-0011").setValue(sc[1]);
+        fx.property("DupliX-0012").setValue(op[0]); fx.property("DupliX-0013").setValue(op[1]);
         for (var j = 0; j < 3; j++) {
-            fx.property(WPOS + j).setValue(w.pos[j]);
-            fx.property(WROT + j).setValue(w.rot[j]);
+            fx.property(dx(WPOS + j)).setValue(w.pos[j]);
+            fx.property(dx(WROT + j)).setValue(w.rot[j]);
         }
     }
     function build(c, fast, noFx) {
@@ -72,7 +73,7 @@
                 tg(cam).property("ADBE Anchor Point").setValue([230, 170, 100]);  // point of interest
             }
         }
-        if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_FAST_IMAGE"))));
+        if (!imgItem) imgItem = app.project.importFile(new ImportOptions(new File($.getenv("DUPLIX_FAST_IMAGE"))));
         var T = comp.layers.add(imgItem);
         T.name = "Target";
         // the initial state: anchor at the centre (default), position = comp centre, 100%, no rotation
@@ -91,13 +92,13 @@
             ds.property("ADBE Drop Shadow-0005").setValue(10);  // softness
         }
         if (noFx) return comp;
-        var fx = T.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
+        var fx = T.property("ADBE Effect Parade").addProperty("DupliX");
         setParams(fx, c.params, c.world, fast);
         // after switching fast mode on (switching on moves the layer's transform into the World Transform)
         if (fast && c.move2d) tg(T).property("ADBE Position").setValue([W / 2 + c.move2d[0], H / 2 + c.move2d[1]]);
         if (c.anim) {
             // the World Transform animates (script key times are comp times)
-            var wp = fx.property(WPOS), wr = fx.property(WROT + 1), wz = fx.property(WPOS + 2);
+            var wp = fx.property(dx(WPOS)), wr = fx.property(dx(WROT + 1)), wz = fx.property(dx(WPOS + 2));
             wp.setValueAtTime(0, -60); wp.setValueAtTime(29 / 30, 60);
             wz.setValueAtTime(0, 0); wz.setValueAtTime(29 / 30, 150);
             wr.setValueAtTime(0, 0); wr.setValueAtTime(29 / 30, 40);
@@ -137,7 +138,7 @@
             if (comp.layer(i).name === "Target") {
                 var par = comp.layer(i).property("ADBE Effect Parade");
                 for (var k = 1; k <= par.numProperties; k++)
-                    if (par.property(k).matchName === "RANDAMU Scatter") return par.property(k);
+                    if (par.property(k).matchName === "DupliX") return par.property(k);
             }
         return null;
     }
@@ -146,11 +147,11 @@
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
-        // RANDAMU_FAST_GPU: the project's GPU acceleration (SOFTWARE = CPU only, CUDA = the GPU path)
-        var gpu = $.getenv("RANDAMU_FAST_GPU") || "SOFTWARE";
+        // DUPLIX_FAST_GPU: the project's GPU acceleration (SOFTWARE = CPU only, CUDA = the GPU path)
+        var gpu = $.getenv("DUPLIX_FAST_GPU") || "SOFTWARE";
         app.project.gpuAccelType = GpuAccelType[gpu];
         log("gpu set: " + app.project.gpuAccelType);
-        var only = $.getenv("RANDAMU_FAST_ONLY") || "";
+        var only = $.getenv("DUPLIX_FAST_ONLY") || "";
         for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
             if (only && ("," + only + ",").indexOf("," + c.name + ",") < 0) continue;

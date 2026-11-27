@@ -22,7 +22,7 @@ def judge(a: np.ndarray, b: np.ndarray, base_mean: float = 0.0, base_frac: float
 
 def base(cpu: Path, gpu: Path, name: str) -> tuple[float, float, str]:
     """AE's own GPU-vs-CPU difference on the same frame in normal mode (r_nm_*): its half-resolution
-    resampling and GPU effects (e.g. a drop shadow) differ from the CPU ones, so randamu's drawing is judged on
+    resampling and GPU effects (e.g. a drop shadow) differ from the CPU ones, so DupliX's drawing is judged on
     top of that."""
     nm = name.replace("r_fm_", "r_nm_", 1)
     if not ((cpu / nm).exists() and (gpu / nm).exists()):

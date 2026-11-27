@@ -13,7 +13,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{7B1E4C1A-5D2F-4E8B-9C11-2A6F0D3E9B41}</ProjectGuid>
-    <RootNamespace>RandamuSpike</RootNamespace>
+    <RootNamespace>DupliXSpike</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -62,7 +62,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CustomBuild Include="RandamuSpikePiPL.r">
+    <CustomBuild Include="DupliXSpikePiPL.r">
       <Message>Compiling the PiPL</Message>
       <Command>cl /nologo /I "$(AESDK)\Headers" /EP "%(FullPath)" &gt; "$(IntDir)%(Filename).rr"
 pushd "$(IntDir)"
@@ -74,13 +74,13 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="$(IntDir)RandamuSpikePiPL.rc" />
+    <ResourceCompile Include="$(IntDir)DupliXSpikePiPL.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="RandamuSpike.h" />
+    <ClInclude Include="DupliXSpike.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="RandamuSpike.cpp" />
+    <ClCompile Include="DupliXSpike.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

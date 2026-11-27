@@ -3,15 +3,15 @@
 //   render "<case>_a" (comp + its _ref) -> change the target (in both) -> render "<case>_b".
 // A stale cache shows up as "<case>_b" not matching "<case>_b_ref" (check_s4.py), and as
 // 0 SmartRender calls after the "== step <case>_b" marker in plugin.log.
-// Env: RANDAMU_SPIKE_DIR (output dir), RANDAMU_SPIKE_LOG (plugin log), RANDAMU_S4_STEPS ("0" = only step 0).
+// Env: DUPLIX_SPIKE_DIR (output dir), DUPLIX_SPIKE_LOG (plugin log), DUPLIX_S4_STEPS ("0" = only step 0).
 (function () {
-    var outDir = $.getenv("RANDAMU_SPIKE_DIR");
+    var outDir = $.getenv("DUPLIX_SPIKE_DIR");
     var logFile = new File(outDir + "/s4_jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
-    var plog = new File($.getenv("RANDAMU_SPIKE_LOG"));
+    var plog = new File($.getenv("DUPLIX_SPIKE_LOG"));
     function mark(s) { plog.open("a"); plog.writeln("== step " + s); plog.close(); log("== step " + s); }
-    var onlyStep0 = $.getenv("RANDAMU_S4_STEPS") === "0";
+    var onlyStep0 = $.getenv("DUPLIX_S4_STEPS") === "0";
 
     try {
         app.beginSuppressDialogs();
@@ -49,7 +49,7 @@
 
         // S5b mode 1: the plugin takes geometry from AEGP. Remove the corner expressions so a
         // pass cannot come from expression-driven param changes.
-        if ($.getenv("RANDAMU_S5B") === "1") {
+        if ($.getenv("DUPLIX_S5B") === "1") {
             var stripped = 0;
             for (var ii = 1; ii <= app.project.numItems; ii++) {
                 var ci = app.project.item(ii);
@@ -59,20 +59,20 @@
                     if (!fxp) continue;
                     for (var fi = 1; fi <= fxp.numProperties; fi++) {
                         var fx = fxp.property(fi);
-                        if (fx.matchName !== "RNDM RandamuSpike") continue;
+                        if (fx.matchName !== "RNDM DupliXSpike") continue;
                         for (var pi = 1; pi <= fx.numProperties; pi++) {
                             var pp = fx.property(pi);
                             if (pp.canSetExpression && pp.expression !== "") { pp.expression = ""; stripped++; }
                         }
                         // product-like: no layer slots at all (AE then cannot track Target through them)
-                        if ($.getenv("RANDAMU_S4_NOSLOT") === "1") {
+                        if ($.getenv("DUPLIX_S4_NOSLOT") === "1") {
                             fx.property("Slot 1").setValue(0);
                             fx.property("Slot 2").setValue(0);
                         }
                     }
                 }
             }
-            log("S5b: stripped " + stripped + " expressions, noslot=" + $.getenv("RANDAMU_S4_NOSLOT"));
+            log("S5b: stripped " + stripped + " expressions, noslot=" + $.getenv("DUPLIX_S4_NOSLOT"));
         }
 
         // Step 0: same comp twice, nothing changed. The second render should come from the cache.
@@ -108,7 +108,7 @@
                 }]
             ];
             // S7 (every layer is a target): layer list changes
-            if ($.getenv("RANDAMU_S7") === "1") {
+            if ($.getenv("DUPLIX_S7") === "1") {
                 function addSolid3d(c, name, col, w, h, pos) {
                     var l = c.layers.addSolid(col, name, w, h, 1);
                     l.threeDLayer = true;

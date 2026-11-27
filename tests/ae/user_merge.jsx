@@ -1,13 +1,14 @@
-// A user's scene with the merge on and off (run_user_merge.ps1): opens the COPY named by RANDAMU_USER_AEP, logs
-// its structure, and for every comp holding a DupliX layer renders RANDAMU_UM_FRAMES frames spread over the comp
-// (or the frames listed in RANDAMU_UM_AT, comma separated) twice: every DupliX layer with merge on, then off.
-// Outputs <comp id>_<on|off>_<frame>.tif and plugin_<comp id>_<on|off>.log in RANDAMU_TEST_DIR.
+// A user's scene with the merge on and off (run_user_merge.ps1): opens the COPY named by DUPLIX_USER_AEP, logs
+// its structure, and for every comp holding a DupliX layer renders DUPLIX_UM_FRAMES frames spread over the comp
+// (or the frames listed in DUPLIX_UM_AT, comma separated) twice: every DupliX layer with merge on, then off.
+// Outputs <comp id>_<on|off>_<frame>.tif and plugin_<comp id>_<on|off>.log in DUPLIX_TEST_DIR.
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
-    var MERGE = "RANDAMU Scatter-0027";
+    var MERGE = "DupliX-0027";
     function fxList(L) {
         var r = [], p = L.property("ADBE Effect Parade");
         if (!p) return r;
@@ -16,12 +17,12 @@
     }
     function dupli(L) {
         var f = fxList(L);
-        for (var i = 0; i < f.length; i++) if (f[i].matchName === "RANDAMU Scatter") return f[i];
+        for (var i = 0; i < f.length; i++) if (f[i].matchName === "DupliX") return f[i];
         return null;
     }
     try {
         app.beginSuppressDialogs();
-        app.open(new File($.getenv("RANDAMU_USER_AEP")));
+        app.open(new File($.getenv("DUPLIX_USER_AEP")));
         var P = app.project;
         log("bpc=" + P.bitsPerChannel + " gpu=" + P.gpuAccelType);
         var comps = [];
@@ -49,7 +50,7 @@
             }
             if (has) comps.push(it);
         }
-        var n = parseInt($.getenv("RANDAMU_UM_FRAMES") || "8", 10), at = $.getenv("RANDAMU_UM_AT") || "";
+        var n = parseInt($.getenv("DUPLIX_UM_FRAMES") || "8", 10), at = $.getenv("DUPLIX_UM_AT") || "";
         for (var c = 0; c < comps.length; c++) {
             var src0 = comps[c], frames = [];
             var total = Math.round(src0.duration * src0.frameRate);
@@ -59,8 +60,8 @@
             for (var m = 0; m < modes.length; m++) {
                 var cc = src0.duplicate();
                 cc.name = "um_" + modes[m];
-                // experiments: RANDAMU_UM_DISABLE (a layer name: turned off), RANDAMU_UM_MOVEZ ("name:dz": moved in z)
-                var dis = $.getenv("RANDAMU_UM_DISABLE") || "", mv = $.getenv("RANDAMU_UM_MOVEZ") || "";
+                // experiments: DUPLIX_UM_DISABLE (a layer name: turned off), DUPLIX_UM_MOVEZ ("name:dz": moved in z)
+                var dis = $.getenv("DUPLIX_UM_DISABLE") || "", mv = $.getenv("DUPLIX_UM_MOVEZ") || "";
                 for (var j3 = 1; j3 <= cc.numLayers; j3++) {
                     var L3 = cc.layer(j3);
                     if (dis && L3.name === dis) { L3.enabled = false; log("disabled " + dis); }
@@ -75,21 +76,21 @@
                     var d2 = dupli(cc.layer(j2));
                     if (d2) d2.property(MERGE).setValue(modes[m] === "on" ? 1 : 0);
                 }
-                // RANDAMU_UM_SET ("layer:index=value;..."): a DupliX parameter of a named layer set (e.g. the world
+                // DUPLIX_UM_SET ("layer:index=value;..."): a DupliX parameter of a named layer set (e.g. the world
                 // rotation Y, index 21)
-                var sets = ($.getenv("RANDAMU_UM_SET") || "").split(";");
+                var sets = ($.getenv("DUPLIX_UM_SET") || "").split(";");
                 for (var si = 0; si < sets.length; si++) {
                     var mm = /^(.+):(\d+)=(-?[\d.]+)$/.exec(sets[si]);
                     if (!mm) continue;
                     for (var j4 = 1; j4 <= cc.numLayers; j4++) {
                         var d4 = cc.layer(j4).name === mm[1] ? dupli(cc.layer(j4)) : null;
-                        if (d4) { d4.property(parseInt(mm[2], 10)).setValue(parseFloat(mm[3])); log("set " + sets[si]); }
+                        if (d4) { d4.property(dx(parseInt(mm[2], 10))).setValue(parseFloat(mm[3])); log("set " + sets[si]); }
                     }
                 }
                 var tag = src0.id + "_" + modes[m];
-                $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
-                $.setenv("RANDAMU_CACHE_SALT", "um-" + tag + "-" + new Date().getTime());
-                $.setenv("RANDAMU_MERGE_DUMP", (outDir + "/plan_" + tag + ".txt").replace(/\//g, "\\"));
+                $.setenv("DUPLIX_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
+                $.setenv("DUPLIX_CACHE_SALT", "um-" + tag + "-" + new Date().getTime());
+                $.setenv("DUPLIX_MERGE_DUMP", (outDir + "/plan_" + tag + ".txt").replace(/\//g, "\\"));
                 for (var fi = 0; fi < frames.length; fi++) {
                     app.purge(PurgeTarget.ALL_CACHES);
                     var rq = P.renderQueue.items.add(cc);
@@ -116,7 +117,7 @@
                 }
             }
         }
-        $.setenv("RANDAMU_LOG", "");
+        $.setenv("DUPLIX_LOG", "");
         log("done");
     } catch (e) {
         log("EXCEPTION " + e.message + " (line " + e.line + ")");

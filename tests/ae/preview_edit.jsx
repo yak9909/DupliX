@@ -5,7 +5,7 @@
 // duplicate of the comp (nothing cached for it) at that frame. edit_<comp>_<n>.png must equal ref_<comp>_<n>.png
 // (check_preview_edit.py). Writes step_done.txt at the end.
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     // the script arrived (run_preview.ps1 sends it again when this file does not appear; only the first runs)
     var got = new File(outDir + "/script_got.txt");
     if (got.exists) return;
@@ -18,7 +18,7 @@
     function fxOf(L) {
         var p = L.property("ADBE Effect Parade");
         if (!p) return null;
-        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "DupliX") return p.property(i);
         return null;
     }
     function compNamed(n) {
@@ -29,17 +29,17 @@
         return null;
     }
     function dupliOf(c) {
-        var lname = $.getenv("RANDAMU_PV_LAYER") || "";
+        var lname = $.getenv("DUPLIX_PV_LAYER") || "";
         var T = null;
         for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a)) && (!lname || c.layer(a).name === lname)) T = c.layer(a);
         return fxOf(T);
     }
-    // the edits, applied one after another (property index = RP_* in src/effect/randamu_params.h)
+    // the edits, applied one after another (property index = RP_* in src/effect/duplix_params.h)
     var edits = [
-        function (fx) { fx.property(2).setValue(fx.property(2).value + 7); },          // count
-        function (fx) { fx.property(3).setValue(fx.property(3).value + 1); },          // seed
-        function (fx) { fx.property(12).setValue(20); fx.property(13).setValue(60); }, // opacity range
-        function (fx) { fx.property(2).setValue(fx.property(2).value - 3); },          // count back down
+        function (fx) { fx.property("DupliX-0002").setValue(fx.property("DupliX-0002").value + 7); },          // count
+        function (fx) { fx.property("DupliX-0003").setValue(fx.property("DupliX-0003").value + 1); },          // seed
+        function (fx) { fx.property("DupliX-0012").setValue(20); fx.property("DupliX-0013").setValue(60); }, // opacity range
+        function (fx) { fx.property("DupliX-0002").setValue(fx.property("DupliX-0002").value - 3); },          // count back down
         function (fx) {                                                                // another effect on the layer
             var L = fx.parentProperty.parentProperty, P = L.property("ADBE Effect Parade");
             for (var i = 1; i <= P.numProperties; i++) {
@@ -49,7 +49,7 @@
                     if (e.property(q).propertyValueType === PropertyValueType.COLOR) e.property(q).expression = "[0.9, 0.2, 0.1, 1]";
                 return;
             }
-            fx.property(3).setValue(fx.property(3).value + 1);  // no Fill: the seed again
+            fx.property("DupliX-0003").setValue(fx.property("DupliX-0003").value + 1);  // no Fill: the seed again
         }
     ];
     // a queue of steps; each waits for the previous PNG (saveFrameToPng returns before the frame is written)

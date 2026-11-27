@@ -1,4 +1,4 @@
-// randamu core: geometry of the fast mode (all copies drawn into one image on a screen-aligned plane).
+// DupliX core: geometry of the fast mode (all copies drawn into one image on a screen-aligned plane).
 // No After Effects dependency. Matrices are row vectors (p' = p * M), row 3 = translation, like AEGP.
 #pragma once
 

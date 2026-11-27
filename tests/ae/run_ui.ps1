@@ -36,12 +36,12 @@ if ($jsxOk) {
     $null = Repair-AeCrashState
     Get-ChildItem $outDir -Filter "r_kf_*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
     $sf = "C:\Program Files\Adobe\Adobe After Effects 2025\Support Files"
-    $env:RANDAMU_LOG = Join-Path $outDir "plugin_aer.log"
+    $env:DUPLIX_LOG = Join-Path $outDir "plugin_aer.log"
     $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow `
         -RedirectStandardOutput (Join-Path $outDir "aerender.log") `
         -ArgumentList @("-project", "`"$(Join-Path $outDir 'ui.aep')`"", "-v", "ERRORS_AND_PROGRESS")
     if (-not $p.WaitForExit($RenderTimeoutSec * 1000)) { Write-Host "TIMEOUT aerender"; $p.Kill(); $fail++ }
-    Remove-Item env:RANDAMU_LOG
+    Remove-Item env:DUPLIX_LOG
     $tif = Get-ChildItem $outDir -Filter "r_kf_*.tif" | Select-Object -First 1 -ExpandProperty FullName
     if (-not $tif) { Write-Host "  kf aerender output MISSING"; $fail++ }
     else {

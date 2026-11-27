@@ -1,4 +1,4 @@
-// randamu core: the body of AE's classic 3D span drawing (core/ae_span.h), shared by the CPU (C++) and the GPU (CUDA,
+// DupliX core: the body of AE's classic 3D span drawing (core/ae_span.h), shared by the CPU (C++) and the GPU (CUDA,
 // src/gpu/fast_raster.cu) so both compute the same pixels. Every float operation follows Advanced3D.aex / PF.dll's
 // machine code (order and precision); the CUDA build must not contract (nvcc --fmad=false) and keeps IEEE division.
 #pragma once

@@ -1,4 +1,4 @@
-// randamu unit tests (no framework). Exit code = number of failed checks.
+// DupliX unit tests (no framework). Exit code = number of failed checks.
 #define NOMINMAX
 #include <windows.h>
 #undef near  // windows.h's old pointer keywords; the tests use these names
@@ -24,7 +24,7 @@
 #include "core/fast_plane.h"
 #include "core/merge_geom.h"
 #include "core/merge_plan.h"
-#include "effect/randamu_params.h"
+#include "effect/duplix_params.h"
 #include "core/raster.h"
 #include "core/raster_ref.h"
 #include "core/tiles.h"
@@ -1586,7 +1586,7 @@ TEST(fb_representative_on_screen)
 
 // ---- core/ae_pair against Advanced3D's own pair test, called in this process: the AE 2025 Advanced3D.aex is loaded
 // (with its Support Files for its DLLs) and sub_18002B040 is called on surfaces made here, the same inputs given to
-// AePairBoxes / AePairSamples. Skipped when AE 2025 is not installed. RANDAMU_PAIR_FUZZ: the number of cases.
+// AePairBoxes / AePairSamples. Skipped when AE 2025 is not installed. DUPLIX_PAIR_FUZZ: the number of cases.
 namespace pairfuzz {
 typedef void (*PairFn)(uintptr_t a, uintptr_t b, unsigned char* f1, unsigned char* f2);
 // a surface as sub_18002B040 reads it: +8 x0, +0x10 y0, +0x18 x1, +0x20 y1, +0xC8 its samples (192 bytes each),
@@ -1713,7 +1713,7 @@ TEST(ae_pair_matches_advanced3d)
     CHECK(stubs);
     if (!stubs) return;
     char ev[16] = {0};
-    const int cases = GetEnvironmentVariableA("RANDAMU_PAIR_FUZZ", ev, sizeof(ev)) > 0 ? atoi(ev) : 200000;
+    const int cases = GetEnvironmentVariableA("DUPLIX_PAIR_FUZZ", ev, sizeof(ev)) > 0 ? atoi(ev) : 200000;
     unsigned s = 20261126;
     auto r01 = [&] { return (s = s * 1103515245u + 12345u, (s >> 8) / 16777216.0); };
     // coordinates: often on a coarse grid (shared lines, touching corners, equal values), sometimes free
@@ -1804,13 +1804,22 @@ TEST(fb_plan_speed)
     }
 }
 
-// The merge checkbox goes after every shipped parameter (stream indices and disk IDs never move) and fits in
-// ScatterParams' padding (the saved sequence data keeps its size); it is off by default.
-TEST(params_merge_last)
+// The parameter layout (duplix_params.h): the order of the groups, every group closed, the disk IDs of the
+// parameters that existed before the layout kept (projects keep their values), the new ones after the last old one;
+// ScatterParams keeps its size (the saved sequence data) and Optimize is off by default.
+TEST(params_layout)
 {
-    CHECK(RP_MERGE == RP_WORLD_TOPIC_END + 1);
-    CHECK(RP_NUM_PARAMS == RP_MERGE + 1);
-    CHECK(RD_MERGE == RD_WORLD_TOPIC_END + 1);
+    CHECK(RP_COUNT == 1 && RP_SEED == 2 && RP_KEEP_FIRST == 3);
+    CHECK(RP_POS_TOPIC_END == RP_POS_TOPIC + 4 && RP_ROT_TOPIC == RP_POS_TOPIC_END + 1);
+    CHECK(RP_ROT_TOPIC_END == RP_ROT_TOPIC + 4 && RP_SCALE_TOPIC == RP_ROT_TOPIC_END + 1);
+    CHECK(RP_SCALE_TOPIC_END == RP_SCALE_TOPIC + 3 && RP_OPACITY_TOPIC == RP_SCALE_TOPIC_END + 1);
+    CHECK(RP_OPACITY_TOPIC_END == RP_OPACITY_TOPIC + 3 && RP_WORLD_TOPIC == RP_OPACITY_TOPIC_END + 1);
+    CHECK(RP_WORLD_TOPIC_END == RP_WORLD_TOPIC + 10 && RP_RENDER_TOPIC == RP_WORLD_TOPIC_END + 1);
+    CHECK(RP_RENDER_MODE == RP_RENDER_TOPIC + 1 && RP_MERGE == RP_RENDER_MODE + 1);
+    CHECK(RP_RENDER_TOPIC_END == RP_MERGE + 1 && RP_NUM_PARAMS == RP_RENDER_TOPIC_END + 1);
+    CHECK(RD_COUNT == 2 && RD_KEEP_FIRST == 14 && RD_WORLD_TOPIC == 16 && RD_WORLD_SCALE_Z == 25 && RD_MERGE == 27);
+    CHECK(RD_POS_TOPIC == RD_MERGE + 1 && RD_RENDER_MODE == 37 && RD_RENDER_TOPIC_END == 38);
+    CHECK(IsFastMode(RM_FAST_2D) && !IsFastMode(RM_3D_LAYERS));
     CHECK(sizeof(rnd::ScatterParams) == 96);
     rnd::ScatterParams p;
     CHECK(!p.merge);
@@ -2094,8 +2103,8 @@ TEST(vec_reserve_small_and_aligned)
     CHECK(v.end - v.first == 25600);
 }
 
-// ---- AE's span drawing (core/ae_span) against captures of AE drawing a copy (RANDAMU_A3D_DRAW=3). The capture
-// directories come from RANDAMU_SPAN_CAP (separated by ';'); without it the test only checks the pieces.
+// ---- AE's span drawing (core/ae_span) against captures of AE drawing a copy (DUPLIX_A3D_DRAW=3). The capture
+// directories come from DUPLIX_SPAN_CAP (separated by ';'); without it the test only checks the pieces.
 static std::vector<unsigned char> ReadAll(const std::string& path)
 {
     std::vector<unsigned char> b;
@@ -2177,7 +2186,7 @@ TEST(ae_span_pieces)
     rnd::AeXferInFront8(s0, 255, rcp, d0);
     CHECK(d0[1] == 1 && d0[2] == 2 && d0[3] == 3);
     char env[2048] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_SPAN_CAP", env, sizeof(env)) > 0) {
+    if (GetEnvironmentVariableA("DUPLIX_SPAN_CAP", env, sizeof(env)) > 0) {
         std::string all = env;
         size_t a = 0;
         while (a <= all.size()) {

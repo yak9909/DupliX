@@ -1,4 +1,4 @@
-// randamu core: the effect's World Transform (both modes). No After Effects dependency.
+// DupliX core: the effect's World Transform (both modes). No After Effects dependency.
 // Matrices are row vectors (p' = p * M), row 3 = translation, like AEGP and detail::MakeM4.
 #pragma once
 

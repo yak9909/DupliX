@@ -1,13 +1,14 @@
 // The user's report (11/26 night, Test D): turning the orbit null about Y (40..75 deg) moves where the house cuts
 // a copy of the blue flower, while a real layer at the same place (layer 7 of Test D) keeps its cut.
-// Opens the COPY named by RANDAMU_USER_AEP, logs the structure, and for each angle of RANDAMU_OC_DEGS renders frame
-// RANDAMU_OC_FRAME (default 0) in the variants of RANDAMU_OC_VARIANTS (comma separated):
-//   dx    the DupliX layer in normal mode (merge off), the reference layer (RANDAMU_OC_REF, default 7) off
+// Opens the COPY named by DUPLIX_USER_AEP, logs the structure, and for each angle of DUPLIX_OC_DEGS renders frame
+// DUPLIX_OC_FRAME (default 0) in the variants of DUPLIX_OC_VARIANTS (comma separated):
+//   dx    the DupliX layer in normal mode (merge off), the reference layer (DUPLIX_OC_REF, default 7) off
 //   dxon  the same with the merge on
 //   real  the DupliX layer off, the reference layer on
-// Outputs <variant>_<deg>.tif in RANDAMU_TEST_DIR.
+// Outputs <variant>_<deg>.tif in DUPLIX_TEST_DIR.
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -15,13 +16,13 @@
     function dupli(L) {
         var p = L.property("ADBE Effect Parade");
         if (!p) return null;
-        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "DupliX") return p.property(i);
         return null;
     }
     function v3(p) { try { var v = p.value; return v.length ? "[" + v.join(",") + "]" : "" + v; } catch (e) { return "?"; } }
     try {
         app.beginSuppressDialogs();
-        app.open(new File($.getenv("RANDAMU_USER_AEP")));
+        app.open(new File($.getenv("DUPLIX_USER_AEP")));
         var P = app.project, main = null;
         for (var i = 1; i <= P.numItems && !main; i++) {
             var it = P.item(i);
@@ -48,11 +49,11 @@
             }
             log(s + (d ? " dupli:" + dv : ""));
         }
-        var degs = ($.getenv("RANDAMU_OC_DEGS") || "40,50,60,75").split(",");
-        var variants = ($.getenv("RANDAMU_OC_VARIANTS") || "dx,real").split(",");
-        var refIdx = parseInt($.getenv("RANDAMU_OC_REF") || "7", 10);
+        var degs = ($.getenv("DUPLIX_OC_DEGS") || "40,50,60,75").split(",");
+        var variants = ($.getenv("DUPLIX_OC_VARIANTS") || "dx,real").split(",");
+        var refIdx = parseInt($.getenv("DUPLIX_OC_REF") || "7", 10);
         var const_keep = false;
-        var frame = parseInt($.getenv("RANDAMU_OC_FRAME") || "0", 10);
+        var frame = parseInt($.getenv("DUPLIX_OC_FRAME") || "0", 10);
         while (P.renderQueue.numItems > 0) P.renderQueue.item(1).remove();
         for (var vi = 0; vi < variants.length; vi++) {
             var vname = variants[vi];
@@ -63,9 +64,9 @@
                 if (c.layer(a) instanceof CameraLayer) cam = c.layer(a);
                 if (dupli(c.layer(a)) && (!D || c.layer(a).enabled)) D = c.layer(a);
             }
-            // RANDAMU_OC_REF=dupe: the reference layer is a copy of the DupliX layer without its effects (twins with
+            // DUPLIX_OC_REF=dupe: the reference layer is a copy of the DupliX layer without its effects (twins with
             // the copies' own source)
-            if ($.getenv("RANDAMU_OC_REF") === "dupe") {
+            if ($.getenv("DUPLIX_OC_REF") === "dupe") {
                 R = D.duplicate();
                 var fxp = R.property("ADBE Effect Parade");
                 while (fxp.numProperties > 0) fxp.property(1).remove();
@@ -73,27 +74,27 @@
             } else {
                 R = c.layer(refIdx);
             }
-            // RANDAMU_OC_SET ("index=value;..."): DupliX parameters set (e.g. 21=7, the world rotation Y)
-            var ocSets = ($.getenv("RANDAMU_OC_SET") || "").split(";");
+            // DUPLIX_OC_SET ("index=value;..."): DupliX parameters set (e.g. 21=7, the world rotation Y)
+            var ocSets = ($.getenv("DUPLIX_OC_SET") || "").split(";");
             for (var os = 0; os < ocSets.length; os++) {
                 var om2 = /^(\d+)=(-?[\d.]+)$/.exec(ocSets[os]);
-                if (om2) dupli(D).property(parseInt(om2[1], 10)).setValue(parseFloat(om2[2]));
+                if (om2) dupli(D).property(dx(parseInt(om2[1], 10))).setValue(parseFloat(om2[2]));
             }
-            // RANDAMU_OC_KEEPCAM=1: the orbit null as it is (RANDAMU_OC_DEGS only names the outputs)
-            const_keep = $.getenv("RANDAMU_OC_KEEPCAM") === "1";
+            // DUPLIX_OC_KEEPCAM=1: the orbit null as it is (DUPLIX_OC_DEGS only names the outputs)
+            const_keep = $.getenv("DUPLIX_OC_KEEPCAM") === "1";
             if (!const_keep && (!cam || !cam.parent)) throw new Error("camera without an orbit null");
             if (vname === "real") { D.enabled = false; R.enabled = true; }
             else if (vname.indexOf("twin") === 0) {
-                // a real layer per copy with the copy's world matrix (RANDAMU_OC_TWINS: "px py pz rx ry rz" per line,
+                // a real layer per copy with the copy's world matrix (DUPLIX_OC_TWINS: "px py pz rx ry rz" per line,
                 // copy order), made from the reference layer (same source and anchor) with orientation 0
-                var tf = new File($.getenv("RANDAMU_OC_TWINS"));
+                var tf = new File($.getenv("DUPLIX_OC_TWINS"));
                 tf.open("r");
                 var lines = [];
                 while (!tf.eof) { var ln = tf.readln(); if (ln) lines.push(ln); }
                 tf.close();
-                // only these copies' twins (copy numbers, comma separated); RANDAMU_OC_TWIN_ONLY_<variant> for a variant
+                // only these copies' twins (copy numbers, comma separated); DUPLIX_OC_TWIN_ONLY_<variant> for a variant
                 // named twin<something>, so that several subsets render in one session
-                var only = $.getenv("RANDAMU_OC_TWIN_ONLY_" + vname) || $.getenv("RANDAMU_OC_TWIN_ONLY");
+                var only = $.getenv("DUPLIX_OC_TWIN_ONLY_" + vname) || $.getenv("DUPLIX_OC_TWIN_ONLY");
                 if (only) {
                     var oa = only.split(","), sub = [];
                     for (var oi = 0; oi < oa.length; oi++) sub.push(lines[parseInt(oa[oi], 10)]);
@@ -117,10 +118,10 @@
                     LT.property("ADBE Rotate Z").setValue(parseFloat(f6[5]));
                 }
                 log("twins: " + lines.length + " layers, comp has " + c.numLayers);
-                // RANDAMU_OC_PIVOT ("x,y,z") and RANDAMU_OC_PIVOT_RY_<variant> (degrees): every twin parented to a 3D
+                // DUPLIX_OC_PIVOT ("x,y,z") and DUPLIX_OC_PIVOT_RY_<variant> (degrees): every twin parented to a 3D
                 // null at the pivot (parenting keeps their place), then the null turned about Y: the twins of one
                 // state turned as a whole, without any data of the turned state
-                var pv = $.getenv("RANDAMU_OC_PIVOT");
+                var pv = $.getenv("DUPLIX_OC_PIVOT");
                 if (pv) {
                     var pc = pv.split(",");
                     var nl = c.layers.addNull();
@@ -128,7 +129,7 @@
                     nl.name = "oc_pivot";
                     tg(nl).property("ADBE Position").setValue([parseFloat(pc[0]), parseFloat(pc[1]), parseFloat(pc[2])]);
                     for (var pi = 0; pi < twinLayers.length; pi++) twinLayers[pi].parent = nl;
-                    var pry = parseFloat($.getenv("RANDAMU_OC_PIVOT_RY_" + vname) || "0");
+                    var pry = parseFloat($.getenv("DUPLIX_OC_PIVOT_RY_" + vname) || "0");
                     tg(nl).property("ADBE Rotate Y").setValue(pry);
                     log("pivot " + pv + " ry " + pry);
                 }
@@ -136,7 +137,7 @@
             else {
                 R.enabled = false;
                 D.enabled = true;
-                dupli(D).property("RANDAMU Scatter-0027").setValue(vname === "dxon" ? 1 : 0);
+                dupli(D).property("DupliX-0027").setValue(vname === "dxon" ? 1 : 0);
             }
             var ry = const_keep ? null : tg(cam.parent).property("ADBE Rotate Y");
             for (var di = 0; di < degs.length; di++) {
@@ -145,8 +146,8 @@
                     ry.setValue(parseFloat(degs[di]));
                 }
                 var tag = vname + "_" + degs[di];
-                $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
-                $.setenv("RANDAMU_CACHE_SALT", "oc-" + tag + "-" + new Date().getTime());
+                $.setenv("DUPLIX_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
+                $.setenv("DUPLIX_CACHE_SALT", "oc-" + tag + "-" + new Date().getTime());
                 app.purge(PurgeTarget.ALL_CACHES);
                 var rq = P.renderQueue.items.add(c);
                 var om = rq.outputModule(1);
@@ -171,9 +172,9 @@
                 log("rendered " + tag + (fl.length ? "" : " (no output)") + " cam=" + (cam ? cam.name : "-") + " null=" + (cam && cam.parent ? cam.parent.name : "-"));
             }
         }
-        $.setenv("RANDAMU_LOG", "");
-        // RANDAMU_OC_SAVE: save the project with the variant comps (oc_<variant>) for a check by eye
-        var savePath = $.getenv("RANDAMU_OC_SAVE");
+        $.setenv("DUPLIX_LOG", "");
+        // DUPLIX_OC_SAVE: save the project with the variant comps (oc_<variant>) for a check by eye
+        var savePath = $.getenv("DUPLIX_OC_SAVE");
         if (savePath) { P.save(new File(savePath)); log("saved " + savePath); }
         log("done");
     } catch (ex) {

@@ -1,4 +1,4 @@
-// randamu core: the merge optimisation (normal mode, spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md).
+// DupliX core: the merge optimisation (normal mode, spec docs/superpowers/specs/2026-11-25-merge-optimization-design.md).
 // The data of one frame of a comp, the whole-layer reasons not to merge, and the plan (which copies AE draws one
 // by one, which are drawn by DupliX into a group plane). No After Effects dependency.
 // Matrices are row vectors (p' = p * M), row 3 = translation, like AEGP.
@@ -115,12 +115,12 @@ struct MergePlan {
     // others: with an unsure pair (margin band, sliver, crossing, level), between surfaces (something in front and
     // something behind), alone in their group (a group of one is drawn one by one); then the unsure pairs of two
     // copies and of a copy and another surface, each by its reason: a sliver, no depth there, level or crossing;
-    // [12] 1 when the budget ran out (the plan is BuildIsolatedGroupPlan's); [13] (diagnostics, RANDAMU_PLAN_MEETS=1)
+    // [12] 1 when the budget ran out (the plan is BuildIsolatedGroupPlan's); [13] (diagnostics, DUPLIX_PLAN_MEETS=1)
     // BuildIsolatedGroupPlan's overlapping pairs of grouped copies that meet in 3D
     int fb[14] = {};
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
-    // diagnostics (RANDAMU_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
+    // diagnostics (DUPLIX_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
     struct DebugCopy {
         int layer, copy, group;
         double x[4], y[4], zMin, zMax;

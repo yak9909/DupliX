@@ -1,5 +1,5 @@
 {
-  "comment": "Reference comparison cases. params -> randamu effect (probe) and randamu_dump (ref copies). ref: copies | plain (target alone, no effect) | none (no target). See tests/ae/make_ref.jsx.",
+  "comment": "Reference comparison cases. params -> DupliX effect (probe) and duplix_dump (ref copies). ref: copies | plain (target alone, no effect) | none (no target). See tests/ae/make_ref.jsx.",
   "cases": [
     {"name": "baseline",   "params": {"count": 5, "seed": 1, "pos": [150, 100, 300]}},
     {"name": "rotate",     "params": {"count": 5, "seed": 2, "pos": [150, 100, 300], "rot": [60, 60, 60]}},

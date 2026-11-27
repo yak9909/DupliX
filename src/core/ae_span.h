@@ -1,4 +1,4 @@
-// randamu core: After Effects 2025's classic 3D span drawing of one textured surface (8 bpc), rebuilt from its
+// DupliX core: After Effects 2025's classic 3D span drawing of one textured surface (8 bpc), rebuilt from its
 // machine code so that DupliX can draw copies with exactly AE's pixels (docs/experiments/2026-11-26-a3d-span-notes.md).
 // Covered: one motion sample, quality 0 (nearest) / 1 (bilinear, area), transfer "in front" without blending tables,
 // no lights, no mask, AE's SIMD paths (U_G_CPU_DataP + 8 != 0). The arithmetic is in core/ae_span_impl.h (shared

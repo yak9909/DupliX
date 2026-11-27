@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17、MSVC v143（`pwsh tools/build.ps1`）、AE SDK 25.6、ExtendScript、PowerShell 7、Python（`spike\.venv`）。
 
-**Spec:** `docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md` の 12.13（11/25 の決定を本計画と同時に追記する）、12.11（高速モードで失われるもの）。前の計画 `docs/superpowers/plans/2026-11-24-fast-mode.md` と判断の一覧 `2026-11-24-fast-mode-rulings.md`（ストレートアルファなど）も読む。
+**Spec:** `docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md` の 12.13（11/25 の決定を本計画と同時に追記する）、12.11（高速モードで失われるもの）。前の計画 `docs/superpowers/plans/2026-11-24-fast-mode.md` と判断の一覧 `2026-11-24-fast-mode-rulings.md`（ストレートアルファなど）も読む。
 
 ## 利用者の決定（11/25。蒸し返さない）
 
@@ -47,7 +47,7 @@
 2. **書き写しを 1 回の取り消しで全部戻せる**（3D スイッチ・位置・親・キーフレーム・ワールド変形の値） → Task 5 の `toggle_undo` の確認。
 3. **高速モードでカメラやワールド変形が動くとき、キャッシュが古い絵を返さない**（2D レイヤーはカメラに依存すると AE が知らない） → Task 4 の `fast_anim`。
 4. **既存のプロジェクト（ワールド変形のパラメータがない頃に保存）を開いても、通常モードの見た目が変わらない** → Task 3 の `run_ref.ps1`（既定値で単位行列）と、Task 3 Step 6 の旧 aep を開く確認。
-5. **フックが入らない版・設定でも高速モードは動く** → Task 4 の `fast_nohooks`（`RANDAMU_HOOKMASK=0`）。
+5. **フックが入らない版・設定でも高速モードは動く** → Task 4 の `fast_nohooks`（`DUPLIX_HOOKMASK=0`）。
 
 ---
 
@@ -57,8 +57,8 @@
 src/core/world.h, world.cpp        … ワールド変形の構造体、G の組み立て、行列の分解、書き写しの式（純粋関数）
 src/core/raster.h, raster.cpp      … 出力の座標のずらし（画面 px ↔ レイヤー px）を足す
 src/core/fast_plane.h, .cpp        … PlaneM4・AnchorDepth を消す（CopyHomography・CopyDepth は残す）
-src/effect/randamu_params.h        … ワールド変形のパラメータを末尾に追加
-src/effect/randamu.cpp             … パラメータ、通常モードの登録に G、高速モードの前処理・描画、書き写し、状態の欄
+src/effect/duplix_params.h        … ワールド変形のパラメータを末尾に追加
+src/effect/duplix.cpp             … パラメータ、通常モードの登録に G、高速モードの前処理・描画、書き写し、状態の欄
 src/effect/transfer.h, .cpp        … 書き写し（AEGP でレイヤーを読む・書く、取り消しの単位）
 src/hook/registry.h                … ParamSnapshot に WorldXform を足す
 src/hook/bee_hooks.cpp             … ワールド変形を読み、M4 に G を掛ける。高速モードの分岐を消す
@@ -79,7 +79,7 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
 - Create: `spike/transfer_probe/`（使い捨て。実験コードは製品に流用しない。結果は開発記録に書く）
 - Modify: `docs/experiments/2026-11-25-dev-log.md`（新規でよい。事実と、うまくいかなかったこと）
 
-- [ ] **Step 1: 実験用のビルド** — 今のエフェクトに、環境変数 `RANDAMU_PROBE_TRANSFER=1` のときだけ動く分岐を一時的に足す（実験が済んだら消す）: 「高速モード」に `PF_ParamFlag_SUPERVISE` を付け、`USER_CHANGED_PARAM` で `RP_FAST` が変わったら、(a) `params[RP_POS_X]` の値を書き換えて `PF_ChangeFlag_CHANGED_VALUE` を立てる、(b) `AEGP_StartUndoGroup` → `AEGP_SetStreamValue` でレイヤーの位置を変える → `AEGP_SetLayerParent(L, nullptr)` → `AEGP_SetLayerFlag(L, AEGP_LayerFlag_LAYER_IS_3D, FALSE)` → `AEGP_EndUndoGroup`、をログ付きで行う。キーフレーム付きのストリームは `AEGP_DeleteKeyframe` で消してから値を設定、エクスプレッションは `AEGP_SetExpressionState(FALSE)` か `AEGP_SetExpression` で空にする。
+- [ ] **Step 1: 実験用のビルド** — 今のエフェクトに、環境変数 `DUPLIX_PROBE_TRANSFER=1` のときだけ動く分岐を一時的に足す（実験が済んだら消す）: 「高速モード」に `PF_ParamFlag_SUPERVISE` を付け、`USER_CHANGED_PARAM` で `RP_FAST` が変わったら、(a) `params[RP_POS_X]` の値を書き換えて `PF_ChangeFlag_CHANGED_VALUE` を立てる、(b) `AEGP_StartUndoGroup` → `AEGP_SetStreamValue` でレイヤーの位置を変える → `AEGP_SetLayerParent(L, nullptr)` → `AEGP_SetLayerFlag(L, AEGP_LayerFlag_LAYER_IS_3D, FALSE)` → `AEGP_EndUndoGroup`、をログ付きで行う。キーフレーム付きのストリームは `AEGP_DeleteKeyframe` で消してから値を設定、エクスプレッションは `AEGP_SetExpressionState(FALSE)` か `AEGP_SetExpression` で空にする。
 - [ ] **Step 2: 確かめる** — 見えないデスクトップの AE（`run_jsx.ps1`）で、次をログで確かめる。
   1. スクリプトの `fx.property(15).setValue(1)` で `USER_CHANGED_PARAM` が来るか（来なければ、書き写しの自動試験は Task 5 で手動の確認に切り替える。その旨を記録）。
   2. (a)(b) がすべて成功し、AE が止まらず、`app.executeCommand(16)`（取り消し）1 回で全部戻るか。
@@ -93,7 +93,7 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
 ### Task 2: ワールド変形の計算（純粋関数）
 
 **Files:**
-- Create: `src/core/world.h`, `src/core/world.cpp`（`randamu.vcxproj`・`unit_tests.vcxproj` に追加）
+- Create: `src/core/world.h`, `src/core/world.cpp`（`duplix.vcxproj`・`unit_tests.vcxproj` に追加）
 - Test: `tests/unit/unit_tests.cpp`
 
 **Interfaces:**
@@ -120,7 +120,7 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
 ### Task 3: ワールド変形のパラメータと通常モード
 
 **Files:**
-- Modify: `src/effect/randamu_params.h`、`src/effect/randamu.cpp`、`src/hook/registry.h`、`src/hook/bee_hooks.cpp`、`tests/ae/make_ref.jsx`（パラメータの番号が変わらないことの確認だけ）
+- Modify: `src/effect/duplix_params.h`、`src/effect/duplix.cpp`、`src/hook/registry.h`、`src/hook/bee_hooks.cpp`、`tests/ae/make_ref.jsx`（パラメータの番号が変わらないことの確認だけ）
 - Create: `tests/ae/world_xform.jsx`, `tests/ae/check_world_xform.py`
 
 **Interfaces:**
@@ -144,7 +144,7 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
 ### Task 4: 高速モードを 2D レイヤーの普通のプラグインに作り直す
 
 **Files:**
-- Modify: `src/effect/randamu.cpp`、`src/core/raster.h`、`src/core/raster.cpp`、`src/core/fast_plane.*`、`src/hook/bee_hooks.cpp`、`src/hook/bee_hooks.h`
+- Modify: `src/effect/duplix.cpp`、`src/core/raster.h`、`src/core/raster.cpp`、`src/core/fast_plane.*`、`src/hook/bee_hooks.cpp`、`src/hook/bee_hooks.h`
 - Delete: `src/hook/fast_registry.h`、`src/hook/fast_registry.cpp`（vcxproj からも）、単体テストの `fast_registry_*`・`fast_plane_maps_pixels_1to1`・`fast_plane_depth_is_anchor`
 - Rewrite: `tests/ae/fast_mode.jsx`、`tests/ae/check_fast_mode.py`、`tests/ae/run_fast_mode.ps1`
 - Test: `tests/unit/unit_tests.cpp`
@@ -177,7 +177,7 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
   | `fast_count0` | コピー 0 枚 | fm が全面透明 |
   | `fast_grow` | 前にドロップシャドウ（入力の原点が負） | `fast_scatter` と同じ |
   | `fast_move2d` | `fast_scatter` の fm で、レイヤーの 2D の位置を (+50, +20) | fm の絵が fm_scatter を (50, 20) ずらしたものと差の最大 ≤ 1 |
-  | `fast_nohooks` | `RANDAMU_HOOKMASK=0` で aerender、`fast_scatter` の fm | `fast_scatter` の fm と差の最大 ≤ 1 |
+  | `fast_nohooks` | `DUPLIX_HOOKMASK=0` で aerender、`fast_scatter` の fm | `fast_scatter` の fm と差の最大 ≤ 1 |
   | `fast_remove` | 高速モードのままエフェクトを削除（同じセッション） | 素のレイヤーと一致（今の試験と同じ） |
 
   `fast_toggle` は Task 5 の書き写しの試験に移すので消す。
@@ -191,9 +191,9 @@ AE の中でしか分からない 4 点を先に確かめる。1 つでも駄目
 
 **Files:**
 - Create: `src/effect/transfer.h`, `src/effect/transfer.cpp`（vcxproj に追加）
-- Modify: `src/effect/randamu.cpp`（`USER_CHANGED_PARAM` から呼ぶ）
+- Modify: `src/effect/duplix.cpp`（`USER_CHANGED_PARAM` から呼ぶ）
 - Create: `tests/ae/transfer.jsx`, `tests/ae/check_transfer.py`, `tests/ae/run_transfer.ps1`
-- Modify: `docs/randamu-quickstart.md`
+- Modify: `docs/duplix-quickstart.md`
 
 **Interfaces:**
 - Consumes: Task 2 の `TransferToWorld`、Task 3 の `WorldFromArray` と `RP_WORLD_*`。

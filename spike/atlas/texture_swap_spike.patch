@@ -1,7 +1,7 @@
-diff --git a/src/effect/randamu.cpp b/src/effect/randamu.cpp
+diff --git a/src/effect/duplix.cpp b/src/effect/duplix.cpp
 index fca9221..7bdacd4 100644
---- a/src/effect/randamu.cpp
-+++ b/src/effect/randamu.cpp
+--- a/src/effect/duplix.cpp
++++ b/src/effect/duplix.cpp
 @@ -800,6 +800,40 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
          extra->output->result_rect = in_result.result_rect;
          extra->output->max_result_rect = in_result.max_result_rect;
@@ -9,7 +9,7 @@ index fca9221..7bdacd4 100644
 +        if (rnd::SpikeAtlasMode() > 0 && rnd::SpikeAtlasMode() < 8) {  // SPIKE: input + inverted copies to its right
 +            const int iw = in_result.max_result_rect.right - in_result.max_result_rect.left;
 +            int w = (iw + rnd::SpikeGutter()) * (rnd::SpikeCells() - 1);
-+            if (GetEnvironmentVariableA("RANDAMU_SPIKE_POW2", nullptr, 0) > 0 && iw > 0) {
++            if (GetEnvironmentVariableA("DUPLIX_SPIKE_POW2", nullptr, 0) > 0 && iw > 0) {
 +                int total = iw;  // the whole width a power-of-two multiple of the input's: k = 2^n exactly
 +                while (total < iw + w) total *= 2;
 +                w = total - iw;
@@ -87,7 +87,7 @@ index 837350f..336fea8 100644
  std::atomic<int> g_effectKey{-1};  // this effect's installed key (-1 = not known yet)
  uintptr_t g_betaFn = 0;
  
-+// SPIKE: RANDAMU_SPIKE_RECT = "<left index>,<right index>,<shift>" of the rect's 4 doubles
++// SPIKE: DUPLIX_SPIKE_RECT = "<left index>,<right index>,<shift>" of the rect's 4 doubles
 +int g_spikeL = 1, g_spikeR = 3;
 +double g_spikeW = 120;
 +// SPIKE: per layer, the atlas geometry from the effect's PreRender (full-resolution layer px, x only):
@@ -112,7 +112,7 @@ index 837350f..336fea8 100644
 +    SpikeRectInit()
 +    {
 +        char v[64] = {0};
-+        if (GetEnvironmentVariableA("RANDAMU_SPIKE_RECT", v, sizeof(v)) > 0) sscanf_s(v, "%d,%d,%lf", &g_spikeL, &g_spikeR, &g_spikeW);
++        if (GetEnvironmentVariableA("DUPLIX_SPIKE_RECT", v, sizeof(v)) > 0) sscanf_s(v, "%d,%d,%lf", &g_spikeL, &g_spikeR, &g_spikeW);
 +    }
 +} g_spikeRectInit;
 +
@@ -328,7 +328,7 @@ index 837350f..336fea8 100644
 +{
 +    static int c = [] {
 +        char v[16] = {0};
-+        int n = GetEnvironmentVariableA("RANDAMU_SPIKE_CELLS", v, sizeof(v)) > 0 ? atoi(v) : 2;
++        int n = GetEnvironmentVariableA("DUPLIX_SPIKE_CELLS", v, sizeof(v)) > 0 ? atoi(v) : 2;
 +        return n < 2 ? 2 : n;
 +    }();
 +    return c;
@@ -338,7 +338,7 @@ index 837350f..336fea8 100644
 +{
 +    static int g = [] {
 +        char v[16] = {0};
-+        return GetEnvironmentVariableA("RANDAMU_SPIKE_GUTTER", v, sizeof(v)) > 0 ? atoi(v) : 4;
++        return GetEnvironmentVariableA("DUPLIX_SPIKE_GUTTER", v, sizeof(v)) > 0 ? atoi(v) : 4;
 +    }();
 +    return g;
 +}
@@ -347,7 +347,7 @@ index 837350f..336fea8 100644
 +{
 +    static int mode = [] {
 +        char v[32] = {0};
-+        if (GetEnvironmentVariableA("RANDAMU_SPIKE_ATLAS", v, sizeof(v)) == 0) return 0;
++        if (GetEnvironmentVariableA("DUPLIX_SPIKE_ATLAS", v, sizeof(v)) == 0) return 0;
 +        const char* names[] = {"off", "expand", "rect", "rectm3a", "rectm3b", "rectpart", "scaleid", "scale", "swap", "swapbig"};
 +        for (int i = 0; i < 10; i++)
 +            if (!_stricmp(v, names[i])) return i;
@@ -366,10 +366,10 @@ index 7cc6e17..1a02e3e 100644
  // hooks never call AEGP on it (doing so from inside BEE virtuals hung AE in the spike).
  HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId);
  HookStatus GetHookStatus();
-+// SPIKE (merge optimisation, throwaway): RANDAMU_SPIKE_ATLAS = off | expand | rect | rectm3a | rectm3b -> 0..4
++// SPIKE (merge optimisation, throwaway): DUPLIX_SPIKE_ATLAS = off | expand | rect | rectm3a | rectm3b -> 0..4
 +int SpikeAtlasMode();
-+int SpikeGutter();  // RANDAMU_SPIKE_GUTTER (px between the atlas cells, default 4)
-+int SpikeCells();   // RANDAMU_SPIKE_CELLS (cells in the atlas row: the original + inverted ones, default 2)
++int SpikeGutter();  // DUPLIX_SPIKE_GUTTER (px between the atlas cells, default 4)
++int SpikeCells();   // DUPLIX_SPIKE_CELLS (cells in the atlas row: the original + inverted ones, default 2)
 +// full-resolution layer px (x): the input [il, il + iw), the whole output [ol, ol + ow)
 +void SpikeSetAtlas(int compItemId, int layerId, double il, double iw, double ol, double ow);
  bool IsMainThread();  // the thread that ran InstallHooks (GLOBAL_SETUP)

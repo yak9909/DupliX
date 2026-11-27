@@ -3,7 +3,7 @@
 #   -Count n: the copy count of every enabled DupliX layer
 param([Parameter(Mandatory)][string]$Aep, [int]$Frames = 30, [int]$Start = 0, [string]$Variants = "asis,on,off,none",
       [string]$Count = "")
-$env:RANDAMU_UT_COUNT = $Count
+$env:DUPLIX_UT_COUNT = $Count
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $outDir = Join-Path $root "build\test\user_time"
@@ -12,11 +12,11 @@ $inDir = Join-Path $root "build\test\user_time_in"  # run_jsx.ps1 empties $outDi
 New-Item -ItemType Directory -Force $inDir | Out-Null
 $copy = Join-Path $inDir "user_copy.aep"
 Copy-Item (Resolve-Path $Aep).Path $copy -Force
-$env:RANDAMU_USER_AEP = $copy -replace '\\', '/'
-$env:RANDAMU_UT_FRAMES = "$Frames"
-$env:RANDAMU_UT_START = "$Start"
-$env:RANDAMU_UT_VARIANTS = $Variants
+$env:DUPLIX_USER_AEP = $copy -replace '\\', '/'
+$env:DUPLIX_UT_FRAMES = "$Frames"
+$env:DUPLIX_UT_START = "$Start"
+$env:DUPLIX_UT_VARIANTS = $Variants
 & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/user_time.jsx -Name user_time -TimeoutSec 1800 -Expect "^done" |
     Select-String "EXCEPTION|TIMEOUT|EXPECT"
-Remove-Item env:RANDAMU_USER_AEP, env:RANDAMU_UT_FRAMES, env:RANDAMU_UT_START, env:RANDAMU_UT_VARIANTS -ErrorAction SilentlyContinue
+Remove-Item env:DUPLIX_USER_AEP, env:DUPLIX_UT_FRAMES, env:DUPLIX_UT_START, env:DUPLIX_UT_VARIANTS -ErrorAction SilentlyContinue
 Get-Content (Join-Path $outDir "jsx.log")

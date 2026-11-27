@@ -1,5 +1,5 @@
-# RVA -> function and line of a module with its pdb (dbghelp), for the RANDAMU_A3D_PROF samples:
-#   python spike/tools/sym_pdb.py dev_plugins/randamu.aex 6fd2c 72cd3
+# RVA -> function and line of a module with its pdb (dbghelp), for the DUPLIX_A3D_PROF samples:
+#   python spike/tools/sym_pdb.py dev_plugins/DupliX.aex 6fd2c 72cd3
 import ctypes, sys
 from ctypes import wintypes as W
 dbg = ctypes.WinDLL("dbghelp.dll")

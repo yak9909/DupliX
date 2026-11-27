@@ -1,4 +1,4 @@
-// randamu core: the per-tile copy lists shared by the CPU and the GPU rasterizers. No AE dependency.
+// DupliX core: the per-tile copy lists shared by the CPU and the GPU rasterizers. No AE dependency.
 #pragma once
 
 #include <vector>

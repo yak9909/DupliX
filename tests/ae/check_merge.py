@@ -195,7 +195,7 @@ def exact(name):
     return ok, f"max={d} ours-lines={ours} size={a.shape[1]}x{a.shape[0]}"
 
 
-if os.environ.get("RANDAMU_MERGE_OLD") != "1":
+if os.environ.get("DUPLIX_MERGE_OLD") != "1":
     CHECKS = {n: (lambda n=n: exact(n)) for n in CHECKS if not n.startswith("scene_")}
 
 fails = 0

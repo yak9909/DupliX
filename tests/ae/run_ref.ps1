@@ -1,4 +1,4 @@
-# Reference comparison: probe_<case> (randamu) vs ref_<case> (real duplicate layers), rendered by
+# Reference comparison: probe_<case> (DupliX) vs ref_<case> (real duplicate layers), rendered by
 # aerender with MFR off and on, plus a reopen check (saveFrameToPng after app.open). Exit 1 on any failure.
 #   pwsh tests/ae/run_ref.ps1 [-Cases baseline,scale] [-SkipScene] [-Mfrs OFF,ON]
 #   -Gpu CUDA|OPENCL|...  sets the project's GPU acceleration (GpuAccelType name); default: AE's default
@@ -16,7 +16,7 @@ $sel = if ($Cases) { $Cases -split "," } else { @($all | ForEach-Object name) }
 $run = @($all | Where-Object { $sel -contains $_.name })
 
 if (-not $SkipScene) {
-    $dump = Join-Path $root "build\dump\randamu_dump.exe"
+    $dump = Join-Path $root "build\dump\duplix_dump.exe"
     foreach ($c in $run) {
         $p = $c.params
         $dargs = @("--count", $p.count, "--seed", $(if ($p.seed) { $p.seed } else { 0 }))
@@ -27,10 +27,10 @@ if (-not $SkipScene) {
         if ($p.keepFirst) { $dargs += "--keep-first" }
         & $dump @dargs | Set-Content -Encoding utf8NoBOM (Join-Path $outDir "copies_$($c.name).json")
     }
-    $env:RANDAMU_REF_CASES = $casesFile
-    $env:RANDAMU_REF_IMAGE = Join-Path $root "spike\assets\probe_img.png"
-    $env:RANDAMU_REF_ONLY = $Cases
-    $env:RANDAMU_REF_GPU = $Gpu
+    $env:DUPLIX_REF_CASES = $casesFile
+    $env:DUPLIX_REF_IMAGE = Join-Path $root "spike\assets\probe_img.png"
+    $env:DUPLIX_REF_ONLY = $Cases
+    $env:DUPLIX_REF_GPU = $Gpu
     & (Join-Path $PSScriptRoot "run_jsx.ps1") -Jsx tests/ae/make_ref.jsx -Name ref -TimeoutSec 900 -Expect "^done" |
         Select-String "EXCEPTION|TIMEOUT|EXPECT|window class"
     if ($LASTEXITCODE -ne 0) { Write-Host "scene build failed"; Get-Content (Join-Path $outDir "jsx.log") -Tail 5; exit 1 }
@@ -43,15 +43,15 @@ $aep = Join-Path $outDir "ref.aep"
 foreach ($mfr in $Mfrs) {
     Get-ChildItem $outDir -Filter "r_*.tif" -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false
     $null = Repair-AeCrashState
-    $env:RANDAMU_LOG = Join-Path $outDir "plugin_aer_$mfr.log"
-    if (Test-Path $env:RANDAMU_LOG) { Remove-Item $env:RANDAMU_LOG }
+    $env:DUPLIX_LOG = Join-Path $outDir "plugin_aer_$mfr.log"
+    if (Test-Path $env:DUPLIX_LOG) { Remove-Item $env:DUPLIX_LOG }
     $log = Join-Path $outDir "aerender_$mfr.log"
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process -FilePath (Join-Path $sf "aerender.exe") -PassThru -NoNewWindow -RedirectStandardOutput $log `
         -ArgumentList @("-project", "`"$aep`"", "-mfr", $mfr, "100", "-v", "ERRORS_AND_PROGRESS")
     if (-not $p.WaitForExit($RenderTimeoutSec * 1000)) { Write-Host "TIMEOUT aerender mfr=$mfr"; $p.Kill(); $fail++; continue }
     Write-Host ("aerender mfr={0}: {1:N1} s" -f $mfr, $sw.Elapsed.TotalSeconds)
-    Remove-Item env:RANDAMU_LOG
+    Remove-Item env:DUPLIX_LOG
     foreach ($c in $run) {
         # frame number in the name depends on the case's time
         $a = Get-ChildItem $outDir -Filter ("r_probe_{0}_*.tif" -f $c.name) | Select-Object -First 1 -ExpandProperty FullName

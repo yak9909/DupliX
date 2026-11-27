@@ -580,13 +580,13 @@ namespace {
 bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTimes* times);
 }
 bool GpuAeSpans(const GpuAeSpanJob& j, double* msOut, GpuAeSpanTimes* times) { return AeSpansImpl(&j, 1, msOut, times); }
-// RANDAMU_BATCH_DUMP=<file> (tests): the first batch of 1000 jobs or more is written to the file (the texture, the
+// DUPLIX_BATCH_DUMP=<file> (tests): the first batch of 1000 jobs or more is written to the file (the texture, the
 // table, every job's core and rows) for tests/gpu to replay without AE
 void DumpBatch(const GpuAeSpanJob* jobs, int n)
 {
     static std::atomic<bool> done{false};
     char path[MAX_PATH] = {0};
-    if (n < 1000 || done.load() || GetEnvironmentVariableA("RANDAMU_BATCH_DUMP", path, sizeof(path)) <= 0) return;
+    if (n < 1000 || done.load() || GetEnvironmentVariableA("DUPLIX_BATCH_DUMP", path, sizeof(path)) <= 0) return;
     long long spans = 0;
     for (int q = 0; q < n; q++) spans += jobs[q].nRows;
     if (spans < 100000) return;  // a full frame's batch (AE draws a viewer frame at a lower resolution first)
@@ -761,7 +761,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         return false;
     }
     if (times) times->regionPx = (long long)(regionBytes / 4);
-    if (GetEnvironmentVariableA("RANDAMU_GPU_KTIME", nullptr, 0) > 0)
+    if (GetEnvironmentVariableA("DUPLIX_GPU_KTIME", nullptr, 0) > 0)
         GpuLog("gpu ae span host: checks %.2f, sort %.2f, segments %.2f, states and buffers %.2f ms", hp0 - (double)t0.QuadPart * 1000.0 / (double)qf.QuadPart, hp1 - hp0, hp2 - hp1, nowMs() - hp2);
     {
         double texMs = 0;
@@ -788,19 +788,19 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
         cu.htodAsync(g_ae.rows, g_ae.stage + regionBytes, rowsBytes + coresBytes + gBytes, st))
         return false;
     // the tiled drawing (a thread per span walks it, then a thread per 8 pixels of a row draws them, every span in
-    // order), or RANDAMU_GPU_TILES=0: a block per target row, its spans one after another
+    // order), or DUPLIX_GPU_TILES=0: a block per target row, its spans one after another
     {
         static const bool s_tiles = [] {
             char v[4] = {0};
-            return !(GetEnvironmentVariableA("RANDAMU_GPU_TILES", v, sizeof(v)) > 0 && v[0] == '0');
+            return !(GetEnvironmentVariableA("DUPLIX_GPU_TILES", v, sizeof(v)) > 0 && v[0] == '0');
         }();
         CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rcpD = g_ae.rcp, regD = g_ae.region, rowsD = g_ae.rows,
                     gD = g_ae.rows + rowsBytes + coresBytes, gsD = gD + gStart.size() * 4, stD = g_ae.states;
         int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, n = nGroups, ns = (int)allRows;
         CUresult lr = (CUresult)0;
         if (s_tiles && g_ae.fnWalk && g_ae.fnTiles) {
-            // RANDAMU_GPU_KTIME=1 (diagnostics): each step waited for and timed
-            static const bool s_kt = GetEnvironmentVariableA("RANDAMU_GPU_KTIME", nullptr, 0) > 0;
+            // DUPLIX_GPU_KTIME=1 (diagnostics): each step waited for and timed
+            static const bool s_kt = GetEnvironmentVariableA("DUPLIX_GPU_KTIME", nullptr, 0) > 0;
             const double k0 = s_kt && !cu.streamSync(st) ? nowMs() : 0;
             void* wargs[] = {&coresD, &rowsD, &ns, &stD};
             lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
@@ -808,11 +808,11 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
             // culling of the pixels covered by a later opaque span (exact: the same pixels either way): on for a
             // mostly opaque texture (a photo: one sample where hundreds of copies overlap; 11/27, 1920x1080 x 3271
             // copies 816 -> 10 ms), off for one with soft edges (AE's averaging seldom reaches 0xFF there, and the
-            // backward pass only costs: Test C's flower 15 -> 24 ms). RANDAMU_GPU_CULL=0 / 1 forces it off / on
+            // backward pass only costs: Test C's flower 15 -> 24 ms). DUPLIX_GPU_CULL=0 / 1 forces it off / on
             // (diagnostics: 2 = no pixel drawn, only the spans' steps; 3 = both)
             static const int s_cull = [] {
                 char v[4] = {0};
-                return GetEnvironmentVariableA("RANDAMU_GPU_CULL", v, sizeof(v)) > 0 ? atoi(v) : -1;
+                return GetEnvironmentVariableA("DUPLIX_GPU_CULL", v, sizeof(v)) > 0 ? atoi(v) : -1;
             }();
             int cull = s_cull >= 0 ? s_cull : (g_ae.opaque >= kCullOpaque ? 1 : 0);
             // the tiles' span sets: the largest row's (words), at most 4096 words (16 KB; larger rows check every span)
@@ -822,12 +822,12 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
                 if ((long long)w * t <= 4096) bitsWords = std::max(bitsWords, w * t);
             }
             void* targs[] = {&coresD, &texD, &texRb, &texW, &texH, &rcpD, &regD, &rowsD, &gD, &gsD, &n, &stD, &cull, &bitsWords};
-            // a thread per pixel (AeSpanPixels), or RANDAMU_GPU_PIXELS=0: per 8 pixels (AeSpanTiles). The same pixels;
+            // a thread per pixel (AeSpanPixels), or DUPLIX_GPU_PIXELS=0: per 8 pixels (AeSpanTiles). The same pixels;
             // 11/27 in the viewer: a 1920x1080 image shrunk to 217 px, 380 single copies 656 -> 268 ms a frame;
             // Test C's flower, 3271 copies in a group: the GPU 16 -> 19 ms
             static const int s_pixels = [] {
                 char v[4] = {0};
-                return GetEnvironmentVariableA("RANDAMU_GPU_PIXELS", v, sizeof(v)) > 0 ? atoi(v) : 1;
+                return GetEnvironmentVariableA("DUPLIX_GPU_PIXELS", v, sizeof(v)) > 0 ? atoi(v) : 1;
             }();
             const bool pixels = g_ae.fnPixels && s_pixels != 0;
             if (!lr)

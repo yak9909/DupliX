@@ -2,15 +2,16 @@
 // and the layer to its initial 2D state; switching off makes it 3D again. For each case saves
 //   <case>_before.png (normal mode), <case>_after.png (fast mode on), and per case
 //   toggle_plain_back.png (fast off again), toggle_parent_undo.png (after one Undo).
-// Logs "STATE <case>_<tag> key=value ..." lines for check_transfer.py. Env: RANDAMU_TEST_DIR, RANDAMU_FAST_IMAGE.
+// Logs "STATE <case>_<tag> key=value ..." lines for check_transfer.py. Env: DUPLIX_TEST_DIR, DUPLIX_FAST_IMAGE.
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
-    var W = 400, H = 300, FAST = 15, WPOS = 17, WROT = 20, WSCALE = 23;
-    var img = app.project.importFile(new ImportOptions(new File($.getenv("RANDAMU_FAST_IMAGE"))));
+    var W = 400, H = 300, FAST = "DupliX-0037", WPOS = 17, WROT = 20, WSCALE = 23;  // Render Mode; disk IDs
+    function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a parameter by its disk ID
+    var img = app.project.importFile(new ImportOptions(new File($.getenv("DUPLIX_FAST_IMAGE"))));
 
     function png(comp, name) {
         var f = new File(outDir + "/" + name + ".png");
@@ -28,9 +29,9 @@
         g("pos", function () { return t.property("ADBE Position").value; });
         g("rotY", function () { return t.property("ADBE Rotate Y").value; });
         g("scale", function () { return t.property("ADBE Scale").value; });
-        g("wposX", function () { return fx.property(WPOS).value; });
-        g("wrotY", function () { return fx.property(WROT + 1).value; });
-        g("fast", function () { return fx.property(FAST).value; });
+        g("wposX", function () { return fx.property(dx(WPOS)).value; });
+        g("wrotY", function () { return fx.property(dx(WROT + 1)).value; });
+        g("fast", function () { return fx.property(FAST).value === 2 ? 1 : 0; });
         log("STATE " + tag + " " + parts.join(" "));
     }
     function scene(name) {
@@ -40,12 +41,12 @@
         tg(cam).property("ADBE Position").setValue([150, 100, -800]);
         var L = comp.layers.add(img);
         L.threeDLayer = true;
-        var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-        fx.property(2).setValue(10);
-        fx.property(3).setValue(3);
-        fx.property(4).setValue(140); fx.property(5).setValue(90); fx.property(6).setValue(250);
-        fx.property(9).setValue(90);
-        fx.property(10).setValue(60); fx.property(11).setValue(130);
+        var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
+        fx.property("DupliX-0002").setValue(10);
+        fx.property("DupliX-0003").setValue(3);
+        fx.property("DupliX-0004").setValue(140); fx.property("DupliX-0005").setValue(90); fx.property("DupliX-0006").setValue(250);
+        fx.property("DupliX-0009").setValue(90);
+        fx.property("DupliX-0010").setValue(60); fx.property("DupliX-0011").setValue(130);
         return {comp: comp, layer: L, fx: fx};
     }
     try {
@@ -60,14 +61,14 @@
         ta.property("ADBE Rotate Y").setValue(20);
         ta.property("ADBE Rotate Z").setValue(30);
         ta.property("ADBE Scale").setValue([110, 110, 110]);
-        a.fx.property(WPOS).setValue(20);
-        a.fx.property(WROT + 2).setValue(15);
-        for (var k = 0; k < 3; k++) a.fx.property(WSCALE + k).setValue(90);
+        a.fx.property(dx(WPOS)).setValue(20);
+        a.fx.property(dx(WROT + 2)).setValue(15);
+        for (var k = 0; k < 3; k++) a.fx.property(dx(WSCALE + k)).setValue(90);
         png(a.comp, "toggle_plain_before");
-        a.fx.property(FAST).setValue(1);
+        a.fx.property(FAST).setValue(2);
         state("toggle_plain_after", a.layer, a.fx);
         png(a.comp, "toggle_plain_after");
-        a.fx.property(FAST).setValue(0);
+        a.fx.property(FAST).setValue(1);
         state("toggle_plain_back", a.layer, a.fx);
         png(a.comp, "toggle_plain_back");
 
@@ -82,7 +83,7 @@
         tg(b.layer).property("ADBE Orientation").setValue([0, 0, 0]);
         tg(b.layer).property("ADBE Position").setValue([60, -20, 120]);
         png(b.comp, "toggle_parent_before");
-        b.fx.property(FAST).setValue(1);
+        b.fx.property(FAST).setValue(2);
         state("toggle_parent_after", b.layer, b.fx);
         png(b.comp, "toggle_parent_after");
         app.executeCommand(16);  // Edit > Undo: everything back in one step
@@ -97,7 +98,7 @@
         pc.setValueAtTime(1, [250, 150, 200]);
         c.comp.time = 0.5;
         png(c.comp, "toggle_anim_before");
-        c.fx.property(FAST).setValue(1);
+        c.fx.property(FAST).setValue(2);
         state("toggle_anim_after", c.layer, c.fx);
         png(c.comp, "toggle_anim_after");
         // separated position dimensions: refused before anything changes (final review, item 1)
@@ -107,30 +108,30 @@
         pe.dimensionsSeparated = true;
         tg(e.layer).property("ADBE Position_0").setValue(230);
         tg(e.layer).property("ADBE Rotate Y").setValue(20);
-        e.fx.property(FAST).setValue(1);
+        e.fx.property(FAST).setValue(2);
         state("toggle_separated_after", e.layer, e.fx);
 
         // a keyframed World Transform with a layer not in its initial state: refused (final review, item 2)
         log("CASE toggle_world_keys");
         var f = scene("toggle_world_keys");
         tg(f.layer).property("ADBE Rotate Y").setValue(26);
-        f.fx.property(WPOS).setValueAtTime(0, -40);
-        f.fx.property(WPOS).setValueAtTime(1, 40);
-        f.fx.property(FAST).setValue(1);
+        f.fx.property(dx(WPOS)).setValueAtTime(0, -40);
+        f.fx.property(dx(WPOS)).setValueAtTime(1, 40);
+        f.fx.property(FAST).setValue(2);
         state("toggle_world_keys_after", f.layer, f.fx);
-        log("STATE toggle_world_keys_keys n=" + f.fx.property(WPOS).numKeys + " k2=" + f.fx.property(WPOS).keyValue(2));
+        log("STATE toggle_world_keys_keys n=" + f.fx.property(dx(WPOS)).numKeys + " k2=" + f.fx.property(dx(WPOS)).keyValue(2));
 
         // a keyframed World Transform with the layer already in its initial 3D state: nothing to move
         log("CASE toggle_initial_keys");
         var g2 = scene("toggle_initial_keys");
         tg(g2.layer).property("ADBE Position").setValue([W / 2, H / 2, 0]);
-        g2.fx.property(WPOS).setValueAtTime(0, -40);
-        g2.fx.property(WPOS).setValueAtTime(1, 40);
+        g2.fx.property(dx(WPOS)).setValueAtTime(0, -40);
+        g2.fx.property(dx(WPOS)).setValueAtTime(1, 40);
         g2.comp.time = 0.5;
         png(g2.comp, "toggle_initial_keys_before");
-        g2.fx.property(FAST).setValue(1);
+        g2.fx.property(FAST).setValue(2);
         state("toggle_initial_keys_after", g2.layer, g2.fx);
-        log("STATE toggle_initial_keys_keys n=" + g2.fx.property(WPOS).numKeys + " k2=" + g2.fx.property(WPOS).keyValue(2));
+        log("STATE toggle_initial_keys_keys n=" + g2.fx.property(dx(WPOS)).numKeys + " k2=" + g2.fx.property(dx(WPOS)).keyValue(2));
         png(g2.comp, "toggle_initial_keys_after");
         log("done");
     } catch (e) {

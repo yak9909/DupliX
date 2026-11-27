@@ -1,4 +1,4 @@
-// randamu core: Advanced3D's (classic 3D) pair test of two surfaces, rebuilt instruction by instruction from its code
+// DupliX core: Advanced3D's (classic 3D) pair test of two surfaces, rebuilt instruction by instruction from its code
 // (Advanced3D 2025: sub_18002B040 -> sub_18002B350, with sub_18002B1B0 and sub_18002BC80; dev log 2026-11-26 8d).
 // It decides the edges of AE's drawing-order graph: aFront ("a is in front somewhere") and bFront. No After Effects
 // dependency: the caller passes the surfaces' data as AE keeps it.

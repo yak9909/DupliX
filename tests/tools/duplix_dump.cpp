@@ -1,5 +1,5 @@
 // Prints the per-copy random draws as JSON, for building reference comps of real duplicate layers.
-//   randamu_dump --count N --seed S --pos X Y Z --rot X Y Z --scale MIN MAX --opacity MIN MAX [--keep-first]
+//   duplix_dump --count N --seed S --pos X Y Z --rot X Y Z --scale MIN MAX --opacity MIN MAX [--keep-first]
 // Output: {"copies":[{"t":[tx,ty,tz],"r":[rx,ry,rz],"s":s,"o":o}, ...]}  (px, degrees, percent, percent)
 #include <cstdio>
 #include <cstdlib>

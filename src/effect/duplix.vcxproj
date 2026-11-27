@@ -13,7 +13,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3C9A2B57-6E41-4D0F-A8B2-91F4C7D2E6A0}</ProjectGuid>
-    <RootNamespace>randamu</RootNamespace>
+    <RootNamespace>DupliX</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -29,7 +29,7 @@
     <OutDir Condition="'$(AE_PLUGIN_BUILD_DIR)'!=''">$(AE_PLUGIN_BUILD_DIR)\</OutDir>
     <OutDir Condition="'$(AE_PLUGIN_BUILD_DIR)'==''">$(RepoRoot)build\effect\</OutDir>
     <IntDir>$(RepoRoot)build\obj\effect\$(Configuration)\</IntDir>
-    <TargetName>randamu</TargetName>
+    <TargetName>DupliX</TargetName>
     <TargetExt>.aex</TargetExt>
     <IgnoreImportLibrary>true</IgnoreImportLibrary>
   </PropertyGroup>
@@ -64,7 +64,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CustomBuild Include="RandamuPiPL.r">
+    <CustomBuild Include="DupliXPiPL.r">
       <Message>Compiling the PiPL</Message>
       <Command>cl /nologo /I "$(AESDK)\Headers" /EP "%(FullPath)" &gt; "$(IntDir)%(Filename).rr"
 pushd "$(IntDir)"
@@ -76,7 +76,7 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="$(IntDir)RandamuPiPL.rc" />
+    <ResourceCompile Include="$(IntDir)DupliXPiPL.rc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="*.h" />
@@ -97,7 +97,7 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- the CUDA kernel as an embedded PTX header (generated, git-ignored): made here when a plain msbuild finds it
        missing (tools/build.ps1 makes it before every build) -->
-  <Target Name="RandamuPtx" BeforeTargets="ClCompile" Condition="!Exists('$(RepoRoot)src\gpu\fast_raster_ptx.h')">
+  <Target Name="DupliXPtx" BeforeTargets="ClCompile" Condition="!Exists('$(RepoRoot)src\gpu\fast_raster_ptx.h')">
     <Exec Command="pwsh -NoProfile -File &quot;$(RepoRoot)tools\build_ptx.ps1&quot;" />
   </Target>
 </Project>

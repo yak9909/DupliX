@@ -1,10 +1,23 @@
-# 引き継ぎメモ（最新: 2026-11-27 14 時前（PC の時計）。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-27 15 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-27 15 時台、名前を DupliX に統一・パラメータを英語の定番の並びに。利用者への報告待ち）
+
+- **方針（利用者、11/27 午後）:** 軽量化は一旦止め、プラグインとしての機能を詰める。名前は DupliX（旧名はリポジトリから排除、git 履歴は除く）、
+  パラメータは英語、補足の文言なし、状態の欄なし。詳細は `docs/experiments/2026-11-27-dev-log.md` の 13 節。
+- **今の状態:** この節の commit まで push 済み。`dev_plugins\DupliX.aex` はこの commit のソースのビルド（Release）。GitHub のリポジトリ名は
+  DupliX に変更済み（remote も更新）。プラグインのジャンクションは `MediaCore\DupliX_dev`（新しいフォルダーを指す）を作成済み。
+- **利用者の作業（待ち）:** Claude Code を閉じて、フォルダー `A:\MyProjects\After Effects\Plugin Project\randamu` を `DupliX` に名前を変える。
+  その後、古いジャンクション `MediaCore\randamu_dev`（旧フォルダーを指す）を消す。メモリーは新しいフォルダー用の場所にも写してある。
+- **試験（この commit のソース）:** 単体 81・GPU、smoke、TRANSFER、FAST、REF、UI、EDIT、MERGE、AS-IS、ORBIT ALL PASS、Test〜D 各 8 フレーム差 0。
+- **次の 1 手:** 利用者の反応を聞き、機能を詰める作業に入る（何を詰めるかは利用者の指示を待つ）。
+- **気を付けること:** パラメータの Disk ID は変えない（`duplix_params.h`。1 と 15 は欠番）。試験のスクリプトはパラメータを内部名 "DupliX-00NN"
+  （NN＝Disk ID）で参照する。古い内部 ID の aep は `tools/aep_matchname.py <in> <out> <旧 ID> DupliX` で変換できる。
 
 ## 再開の手順（2026-11-27 14 時前、M バッファーの置き換えを完了。利用者への報告・試用のお願い）
 
-- **今の状態:** この節の commit まで push 済み。`dev_plugins\randamu.aex` はこの commit のソースのビルド（Release）。
-  M バッファー（塊）へのコピーの描画を DupliX が行い（既定で有効、`RANDAMU_MBUF=0` で AE に戻す）、面を溜めて解決の直前に GPU で
-  まとめて計算する（`RANDAMU_MBUF_BATCH=0` で面ごと）。詳細は `docs/experiments/2026-11-27-dev-log.md` の 12 節。
+- **今の状態:** この節の commit まで push 済み。`dev_plugins\DupliX.aex` はこの commit のソースのビルド（Release）。
+  M バッファー（塊）へのコピーの描画を DupliX が行い（既定で有効、`DUPLIX_MBUF=0` で AE に戻す）、面を溜めて解決の直前に GPU で
+  まとめて計算する（`DUPLIX_MBUF_BATCH=0` で面ごと）。詳細は `docs/experiments/2026-11-27-dev-log.md` の 12 節。
 - **成果:** Test D に大きい画像 380 枚 1 フレーム 1266 → 207 ms（span）、bigS3271 の塊 230 → 125 ms。断片は AE と 1 つずつ一致を確認済み。
 - **試験（この commit のソース）:** 単体 81・GPU ALL PASS（新しい `gpu_ae_mbuf`）、MBUF 0/1 の絵の比較（bigS3271・花の Test C 3271・Test D 380・
   Test D 大きい画像）一致、`run_big_merge.ps1` 12 フレーム一致・`-Nest` 一致、EDIT・MERGE ALL PASS、`run_user_merge.ps1` Test〜D 各 8 フレーム差 0。
@@ -16,10 +29,10 @@
 
 ## 再開の手順（2026-11-27 13 時、M バッファーの行の処理の置き換えの途中。利用者「一旦中断してください」）
 
-- **今の状態:** この節の commit で、M バッファー（塊）へのコピーの描画を DupliX が行う版を push 済み（既定で有効、`RANDAMU_MBUF=0` で AE に戻す）。
-  `dev_plugins\randamu.aex` はこの commit のソースのビルド。全体の試験（単体・GPU・EDIT・MERGE・Test〜D）は**まだ回していない**。
+- **今の状態:** この節の commit で、M バッファー（塊）へのコピーの描画を DupliX が行う版を push 済み（既定で有効、`DUPLIX_MBUF=0` で AE に戻す）。
+  `dev_plugins\DupliX.aex` はこの commit のソースのビルド。全体の試験（単体・GPU・EDIT・MERGE・Test〜D）は**まだ回していない**。
 - **分かったこと:**
-  - 計測（`RANDAMU_A3D_TIME=2` の `mbuf:` の行）: Test D に大きい画像 380 枚は塊の描画 約 1.2 秒のうち、AE の行の処理が約 1.1 秒（81 万画素）、
+  - 計測（`DUPLIX_A3D_TIME=2` の `mbuf:` の行）: Test D に大きい画像 380 枚は塊の描画 約 1.2 秒のうち、AE の行の処理が約 1.1 秒（81 万画素）、
     bigS3271 は塊 230 ms のうち行の処理 125 ms・塊の前に流す GPU の仕事 100 ms・解決 3〜4 ms。
   - 実際の経路は `sub_1800477F0` ではなく、M バッファーの仮想関数 +8 が真の `sub_18004D870` → `sub_180046A90` → 挿入 `sub_180021710`
     （32 バイトの断片に dWx・dWy）。3 つの行の処理（477F0・46A90・48500）は計算が同じで、挿入だけ違う（`bee_hooks.cpp` の `kMbufInsertRva` の注釈）。
@@ -27,8 +40,8 @@
 - **実装:** `core/ae_span_impl.h` の `MbufOff`・`MbufDepth`・`MbufPairFirst`、`AeSpanCore::zoff`（旧 pad）、`AeMbufSpan8`（CPU）、
   GPU `AeMbufSpans`（`ae_span.cu`）と `GpuAeMbufSpans`（`gpu_raster.cpp`、初期化とテクスチャを `AeInit`・`AeTexture` に切り出した）、
   フック `OurIterate` の種類 2 → GPU で断片を計算 → AE の反復の中で `OurMbRow` が AE の挿入関数で入れる（スレッド番号は AE のもの）。
-  診断: `RANDAMU_MBUF=2`（AE が描き、入った断片を 1 つずつ DupliX の計算と比べる）、`=3`（CPU で計算）。
-- **確かめた結果:** `RANDAMU_MBUF=2` で bigS3271 53 万画素・Test D 大きい画像 約 240 万画素が全部一致（違ったのは AE の反復が 517＝中断を
+  診断: `DUPLIX_MBUF=2`（AE が描き、入った断片を 1 つずつ DupliX の計算と比べる）、`=3`（CPU で計算）。
+- **確かめた結果:** `DUPLIX_MBUF=2` で bigS3271 53 万画素・Test D 大きい画像 約 240 万画素が全部一致（違ったのは AE の反復が 517＝中断を
   返した描画だけ）。Test D 大きい画像で MBUF=0 と 1 の絵が一致（CPU 版・GPU 版とも）。速さ: Test D 大きい画像 1 フレーム 1216 → 465 ms
   （span）。GPU は 1 面ずつ呼んでいて 376 回で約 290 ms。
 - **次の 1 手:** (1) 全体の試験（単体・GPU・EDIT・MERGE、`run_user_merge.ps1` Test〜D、`run_big_merge.ps1`、bigS3271 の MBUF 0/1 比較、花の Test C・D）。
@@ -39,7 +52,7 @@
 ## 再開の手順（2026-11-27 14 時、Test E の件を閉じた。利用者がセッションをクリア）
 
 - **今の状態:** commit 9ac54e4 まで push 済み。作業ツリーに残る変更はなし（`git status` に出る他のファイルは改行コードの見かけだけ。
-  `git diff --stat` は空）。`dev_plugins\randamu.aex` は 63bb832 以降のソースのビルド（Release。その後の commit は試験と記録だけ）。
+  `git diff --stat` は空）。`dev_plugins\DupliX.aex` は 63bb832 以降のソースのビルド（Release。その後の commit は試験と記録だけ）。
 - **この日（11/27）の成果（詳細は `docs/experiments/2026-11-27-dev-log.md` の 6〜10 節）:**
   - 大きい画像の軽量化（GPU のテクスチャのキー、cull の自動、1 画素 1 スレッド、組にならないコピーのまとめ描き、テクスチャの写しの使い回し）。
     Test C に 1920x1080 を入れた画面の経路: 380 枚 1205 → 約 90 ms、3271 枚の重なり 約 2 秒 → 約 0.75 秒、花 380 枚 86 → 56 ms。
@@ -55,10 +68,10 @@
   （M バッファーの行の処理 `sub_1800477F0` の標本化を DupliX の計算に置き換える。解析の入口は開発記録 9 節の最後）。
   利用者に試用を頼むかどうかは、この作業の区切りで決める。
 - **新しい試験の道具（この日）:** `tests/ae/run_big_merge.ps1`（`-Nest` で入れ子）、`tests/ae/make_big_png.py`（4 番目の引数で切り抜き）、
-  `preview_setup.jsx` の `RANDAMU_PV_BIG`・`RANDAMU_PV_BIG_MERGE`・`RANDAMU_PV_NEST`・`RANDAMU_PV_CROSS`・`RANDAMU_PV_SET`、
-  `user_merge.jsx` の `RANDAMU_UM_SET`、`orbit_cut.jsx` の `RANDAMU_OC_REF=dupe`・`RANDAMU_OC_KEEPCAM`・`RANDAMU_OC_SET`・
-  `RANDAMU_OC_PIVOT`・`RANDAMU_OC_PIVOT_RY_<変種>`。診断: `RANDAMU_PLAN_MEETS`・`RANDAMU_EDGE_THREADS`・`RANDAMU_BATCH_SINGLES=0`・
-  `RANDAMU_GPU_PIXELS=0`・`RANDAMU_GPU_CULL=0/1`・`RANDAMU_GROUP_CLUSTER=1`。双子の一覧は計画の書き出し（`RANDAMU_MERGE_DUMP`）の
+  `preview_setup.jsx` の `DUPLIX_PV_BIG`・`DUPLIX_PV_BIG_MERGE`・`DUPLIX_PV_NEST`・`DUPLIX_PV_CROSS`・`DUPLIX_PV_SET`、
+  `user_merge.jsx` の `DUPLIX_UM_SET`、`orbit_cut.jsx` の `DUPLIX_OC_REF=dupe`・`DUPLIX_OC_KEEPCAM`・`DUPLIX_OC_SET`・
+  `DUPLIX_OC_PIVOT`・`DUPLIX_OC_PIVOT_RY_<変種>`。診断: `DUPLIX_PLAN_MEETS`・`DUPLIX_EDGE_THREADS`・`DUPLIX_BATCH_SINGLES=0`・
+  `DUPLIX_GPU_PIXELS=0`・`DUPLIX_GPU_CULL=0/1`・`DUPLIX_GROUP_CLUSTER=1`。双子の一覧は計画の書き出し（`DUPLIX_MERGE_DUMP`）の
   4 隅から作れる（スクラッチパッドの `twins_from_plan.py`。消えていたら作り直す: 4 隅から位置＝c0 + アンカー分、Y 回転＝atan2(−u.z, u.x)）。
 - **気を付けること:** 画面の経路の速さは span で見る（単独のコピーは `sub_180010E00` の直前でまとめて描くので `in-plugin` に入らない）。
   大きい組は `timing:` の行に組の描画が入らない（`group time:` で見る）。AE を動かす試験は 1 つずつ。
@@ -76,9 +89,9 @@
 - **試験（この版）:** 単体 81 件・GPU（不透明 960x540 を追加、cull・カーネルの 4 通り）ALL PASS、EDIT ALL PASS、MERGE ALL PASS、
   `run_user_merge.ps1` で Test・A・B・C・D 各 8 フレーム オン＝オフ差 0、bigS380・bigL380 はオン＝オフ一致。
 - **大きい画像の試験の仕方:** `python tests/ae/make_big_png.py build/test/big/big1920.png` のあと
-  `$env:RANDAMU_PV_COUNTS='380,3271'; $env:RANDAMU_PV_BIG=<png の絶対パス、/ 区切り>; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 5 -IntervalMs 3000 -Variants "pv_bigS380,pv_bigL380,pv_bigS3271"`。
-  `RANDAMU_PV_BIG_MERGE=0` で軽量化オフの基準。**注意:** bigS3271 などの大きい組は `timing:` の行が組の描画より前に出て、
-  組の時間が入らない。`group time:`（`RANDAMU_A3D_TIME=2`）で見る。
+  `$env:DUPLIX_PV_COUNTS='380,3271'; $env:DUPLIX_PV_BIG=<png の絶対パス、/ 区切り>; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 5 -IntervalMs 3000 -Variants "pv_bigS380,pv_bigL380,pv_bigS3271"`。
+  `DUPLIX_PV_BIG_MERGE=0` で軽量化オフの基準。**注意:** bigS3271 などの大きい組は `timing:` の行が組の描画より前に出て、
+  組の時間が入らない。`group time:`（`DUPLIX_A3D_TIME=2`）で見る。
 - **利用者の回答（11/27 7 時）:** 「軽量化できるなら全部やる。枚数などは計測で判断できるので聞く意味はない。不具合も速さも全部やる。
   画素不一致は直せる場合絶対直す」。→ 質問せず、不具合を先に、次に大きい順に進める。
 - **済み（7 時台）:** bigS3271 のオン≠オフ 9〜12 画素を修正（組の中の塊を AE の M バッファーで描く。開発記録 7 節）。
@@ -94,24 +107,24 @@
   2. 辺の作成の残り（対の判定 約 220 ms・AE の確保関数で辺 130 万本 約 90 ms）。
   3. 手前・奥の計画の「sliver」（画面上でわずかに離れた対）で 380 枚が組にならない件。AE の並べ替えが順序の決まらない面をどう並べるかの解析が要る。
   4. 計時: 大きい組で `timing:` の行に組の描画が入らない件。
-  - 標本化は `RANDAMU_A3D_PROF=2`（描画の糸を常に。待ちも入る）、名前の解決はスクラッチパッドの `sym.py`（消えていたら作り直す。
-    dbghelp で `dev_plugins\randamu.pdb`）。辺の作成のスレッド数は `RANDAMU_EDGE_THREADS`（診断用）。
+  - 標本化は `DUPLIX_A3D_PROF=2`（描画の糸を常に。待ちも入る）、名前の解決はスクラッチパッドの `sym.py`（消えていたら作り直す。
+    dbghelp で `dev_plugins\DupliX.pdb`）。辺の作成のスレッド数は `DUPLIX_EDGE_THREADS`（診断用）。
 
 ## 再開の手順（2026-11-27 1 時、軽量化の続き。利用者がセッションをクリアし、そのあと自分で試す）
 
-- **今の状態:** commit 30e09ec まで push 済み、作業ツリーはきれい。`dev_plugins\randamu.aex` はこの commit のビルド（Release）。
+- **今の状態:** commit 30e09ec まで push 済み、作業ツリーはきれい。`dev_plugins\DupliX.aex` はこの commit のビルド（Release）。
   利用者は「セッションをクリアして、テストはその後やります」と言った。**再開したら、利用者の試用の結果（画面での速さ・見た目）を聞いてから次へ進む。**
 - **この日の流れ（詳細は `docs/experiments/2026-11-27-dev-log.md`）:**
   1. Test D の「切れ目が動く」報告は AE 自身の描き方と分かり、利用者の判断で閉じた（下の 0 時の節）。
   2. 11/26 の最後の版（b0c63d7）の未確認の試験をすべて回して合格。
   3. GPU のクロックの差（待機 345 MHz と最大 2100 MHz）でタイル描きが 13〜17 ms と 78〜92 ms に分かれる。フレームの始めに空回りの処理で温める案は、AE の中では描画まで約 100 ms しかなく安定しないので入れなかった（コードは戻した）。利用者には NVIDIA コントロールパネルで AfterFX.exe の「電源管理モード」を「パフォーマンス最大化を優先」にする案内をした（したかどうかは未確認）。
   4. 組の描画の「AE の行の前の準備」を 40 → 10〜15 ms（Test C）に縮めた。原因は DupliX 側: (a) 診断用の環境変数をコピーごとに読んでいた → `src/hook/env_cache.h` の `EnvCache`（250 ms 覚え置き。試験の `$.setenv` も反映される）、(b) `IsMine` → `LayerIsLive` が comp の描画方式を BEE に問うたびに AE の排他ロックを取る（コピーごとに約 6 回）→ 描画の回の中のフックだけ `IsMineInPass`（回ごとにレイヤーの答えを覚え、`ClosePass` で捨てる。UI や Count・Rects は毎回確かめる）。
-- **確かめた試験（30e09ec）:** EDIT ALL PASS（`run_preview.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -Layer "flower_blue.png" -Variants "pv_anim_on100,pv_on20" -Edit 5`）、MERGE ALL PASS（`$env:RANDAMU_GRAPH_CHECK=1; run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`）、`run_user_merge.ps1` で Test・A・B・C・D 各 8 フレーム オン＝オフ差 0、単体 81・GPU ALL PASS（core と GPU はこの日の最終版で変えていない）。
+- **確かめた試験（30e09ec）:** EDIT ALL PASS（`run_preview.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -Layer "flower_blue.png" -Variants "pv_anim_on100,pv_on20" -Edit 5`）、MERGE ALL PASS（`$env:DUPLIX_GRAPH_CHECK=1; run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`）、`run_user_merge.ps1` で Test・A・B・C・D 各 8 フレーム オン＝オフ差 0、単体 81・GPU ALL PASS（core と GPU はこの日の最終版で変えていない）。
 - **今の内訳（Test C、3271 枚、画面の経路、1 フレーム、CPU）:** 計画 約 25、AE の並べ替え 約 33（うち辺の作成 25〜35）、面の作成 約 6、組の描画の準備 10〜15、行の処理 約 4、GPU の前の CPU 約 22（並べ替え 5、区間のまとめ 16）→ 約 100 ms。GPU はクロックが上がっていれば 13〜17 ms。高速モードは同じ条件で 55〜145 ms（ぶれ大）。
 - **気を付けること（計測）:**
   - 計測の時、AE 以外のプロセス（CUDA を使う python.exe と Android エミュレーター MuMu Player）が GPU を 100% 使っていて、GPU の段で 1〜2 ms の処理が 230〜285 ms 待たされる回があった。利用者に伝え済み。GPU の時間を測る前に `nvidia-smi` で GPU の使用率と使っているプロセスを確かめる。利用者のプロセスは止めない。
-  - 計測: `$env:RANDAMU_PV_COUNTS='3271'; $env:RANDAMU_A3D_TIME='2'; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 8 -IntervalMs 3000 -Variants "pv_fast3271,pv_on3271"` → `build\test\preview\plugin.log` の `group time:`・`graph time:`。GPU の段ごとは `RANDAMU_GPU_KTIME=1`（`gpu ae span` の行）。
-  - どこで時間を使っているかは `RANDAMU_A3D_PROF=4`（組の描画の中を標本化、`RANDAMU_A3D_PROF_N=300` で少ない標本でも出る）。番地 `randamu.aex+xxxx` は PDB（`dev_plugins\randamu.pdb`）を dbghelp で引いて関数名と行に直す（Python の ctypes で `SymLoadModuleEx`・`SymFromAddr`・`SymGetLineFromAddr64`。スクラッチパッドの `sym.py` は消えているかもしれないので作り直す）。
+  - 計測: `$env:DUPLIX_PV_COUNTS='3271'; $env:DUPLIX_A3D_TIME='2'; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 8 -IntervalMs 3000 -Variants "pv_fast3271,pv_on3271"` → `build\test\preview\plugin.log` の `group time:`・`graph time:`。GPU の段ごとは `DUPLIX_GPU_KTIME=1`（`gpu ae span` の行）。
+  - どこで時間を使っているかは `DUPLIX_A3D_PROF=4`（組の描画の中を標本化、`DUPLIX_A3D_PROF_N=300` で少ない標本でも出る）。番地 `DupliX.aex+xxxx` は PDB（`dev_plugins\DupliX.pdb`）を dbghelp で引いて関数名と行に直す（Python の ctypes で `SymLoadModuleEx`・`SymFromAddr`・`SymGetLineFromAddr64`。スクラッチパッドの `sym.py` は消えているかもしれないので作り直す）。
   - AE を動かす試験は 1 つずつ（`run_jsx.ps1` は AE が動いていると止まる）。長いものは裏で回す。
 - **次の 1 手:** 利用者の試用の結果を聞く。続けるなら CPU の残りの大きい順に: (1) 並べ替えの辺の作成（`HookBuildEdges`・`BuildEdgesFast`、25〜35 ms。対の判定は `core/ae_pair` で 8 スレッド済み）、(2) 計画の対の判定（`BuildIsolatedGroupPlan`、約 17 ms）、(3) GPU の前の区間のまとめ（`gpu_raster.cpp` の `AeSpansImpl`、約 16 ms）。どれも同じ絵のまま（完全一致は必須）。11/26 22:00 の節の (2)「AE の面ごとの処理の置き換え」は、準備が 10〜15 ms まで縮んだので優先度は下がった。
 
@@ -128,42 +141,42 @@
 
 - **報告:** `C:\Users\yakuruto\Desktop\DupliX Test D.aep`（写しは `tests/ae/user/DupliX Test D.aep`、659 枚、回転の範囲 180）で軌道ヌルの Y 回転を 40〜75° に動かすと、家の左上の青い花の切れ目が変わる。通常モードでも同じ。利用者は本物のレイヤー（レイヤー 7）では動かないと確認し、サブレイヤーの配置かカメラの計算の誤りを疑っている。
 - **分かったこと:**
-  1. AE がコピーに使う世界行列は DupliX の計算（コピー × 世界の変形 × レイヤー）とビット一致（`RANDAMU_XF_CHECK=1`）。カメラに依存しない。
+  1. AE がコピーに使う世界行列は DupliX の計算（コピー × 世界の変形 × レイヤー）とビット一致（`DUPLIX_XF_CHECK=1`）。カメラに依存しない。
   2. レイヤー 7 はどのコピーとも行列が一致しない（いちばん近いコピー 317 でも 170 px 以上ずれる。手で近くに置いた別の面）。
   3. 全 659 コピーと同じ世界行列の本物のレイヤー（双子）を作って書き出すと、40/50/60/75° で DupliX 通常モードと画素差 ≤2/255（オイラー角の丸め）。切れ目も同じ。→ **サブレイヤーの配置の誤りではない。本物のレイヤーでも同じ絵になる。**
   4. 窓の上の切れた花はコピー 317。4 隅の z は 241.5 / 39.1 / −4.4 / 198.0（家は z=0、カメラは −z 側）＝ほぼ全部が家の奥にあり、正しくは隠れるはず。家と 3D で交わるコピーは 317 だけ（交線は花の角の約 23 px）。
   5. 双子を 317 だけ・317 と画面で重なる 4 枚（181,317,457,618）・家と画面で重なる 32 枚にすると、どれも正しく隠れる。659 枚全部のときだけ大部分が手前に出て切れ目が動く。→ AE 自身が大きな循環の塊を描くときの崩れとみられる（未確定）。
 - **次の 1 手:** 双子を半分ずつにして、どの面の追加で崩れるか絞る。AE の塊の描画（記録の解析ノート）を確かめ、なぜ崩れるかを説明できるようにする。そのあと利用者に報告（DupliX は本物のレイヤーと同じ。直すなら AE と違う絵にすることになるので方針は利用者が決める）。
-- **道具:** `tests/ae/orbit_cut.jsx`（`RANDAMU_USER_AEP`、`RANDAMU_OC_DEGS`、`RANDAMU_OC_VARIANTS`=dx/dxon/real/twin、`RANDAMU_OC_TWINS`、`RANDAMU_OC_TWIN_ONLY`=コピー番号の並び）。双子の値は `build/test/orbit_cut_in/twins.txt`（"px py pz rx ry rz"、コピー順）。計算のスクリプト（コピーの行列・双子・カメラの投影）はスクラッチパッドにあったので消えていたら作り直す: Test D の DupliX は種 370、位置の範囲 1760/3860/8430、回転の範囲 180、世界の回転 (8,−25,62)、アンカー (108.5,108)、レイヤー位置 (960,540,0)。カメラは軌道ヌル（位置 960,540,0、拡大 241%、回転 X15 Z−14）の子で (0,0,−2880)、ズーム 2880。
+- **道具:** `tests/ae/orbit_cut.jsx`（`DUPLIX_USER_AEP`、`DUPLIX_OC_DEGS`、`DUPLIX_OC_VARIANTS`=dx/dxon/real/twin、`DUPLIX_OC_TWINS`、`DUPLIX_OC_TWIN_ONLY`=コピー番号の並び）。双子の値は `build/test/orbit_cut_in/twins.txt`（"px py pz rx ry rz"、コピー順）。計算のスクリプト（コピーの行列・双子・カメラの投影）はスクラッチパッドにあったので消えていたら作り直す: Test D の DupliX は種 370、位置の範囲 1760/3860/8430、回転の範囲 180、世界の回転 (8,−25,62)、アンカー (108.5,108)、レイヤー位置 (960,540,0)。カメラは軌道ヌル（位置 960,540,0、拡大 241%、回転 X15 Z−14）の子で (0,0,−2880)、ズーム 2880。
 - **気を付けること:** `run_jsx.ps1` で開いた写しは AE が保存するので、毎回 `tests/ae/user` から写し直す。作業ツリーには前の節の未 commit の変更（`merge_plan` など）が残っている（この節の commit には含めていない）。
 
 ## 再開の手順（2026-11-26 22:00、利用枠の見張り 70% で中断。利用者「進めてください」＝ (1) 手軽なもの → (2) AE の面ごとの処理の置き換え → (3) GPU の近道）
 
-- **済み（この節の commit）:** (1) の一部。計画の対の判定を 8 スレッドに（`BuildIsolatedGroupPlan`、5000 枚 118 → 47 ms、Test C 45 → 25 ms）。行の受け取りで AE の進み具合の通知をコピーごと 1 回に（21 → 5.5 ms）。GPU のタイル描きで、各 8 画素が触れる区間だけを共有メモリのビット集合で選ぶ（AE の順のまま、Test C の再生でタイル 23 → 13 ms）。GPU の前の CPU の準備（行の区間のまとめ）を 8 スレッドに（14 → 5 ms）。不透明な画素の下を飛ばす描き方（`RANDAMU_GPU_CULL=1`）は書いたが Test C では遅くなる（縮小で平均した不透明度が 255 になりにくい）ので既定はオフ。
+- **済み（この節の commit）:** (1) の一部。計画の対の判定を 8 スレッドに（`BuildIsolatedGroupPlan`、5000 枚 118 → 47 ms、Test C 45 → 25 ms）。行の受け取りで AE の進み具合の通知をコピーごと 1 回に（21 → 5.5 ms）。GPU のタイル描きで、各 8 画素が触れる区間だけを共有メモリのビット集合で選ぶ（AE の順のまま、Test C の再生でタイル 23 → 13 ms）。GPU の前の CPU の準備（行の区間のまとめ）を 8 スレッドに（14 → 5 ms）。不透明な画素の下を飛ばす描き方（`DUPLIX_GPU_CULL=1`）は書いたが Test C では遅くなる（縮小で平均した不透明度が 255 になりにくい）ので既定はオフ。
 - **分かったこと:** GPU は待機中 345 MHz（最大 2100）で、短い処理の始まりは遅い。AE の中で GPU の時間が 22〜154 ms とぶれた主因（利用者が別の GPU を使うアプリも終了した）。利用者に NVIDIA コントロールパネルで AfterFX.exe の電源管理を「パフォーマンス最大化を優先」にする案内をする。
 - **確かめた試験:** MERGE ALL PASS（辺の突き合わせ 392 回 差 0。CPU の準備の並列化の前の版）、GPU の試験（`gpu_ae_batch`、Test C の再生）差 0、単体 81 合格、画面の経路の Test C 3271・380 枚 オン＝オフ差 0。**未:** 最後の版（CPU の準備の並列化）での MERGE と利用者のシーン 4 つ。
 - **次の 1 手:** 上の未確認の試験 → (2) AE の面ごとの処理（行の区間の作成 `sub_1800117A0`、コピーごとの状態 `sub_18005D6C0`、並べ替えのたどり）を DupliX に置き換える。検証は AE の関数を試験の中で直接呼んで比べる（`ae_pair` と同じ）。
-- 計測: Test C の速さは画面の経路で 3271 枚 約 240〜340 ms（ぶれ大）、高速モード 55〜130 ms。GPU の段ごと `RANDAMU_GPU_KTIME=1`、CPU の準備の段ごとも同じ変数で出る。
+- 計測: Test C の速さは画面の経路で 3271 枚 約 240〜340 ms（ぶれ大）、高速モード 55〜130 ms。GPU の段ごと `DUPLIX_GPU_KTIME=1`、CPU の準備の段ごとも同じ変数で出る。
 
 ## 再開の手順（2026-11-26 21:40、根本的な軽量化の手段を調査・利用者の判断待ち）
 
 - 利用者「高速モードは自前の描画で速く絵もほぼ同じなのに、軽量化は手間がかかりすぎる。もっとクリティカルな最適化はないか。文脈を渡さない調査役なども使って模索して」。
-- **測った事実:** Test C の本物の 1 フレーム（2359 枚、区間 19.7 万本、延べ 1290 万画素）を AE なしで再生すると GPU の描画は約 21 ms（`RANDAMU_GPU_KTIME=1`: 転送 1、歩み 1.3、タイル 21）。範囲平均をやめても変わらない（`RANDAMU_REPLAY_Q0=1` で 25 ms）→ 画素の計算は決め手ではない。AE の中では同じ処理が約 100 ms。ほかに CPU が約 240 ms。
+- **測った事実:** Test C の本物の 1 フレーム（2359 枚、区間 19.7 万本、延べ 1290 万画素）を AE なしで再生すると GPU の描画は約 21 ms（`DUPLIX_GPU_KTIME=1`: 転送 1、歩み 1.3、タイル 21）。範囲平均をやめても変わらない（`DUPLIX_REPLAY_Q0=1` で 25 ms）→ 画素の計算は決め手ではない。AE の中では同じ処理が約 100 ms。ほかに CPU が約 240 ms。
 - **調査役（文脈なし）の結論:** 完全一致に本当に要るのは範囲平均と対の判定だけで、残りは AE の仕組みに乗っている設計の手間。完全一致のままで 3271 枚 60〜100 ms 前後が見込める。順位: (1) 手軽なもの: AE の中で GPU が 2 倍遅い理由の計測、計画と並べ替えで同じ対を 2 回調べている分の共有、残り約 90 ms の CPU の内訳、(2) 範囲平均の確かめつきの近道（整数の累積表＋誤差の上限で同じバイトになると保証できるときだけ、だめなら今の計算）と、標本化と合成の分離・不透明な画素の上書きで下を飛ばす（完全一致のまま）、(3) 行の区間の作成・コピーごとの状態・並べ替えのたどりを DupliX に置き換え、AE の面ごとの処理を通さない（AE の関数を試験で直接呼んで比べる方式で検証）。
 - **次の 1 手:** 利用者に報告して、(1) → (3) → (2) の順で進めてよいか確かめる。**回答待ち。**
 
 ## 再開の手順（2026-11-26 21:00、置き換えの第 1 段を実装・利用者への報告待ち）
 
-- **今どこまで（この節の commit で push 済み）:** 利用者「置き換えに進んでください」「AE 上で書き出して確認するのは非効率。すり替える関数をシミュレーションで検証できないか」。詳細は記録 8d 節「置き換え」。(1) AE の対の判定を `core/ae_pair` に書き写し、単体テストで AE の `Advanced3D.aex` を読み込んで元の関数と直接比べる（20 万通り、200 万通りも差 0）。8 スレッド。並べ替え 250 → 40 ms。(2) テクスチャを複製しない（`AEGP_DisposeTexture` のフック）。(3) GPU のタイル描き、AE なしの検証（`gpu_ae_batch`、`gpu_ae_replay` と `RANDAMU_BATCH_DUMP`）。(4) レイヤーごとの時間が均等に見えるのは AE のプロファイラーの作り（合成の時間をレイヤー数で割る）で直さない。
+- **今どこまで（この節の commit で push 済み）:** 利用者「置き換えに進んでください」「AE 上で書き出して確認するのは非効率。すり替える関数をシミュレーションで検証できないか」。詳細は記録 8d 節「置き換え」。(1) AE の対の判定を `core/ae_pair` に書き写し、単体テストで AE の `Advanced3D.aex` を読み込んで元の関数と直接比べる（20 万通り、200 万通りも差 0）。8 スレッド。並べ替え 250 → 40 ms。(2) テクスチャを複製しない（`AEGP_DisposeTexture` のフック）。(3) GPU のタイル描き、AE なしの検証（`gpu_ae_batch`、`gpu_ae_replay` と `DUPLIX_BATCH_DUMP`）。(4) レイヤーごとの時間が均等に見えるのは AE のプロファイラーの作り（合成の時間をレイヤー数で割る）で直さない。
 - **結果:** Test C 3271 枚 634 → 約 340 ms、380 枚 290 → 171 ms（高速モード 55 / 8 ms）。
-- **確かめた試験:** MERGE ALL PASS（辺の突き合わせ 392 回 差 0）、EDIT ALL PASS、Test A・B・C・Test 各 8 フレーム差 0、単体 81・GPU（新しい 2 つを含む）・REF・UI 合格。`dev_plugins\randamu.aex` は最新。
+- **確かめた試験:** MERGE ALL PASS（辺の突き合わせ 392 回 差 0）、EDIT ALL PASS、Test A・B・C・Test 各 8 フレーム差 0、単体 81・GPU（新しい 2 つを含む）・REF・UI 合格。`dev_plugins\DupliX.aex` は最新。
 - **次の 1 手:** 利用者に報告。残り（3271 枚）: 描画 約 200（GPU 約 100、AE の描画の準備 約 50）、計画 約 50、並べ替え 約 45。次の置き換えの候補は AE の描画の準備（多角形から行の区間を作る部分）。これも AE の関数を試験の中で直接呼んで比べる形で検証できる見込み。**回答待ち。**
-- 再生の検証: `$env:RANDAMU_BATCH_REPLAY="...\build\test\batch_testc.bin"; build\gpu\gpu_test.exe`（記録は `RANDAMU_BATCH_DUMP` で 10 万区間以上の 1 回目）。
+- 再生の検証: `$env:DUPLIX_BATCH_REPLAY="...\build\test\batch_testc.bin"; build\gpu\gpu_test.exe`（記録は `DUPLIX_BATCH_DUMP` で 10 万区間以上の 1 回目）。
 
 ## 再開の手順（2026-11-26 19:50、1〜3 を実装・利用者への報告と相談待ち）
 
 - **今どこまで（この節の commit で push 済み）:** 1 GPU のまとめ描き、2 計画、3 AE の並べ替えの辺の作り方（`HookBuildEdges`、四角が重なる対だけ AE の判定を呼ぶ）。詳細と数字は記録 8d 節「残りの時間を縮める」。Test C 3271 枚 軽量化オン 634 → 約 540〜580 ms（高速モード 55 ms）。
-- **確かめた試験:** MERGE ALL PASS（`RANDAMU_GRAPH_CHECK=1` で辺の突き合わせ 392 回 不一致 0）、EDIT ALL PASS、利用者のシーン Test A・B・C・Test 各 8 フレーム差 0、単体 80・GPU・REF・UI 合格。`dev_plugins\randamu.aex` は最新。
+- **確かめた試験:** MERGE ALL PASS（`DUPLIX_GRAPH_CHECK=1` で辺の突き合わせ 392 回 不一致 0）、EDIT ALL PASS、利用者のシーン Test A・B・C・Test 各 8 フレーム差 0、単体 80・GPU・REF・UI 合格。`dev_plugins\DupliX.aex` は最新。
 - **次の 1 手（利用者に相談）:** 残り（3271 枚）は AE の精密な対の判定 `sub_18002B350` 約 160 ms（並列にしても速くならない）、AE がコピーごとに行う描画の準備 約 200 ms、GPU 約 90 ms、計画 約 50 ms。大きく縮めるには `sub_18002B350` や描画の準備を DupliX の計算に置き換える必要があり、見た目が変わる危険がある（突き合わせで確かめながらなら可能）。**回答待ち。**
 
 ## 再開の手順（2026-11-26 18:20、利用枠の見張り 70% で中断。利用者「順に進めてください」＝ 1 GPU → 2 計画 → 3 AE の並べ替え）
@@ -172,43 +185,43 @@
   1. **GPU のまとめ描き:** 段ごとの起動（851 段）をやめ、画面の行ごとに 1 ブロックで、その行のコピーの区間を AE の順に描く 1 回の起動にした（`AeSpanRowsOrdered`、`ae_span.cu`。CPU 側は y の数え上げの並べ替え、`gpu_raster.cpp`）。行の中の分担を細かくした（`cMin`）。Test C 3271 枚で GPU 250〜270 → 約 135 ms。**確かめた:** GPU ALL PASS、Test C 3271・380 枚のオン＝オフ差 0（`cMin` の変更前の版で）。
   2. **計画:** 手前・奥の計画が打ち切りになった comp は次のフレームから組だけの計画へ直行（16 フレームごとに試し直し、`merge_cache.cpp` の `s_over`）。組だけの計画は 3D の交わりの判定の前に奥行きの範囲で外す・外接の四角を詰めた配列で絞る。Test C 3271 枚で計画 115 → 約 53 ms。**確かめた:** 単体 80 合格。
 - **未確認（再開したら最初に）:** `cMin` と計画の変更のあとの AE の試験一式（`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`、EDIT、`run_user_merge.ps1` の Test A・B・C・Test、画面の経路の Test C のオン＝オフ）。
-- **次の 1 手（3 の調査の途中）:** AE の並べ替え（Test C で約 250 ms）の中身を測る。`InstallPairTestProf`（`bee_hooks.cpp`、+0x2ACEA の対の判定の呼び出しを中継して数と時間を数える）は書いてビルドだけ通した。**まだどこからも呼んでいない**: `InstallGraphHook` の後で `RANDAMU_GRAPH_PROF=1` のときに呼び、`HookGraph` の後などで `LogPairTests()` を出す。結果で決める: (a) 全組み合わせの数え上げが重い → `sub_18002AB40`（+0x2AAD1 から呼ばれる、辺を作る O(n²) の部分）を、外接の四角が重なる対だけ AE の対の判定 `sub_18002A630` を呼ぶ形に置き換える（隣の一覧は相手の一覧の順の昇順になるので、その順に作れば AE と同じ。節の構造は 0x30 バイト: next, prev, +16 面, +24 隣の一覧の頭, +32 数, +40 旗）。(b) 精密な判定 `sub_18002B350` が重い → 置き換えは見た目の危険が大きいので利用者に相談。
-- 計画の内訳の記録（`group time: plan ... candidates, overlapping`）は `RANDAMU_A3D_TIME=2`。
+- **次の 1 手（3 の調査の途中）:** AE の並べ替え（Test C で約 250 ms）の中身を測る。`InstallPairTestProf`（`bee_hooks.cpp`、+0x2ACEA の対の判定の呼び出しを中継して数と時間を数える）は書いてビルドだけ通した。**まだどこからも呼んでいない**: `InstallGraphHook` の後で `DUPLIX_GRAPH_PROF=1` のときに呼び、`HookGraph` の後などで `LogPairTests()` を出す。結果で決める: (a) 全組み合わせの数え上げが重い → `sub_18002AB40`（+0x2AAD1 から呼ばれる、辺を作る O(n²) の部分）を、外接の四角が重なる対だけ AE の対の判定 `sub_18002A630` を呼ぶ形に置き換える（隣の一覧は相手の一覧の順の昇順になるので、その順に作れば AE と同じ。節の構造は 0x30 バイト: next, prev, +16 面, +24 隣の一覧の頭, +32 数, +40 旗）。(b) 精密な判定 `sub_18002B350` が重い → 置き換えは見た目の危険が大きいので利用者に相談。
+- 計画の内訳の記録（`group time: plan ... candidates, overlapping`）は `DUPLIX_A3D_TIME=2`。
 
 ## 再開の手順（2026-11-26 18:00、高速モードとの比較を計測・利用者の判断待ち）
 
 - **今どこまで（この節の commit で push 済み）:** 利用者「はい（まず計測）。Test C（`C:\Users\yakuruto\Desktop\DupliX Test C.aep`、写しは `tests/ae/user/`、3271 枚、家は非表示）も使って。高速モードは 60 ms 前後」。計測した結果、**span が組の描画を含んでいなかった**ことが分かり直した（記録 8d 節「計測の誤り」と表）。直した数字: Test C 3271 枚 高速 53 / 軽量化オン 634 / オフ 約 4000 ms、Test A 380 枚 6 / 369 / 690、Test B 380 枚 18 / 287 / 547。昼までに伝えた軽量化オンの数字は少なすぎた（利用者に訂正が必要）。
 - **内訳（Test C 3271 枚、組 1 つ）:** 計画 約 110、AE の並べ替え 約 250、描画 約 470（GPU のまとめ描き 約 300）。
 - **次の 1 手:** 利用者に訂正と内訳を報告し、どこまで進めるかを確かめる（候補: GPU のまとめ描きの無駄、計画の速さ、AE の並べ替えの置き換え、行の範囲の計算の置き換え）。**回答待ち。**
-- 計測: `$env:RANDAMU_PV_COUNTS='3271'; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 6 -IntervalMs 3000 -Variants "pv_fast3271,pv_on3271,pv_off3271"`。内訳は `RANDAMU_A3D_TIME=2`（`=1` は補助のフックも入って重い）。
+- 計測: `$env:DUPLIX_PV_COUNTS='3271'; pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test C.aep" -Layer "flower_blue.png" -Frames 6 -IntervalMs 3000 -Variants "pv_fast3271,pv_on3271,pv_off3271"`。内訳は `DUPLIX_A3D_TIME=2`（`=1` は補助のフックも入って重い）。
 
 ## 再開の手順（2026-11-26 17:15、Test B の「絵が消える」を修正・利用者の確認待ち）
 
 - **今どこまで（この節の commit で push 済み）:** 利用者「回転で傾けると大量の絵がランダムに消えます」（`C:\Users\yakuruto\Desktop\DupliX Test B.aep`、写しは `tests/ae/user/DupliX Test B.aep`。380 枚、回転の範囲 70、散らばりが画面より広い）を再現して直した。原因: 組の代表に画面の外のコピー（カメラの近くで大きい）が選ばれ、AE がその面を捨てたので組の全部が消えた。8c 節の組にも同じ穴。修正: 代表は画面の内側に写る面積が最大で不透明度が 0 でないコピー（`OnScreenArea`、`merge_plan.cpp`）。詳細は記録の 8d 節「不具合」。
-- **確かめた試験:** Test B（書き出し 8 フレーム、画面の経路 100 / 380 枚、ビューアーの拡大 4 倍の指定つきも）オン＝オフ差 0、MERGE ALL PASS、EDIT ALL PASS、Test A・Test 差 0、単体 80 合格。画面の経路 Test B 380 枚: オフ 552、オン 82 ms。今の `dev_plugins\randamu.aex` は最新（16:53）。
+- **確かめた試験:** Test B（書き出し 8 フレーム、画面の経路 100 / 380 枚、ビューアーの拡大 4 倍の指定つきも）オン＝オフ差 0、MERGE ALL PASS、EDIT ALL PASS、Test A・Test 差 0、単体 80 合格。画面の経路 Test B 380 枚: オフ 552、オン 82 ms。今の `dev_plugins\DupliX.aex` は最新（16:53）。
 - **次の 1 手:** 利用者に報告し、AE を再起動して Test B で確かめてもらう。
 - **利用者の質問（17:30）と回答待ち:** 「描画は GPU で 0、高速モードとの差は準備か。準備も DupliX で担当して高速モード並みにできないか」→ 回答: 画素はほぼ 0、残りは AE のコピーごとの準備（1 枚ずつのコピー 約 0.3 ms、組の中 約 0.1 ms）。案: 並べ替えの前に全コピーの面を AE の一覧へ入れる（`HookGraph` の前段で list に足す。並べ替え・交わりの合成は AE のまま、サブレイヤーの処理は全部消える。見込み 380 枚 40〜50 ms、未計測）。危険: 交わる塊の描画（`sub_180013470`）が同じレイヤーの補助を二重に作り止まるおそれ、足した面の後片付けと進み具合の数。提案中: まず同じシーンで高速モードと軽量化を画面の経路で測ってから決める。**回答待ち。**
-- **気を付けること:** ビューアーの拡大（`RANDAMU_PV_ZOOM`、`preview_step.jsx`）は、取り込んだ絵が 1920×1080 のままで、本当に一部だけを描いたかは確かめられていない。拡大して消えるなら、AE の視野がコンポの一部になって代表が捨てられている。その場合は代表が一覧にないときに組を描く仕組み（`HookGraph` が「a representative culled」をログに出す）が要る。
+- **気を付けること:** ビューアーの拡大（`DUPLIX_PV_ZOOM`、`preview_step.jsx`）は、取り込んだ絵が 1920×1080 のままで、本当に一部だけを描いたかは確かめられていない。拡大して消えるなら、AE の視野がコンポの一部になって代表が捨てられている。その場合は代表が一覧にないときに組を描く仕組み（`HookGraph` が「a representative culled」をログに出す）が要る。
 
 ## 再開の手順（2026-11-26 16:10、手前・奥の組を実装・既定で有効・利用者への報告と試用待ち）
 
-- **今どこまで（この節の commit で push 済み）:** 利用者「次の段階の手前、奥のまとめを実装して」に対して実装し、既定で有効にした（`RANDAMU_GROUP_FB=0` で止める）。詳細は `docs/experiments/2026-11-26-dev-log.md` の 8d 節。要点: 組分け `BuildFrontBackGroupPlan`（`merge_plan.cpp`。重なる組の外の面すべてよりはっきり手前／奥のコピーを、レイヤーごとに手前の組・奥の組に）。描く順は `HookGraph`（`bee_hooks.cpp`。Advanced3D +0x14630 の並べ替えの呼び出しを中継に差し替え、手前の組の代表の成分を末尾、奥の組の代表を先頭へ）。機械語が合わなければ取り付けず、計画も 8c 節の組だけに戻る。
-- **確かめた試験（既定の設定）:** MERGE ALL PASS（104 本で手前・奥の組を描いた、「not moved」0 件）、EDIT ALL PASS、利用者のシーン（Test A・Test）オン＝オフ差 0、画面の経路 20・100・380 枚 差 0、REF・UI・GPU・単体 78 合格。今の `dev_plugins\randamu.aex` は最新（Release、15:54）。
+- **今どこまで（この節の commit で push 済み）:** 利用者「次の段階の手前、奥のまとめを実装して」に対して実装し、既定で有効にした（`DUPLIX_GROUP_FB=0` で止める）。詳細は `docs/experiments/2026-11-26-dev-log.md` の 8d 節。要点: 組分け `BuildFrontBackGroupPlan`（`merge_plan.cpp`。重なる組の外の面すべてよりはっきり手前／奥のコピーを、レイヤーごとに手前の組・奥の組に）。描く順は `HookGraph`（`bee_hooks.cpp`。Advanced3D +0x14630 の並べ替えの呼び出しを中継に差し替え、手前の組の代表の成分を末尾、奥の組の代表を先頭へ）。機械語が合わなければ取り付けず、計画も 8c 節の組だけに戻る。
+- **確かめた試験（既定の設定）:** MERGE ALL PASS（104 本で手前・奥の組を描いた、「not moved」0 件）、EDIT ALL PASS、利用者のシーン（Test A・Test）オン＝オフ差 0、画面の経路 20・100・380 枚 差 0、REF・UI・GPU・単体 78 合格。今の `dev_plugins\DupliX.aex` は最新（Release、15:54）。
 - **結果（画面、Test A、span）:** 20 / 100 / 380 枚 = 16 / 23〜26 / 119〜126 ms（組だけ 14 / 23 / 144）。計画を速くした後に MERGE・EDIT・利用者のシーン（8 フレームとも差 0）・単体 79 を回し直して合格。密集では 380 枚中 35 枚ほどしかまとまらず、大きくは速くならない。
 - **次の 1 手:** 利用者に結果と限界を報告し、AE を再起動して試してもらう。続けるなら候補は (1) 組を AE の順の途中に差し込む（手前と奥の両方に何かがあるコピー＝380 枚で約 165 枚）、(2) 余白を縮小率に合わせる（6 px 以内に近いコピー、等倍 1 px で組 35 → 100 枚）。
 - **気を付けること:** AE の対の判定（`sub_18002B350`）は多角形が少しでも交われば辺を作る（しきい値 1e-12）。辺がないのは重ならない対だけ。組分けはこれに頼っている。中継のメモリは Advanced3D の近くに `VirtualAlloc` で取る。計画は 380 枚で 6〜9 ms、40 ms を超えたら組だけの計画に切り替える。1/4・1/8 の縮小表示は試していない（余白 3 px）。
 
 ## 再開の手順（2026-11-26 14:50、組の描画を実装・既定で有効・利用者の試用待ち。セッションをクリアする前に記録）
 
-- **今どこまで（commit b5b0912 まで push 済み）:** 利用者「組の方式に取り掛かってください」に対して、**組の描画を実装し既定で有効にした**（`RANDAMU_GROUP=0` で止める）。詳細はすべて `docs/experiments/2026-11-26-dev-log.md` の 8c 節（仕組み・AE の関数の RVA・ずれの原因 2 つ・結果・注意）。要点: 他と重ならないコピーをサブレイヤー 1 枚（代表＝画面上で一番大きいコピー）にまとめ、AE が代表を描く時に、組の全コピーの面を AE 自身の関数で作って描く（`DrawGroup`、`bee_hooks.cpp`）。組分けは `BuildIsolatedGroupPlan`（`merge_plan.cpp`）。GPU はためてまとめて 1 回（`FlushGroupJobs` → `GpuAeSpansBatch`、詰めた行の区間・重なりの段ごとに 1 回の命令）。奥行きの補正の番号は `HookGetLayerIndex` で組なしの値に戻す。
+- **今どこまで（commit b5b0912 まで push 済み）:** 利用者「組の方式に取り掛かってください」に対して、**組の描画を実装し既定で有効にした**（`DUPLIX_GROUP=0` で止める）。詳細はすべて `docs/experiments/2026-11-26-dev-log.md` の 8c 節（仕組み・AE の関数の RVA・ずれの原因 2 つ・結果・注意）。要点: 他と重ならないコピーをサブレイヤー 1 枚（代表＝画面上で一番大きいコピー）にまとめ、AE が代表を描く時に、組の全コピーの面を AE 自身の関数で作って描く（`DrawGroup`、`bee_hooks.cpp`）。組分けは `BuildIsolatedGroupPlan`（`merge_plan.cpp`）。GPU はためてまとめて 1 回（`FlushGroupJobs` → `GpuAeSpansBatch`、詰めた行の区間・重なりの段ごとに 1 回の命令）。奥行きの補正の番号は `HookGetLayerIndex` で組なしの値に戻す。
 - **利用者に報告済み（14:45）:** 結果の表（Test.aep 100 枚 38.6 → 22.2 ms、Test A 100 枚 約 30 → 23 ms、Test A 380 枚は密集で 2〜3 枚しかまとまらず変わらない）、オフと全部差 0、限界（密集では効かない・画素の計算は減らない・穴）。**回答待ち:** AE を再起動して試してもらう。続けるなら次は「手前・奥の組」（家と重なっても、はっきり手前か奥にあるコピーをまとめる。8c 節の最後）。
-- **確かめた試験（組あり）:** `run_preview.ps1 ... -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（234 本中 72 本の記録で組を描いた、16/32 bit・MFR オンを含む）、`run_user_merge.ps1`（Test A・Test）オン＝オフ、`run_ref`・`run_ui`・単体（74）・`gpu_test` 合格。画面の経路のオン＝オフは 20・100・380 枚と色が変わる変種で差 0。今の `dev_plugins\randamu.aex` は最新（Release、14:38）。
+- **確かめた試験（組あり）:** `run_preview.ps1 ... -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（234 本中 72 本の記録で組を描いた、16/32 bit・MFR オンを含む）、`run_user_merge.ps1`（Test A・Test）オン＝オフ、`run_ref`・`run_ui`・単体（74）・`gpu_test` 合格。画面の経路のオン＝オフは 20・100・380 枚と色が変わる変種で差 0。今の `dev_plugins\DupliX.aex` は最新（Release、14:38）。
 - **計測の方法（利用者は画面で測る）:** `pwsh tests/ae/run_preview.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -Layer "flower_blue.png" -Frames 8 -IntervalMs 1500 -Variants "pv_off100,pv_on100"`（span の平均。ぶれ ±10 ms）。オンとオフの一致は `spike/.venv/Scripts/python.exe tests/ae/cmp_frames.py build/test/preview pv_off100 pv_on100`。変種は `preview_setup.jsx`（`pv_on1/20/100/380`・`pv_off…`・`pv_none`・`pv_anim_on100/off100`）。Test.aep には `-Layer` 不要。
 - **気を付けること:**
   - 穴: 代表の描画で組の描画が断られる（描き込み先の種類が 1 以外、動きのぼかし）と組の他のコピーが描かれない。ログ「group: not drawn as a group」。組分けの条件では起きないはずで、試験でも出ていない。
   - 1 回の描画の終わりの検出（`ctx+252 >= ctx+248`）は画面の経路で成り立たないことがある（「pass time」の draw の数字は当てにならない）。共有の表は次の `AEGP_GetNumLayersToRender` で必ず捨てているので結果には影響しない。
-  - 簡易プロファイラー（`RANDAMU_A3D_PROF`）は GPU の同期待ちを大きく見せる。描画の費用は `RANDAMU_A3D_DRAW=2` や `RANDAMU_GROUP_NOGPU=1` との差で測る。
-  - 診断の環境変数（記録の 6・8c 節）: `RANDAMU_A3D_TIME`、`RANDAMU_GROUP_TRACE`（段階ごとの記録と AE の内部確認の失敗）、`RANDAMU_XF_CHECK`、`RANDAMU_GROUP_CLONE`、`RANDAMU_GROUP_BATCH=0`、`RANDAMU_BOUNDS_SHARE=0`（共有せず比べる）。
+  - 簡易プロファイラー（`DUPLIX_A3D_PROF`）は GPU の同期待ちを大きく見せる。描画の費用は `DUPLIX_A3D_DRAW=2` や `DUPLIX_GROUP_NOGPU=1` との差で測る。
+  - 診断の環境変数（記録の 6・8c 節）: `DUPLIX_A3D_TIME`、`DUPLIX_GROUP_TRACE`（段階ごとの記録と AE の内部確認の失敗）、`DUPLIX_XF_CHECK`、`DUPLIX_GROUP_CLONE`、`DUPLIX_GROUP_BATCH=0`、`DUPLIX_BOUNDS_SHARE=0`（共有せず比べる）。
   - AE の内部の関数をアドレスで呼んでいる（Advanced3D 2025 の RVA）。版が変わると使えない（vtable の照合で描画のフックごと止まる）。
   - 計測のスクリプトが AE に届かない件は直した（AE の「2 つめのスクリプト」の警告。`run_preview.ps1` が待ち・送り直し・警告を閉じる）。
 
@@ -222,28 +235,28 @@
 ## 再開の手順（2026-11-26 11 時、残りの軽量化を実施・利用者への報告待ち）
 
 - 利用者は 8 時の版を画面で確かめ「計測結果と同じ。信用できる。残りの軽量化も進めて」。
-- **済み（この節の commit）: (1) レイヤーの範囲の共有（`HookGetBounds`。Advanced3D がサブレイヤーごとに問う `AEGP_GetRenderLayerBounds` に、同じ描画の準備の中では 1 回目の答えを返す。全 792 回で答えが同じことを確認）、(2) GPU への絵の再転送を省く（控えと各行の画素が同じなら送らない）、(3) 小さいコピーを AE に任せるしきい値 `RANDAMU_GPU_MINPX`（既定 0＝常に GPU。差がなかったため）。** 詳細は `docs/experiments/2026-11-26-dev-log.md` の 8 節。
+- **済み（この節の commit）: (1) レイヤーの範囲の共有（`HookGetBounds`。Advanced3D がサブレイヤーごとに問う `AEGP_GetRenderLayerBounds` に、同じ描画の準備の中では 1 回目の答えを返す。全 792 回で答えが同じことを確認）、(2) GPU への絵の再転送を省く（控えと各行の画素が同じなら送らない）、(3) 小さいコピーを AE に任せるしきい値 `DUPLIX_GPU_MINPX`（既定 0＝常に GPU。差がなかったため）。** 詳細は `docs/experiments/2026-11-26-dev-log.md` の 8 節。
 - **結果（画面の経路、Test A、span）: オン 20 / 100 / 380 枚 = 14 / 36 / 151 ms（8 時の版 19 / 57 / 237）。オフ 68 / 195 / 619。目標「100 枚で 50 ms 以下」を満たした。** ぶれ ±10 ms。
-- **確かめた試験:** EDIT ALL PASS（再実行で。1 回目は AE の起動の不調とみられる「no frames」）、画面のオン＝オフ 4 種類差 0、MERGE ALL PASS、利用者のシーン オン＝オフ、REF・UI・単体・GPU 合格。今の `dev_plugins\randamu.aex` は最新（Release）。
+- **確かめた試験:** EDIT ALL PASS（再実行で。1 回目は AE の起動の不調とみられる「no frames」）、画面のオン＝オフ 4 種類差 0、MERGE ALL PASS、利用者のシーン オン＝オフ、REF・UI・単体・GPU 合格。今の `dev_plugins\DupliX.aex` は最新（Release）。
 - **次:** 利用者に報告して試してもらう（AE の再起動が必要）。残りの候補はフックの時間（380 枚で約 20 ms）と GPU の往復をまとめること（記録の 8 節）。`run_preview.ps1` がときどき結果なしで終わる件は、次に起きたら原因を追えるよう表示を足す。
 
 ## 再開の手順（2026-11-26 8 時、画面での速さを修正済み・利用者の試用待ち）
 
-- **済み（commit 2bbac0d、push 済み）: 利用者の報告「新しい軽量化でも画面のレンダリング時間が変わらない（380 枚 700 ms〜1 秒）」を再現して直した。** 詳細は `docs/experiments/2026-11-26-dev-log.md`。原因は画面の経路でだけコピーごとに起きていた 2 つ: (1) AE がコピーごとにテクスチャを取り直す（約 1 ms）→ 軽量化オンのレイヤーは 1 フレームの描画の中で 1 枚目の複製を返す（`HookTex` の共有）。(2) サブレイヤーごとの PreRender が毎回フックのキャッシュの世代を進め、不透明度のフックが毎回 AEGP で読み直していた（約 0.55 ms）→ パラメーターとアンカーの指紋が変わったときだけ進める（`ParamsChangedAt`）。ほかに、テクスチャのフックの以前の方式の処理（約 0.9 ms）を `RANDAMU_MERGE_OLD=1` のときだけにした。
+- **済み（commit 2bbac0d、push 済み）: 利用者の報告「新しい軽量化でも画面のレンダリング時間が変わらない（380 枚 700 ms〜1 秒）」を再現して直した。** 詳細は `docs/experiments/2026-11-26-dev-log.md`。原因は画面の経路でだけコピーごとに起きていた 2 つ: (1) AE がコピーごとにテクスチャを取り直す（約 1 ms）→ 軽量化オンのレイヤーは 1 フレームの描画の中で 1 枚目の複製を返す（`HookTex` の共有）。(2) サブレイヤーごとの PreRender が毎回フックのキャッシュの世代を進め、不透明度のフックが毎回 AEGP で読み直していた（約 0.55 ms）→ パラメーターとアンカーの指紋が変わったときだけ進める（`ParamsChangedAt`）。ほかに、テクスチャのフックの以前の方式の処理（約 0.9 ms）を `DUPLIX_MERGE_OLD=1` のときだけにした。
 - **結果（画面の経路 `run_preview.ps1`、Test A、span、最終ビルド 8:29）: オン 20 / 100 / 380 枚 = 19 / 57 / 237 ms（修正前 84 / 323 / 1008）。オフは 77 / 228 / 689。オンとオフの絵は差 0。目標の「100 枚で 50 ms 以下」にはまだ届いていない。** レンダーキュー: オン 152、オフ 183、花なし 163 ms/フレーム。
 - **テクスチャの共有の確認（助言役の指摘）:** 花の色が毎フレーム変わる変種 `pv_anim_on100`/`pv_anim_off100`（DupliX の前に塗り＋時刻の式）で、オン＝オフ差 0、連続フレームは実際に変わる。編集の試験に「塗りの式を同じ時刻で変える」手順を追加し、EDIT ALL PASS。
 - **確かめた試験:** 新しい編集の試験 `run_preview.ps1 ... -Variants "pv_anim_on100,pv_on20" -Edit 5` EDIT ALL PASS、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（共有が働いたことをログで確認）、`run_ref` REF ALL PASS、`run_ui` UI ALL PASS、単体 ALL PASS、`gpu_test` GPU ALL PASS、`run_user_merge.ps1`（Test A・Test）オン＝オフ。
-- **ビルドの既定を Release にした**（`tools/build.ps1`。それまで利用者が試していたのは Debug 版）。今の `dev_plugins\randamu.aex` は Release（8:29 のビルド＝最新の commit）。
+- **ビルドの既定を Release にした**（`tools/build.ps1`。それまで利用者が試していたのは Debug 版）。今の `dev_plugins\DupliX.aex` は Release（8:29 のビルド＝最新の commit）。
 - **利用者の回答待ち:** 新しい版を画面で試してもらう（20・100・380 枚、オン・オフ。AE の再起動が必要）。目標は「100 枚で 50 ms 以下」（今は span 57 ms）。
-- **次の候補（利用者の結果しだい）:** (a) PreRender がコピーごとに約 1 回来る（呼び出し元は AE の描画計画 BEE/RG と、Advanced3D+0x8b72 の各サブレイヤーの範囲の問い合わせ＝canvas suite の +128 付近。`RANDAMU_PRE_STACK=1` で記録）。そのたびに編集検出の指紋（約 30 個の `PF_CHECKOUT_PARAM`＋アンカー）で 1 回 約 0.15 ms＝100 枚で約 15 ms。指紋の安い方法か、範囲の問い合わせの共有を検討。(b) フックの時間（380 枚で約 75 ms）、(c) GPU のテクスチャの転送が共有のたびに起きる（`memcmp` で省けば 100 枚で約 10 ms 減の見込み）、(d) GPU の往復を連続するコピーでまとめる、(e) 前からの候補（16/32 bit・画質 2、群れの方式のコードの整理、手引きの「軽量化」の節の書き直し）。
-- 気を付けること: 診断の道具は環境変数（`RANDAMU_A3D_TIME`・`RANDAMU_A3D_PROF`・`RANDAMU_A3D_AEPIX`・`RANDAMU_CMDLOG`、記録の 6 節）。簡易プロファイラーは相手のスレッドを止めたままスタックをたどると AE が固まる（直した）。判定の Python は `spike/.venv`。
+- **次の候補（利用者の結果しだい）:** (a) PreRender がコピーごとに約 1 回来る（呼び出し元は AE の描画計画 BEE/RG と、Advanced3D+0x8b72 の各サブレイヤーの範囲の問い合わせ＝canvas suite の +128 付近。`DUPLIX_PRE_STACK=1` で記録）。そのたびに編集検出の指紋（約 30 個の `PF_CHECKOUT_PARAM`＋アンカー）で 1 回 約 0.15 ms＝100 枚で約 15 ms。指紋の安い方法か、範囲の問い合わせの共有を検討。(b) フックの時間（380 枚で約 75 ms）、(c) GPU のテクスチャの転送が共有のたびに起きる（`memcmp` で省けば 100 枚で約 10 ms 減の見込み）、(d) GPU の往復を連続するコピーでまとめる、(e) 前からの候補（16/32 bit・画質 2、群れの方式のコードの整理、手引きの「軽量化」の節の書き直し）。
+- 気を付けること: 診断の道具は環境変数（`DUPLIX_A3D_TIME`・`DUPLIX_A3D_PROF`・`DUPLIX_A3D_AEPIX`・`DUPLIX_CMDLOG`、記録の 6 節）。簡易プロファイラーは相手のスレッドを止めたままスタックをたどると AE が固まる（直した）。判定の Python は `spike/.venv`。
 
 ## 再開の手順（2026-11-26 朝、新しい軽量化を実装済み・利用者の試用待ち）
 
-- **新しい軽量化（commit e90c6cb、push 済み）: 「軽量化」がオンのレイヤーのコピーは、AE の描画（面の順番・準備・行の範囲）はそのままに、画素の計算だけを DupliX が GPU で AE と同じ計算で行う。** 解読の全記録は `docs/experiments/2026-11-26-a3d-span-notes.md`。計算の本体 `src/core/ae_span_impl.h`（CPU と CUDA で共通）、CPU 版 `src/core/ae_span.{h,cpp}`、GPU `src/gpu/ae_span.cu`（`--fmad=false`、`tools/build_ptx.ps1` が `ae_span_ptx.h` を生成）と `GpuAeSpans`（`gpu_raster.cpp`、コピー 1 枚ずつ、写る範囲だけ転送、テクスチャは `g_texGen`（HookTex で増える）で再転送）、フック `bee_hooks.cpp` の `HookA3dDraw` → `DrawCopyOurs` → `OurIterate`（対応外: 描き込み先の種類が 1 以外＝循環の塊など、8 bit 以外、動きのぼかしの標本 2 以上、画質 2、合成 2 以外、ライト、マスク、合成の表、CPU の旗 0、GPU の失敗 → AE が描く）。チェックの値はコピーの不透明度のフックで読んだ値（`NoteMergeSeen`、全スレッド共通）。以前の群れの方式は `RANDAMU_MERGE_OLD=1` のときだけ。作りかけの順序グラフの規則（0225fd9）は戻した（`ae_order.*` は使われないまま残っている）。診断 `RANDAMU_A3D_DRAW`: 0 AE だけ、1 記録、2 コピーを飛ばす、3 捕獲（`RANDAMU_A3D_CAPSUB`=番号の並び、`RANDAMU_A3D_CAPW`=幅、`RANDAMU_A3D_CAPDIR`）、4 画素の計算なし、5 我々の CPU、6 我々の GPU。
-- **確かめた試験:** 単体 ALL PASS（74、捕獲との照合は `RANDAMU_SPAN_CAP=<dir;dir>` のとき）、`build/gpu/gpu_test.exe` GPU ALL PASS（捕獲 14 枚＝`build/test/cap1`・`capT/s*`・`capA/s*` を GPU で描いて AE とビット一致）、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（オンとオフが全部の回で完全一致、`check_merge.py` を新方式の判定に変更）、`run_ref.ps1` REF ALL PASS、`run_ui.ps1` UI ALL PASS。利用者のシーン（`run_user_time.ps1`、`RANDAMU_A3D_DRAW=6` で）: Test.aep 100 枚 30 フレーム完全一致・花の分 157→16 ms、Test A 30 フレーム完全一致・花の分 43→20 ms。
+- **新しい軽量化（commit e90c6cb、push 済み）: 「軽量化」がオンのレイヤーのコピーは、AE の描画（面の順番・準備・行の範囲）はそのままに、画素の計算だけを DupliX が GPU で AE と同じ計算で行う。** 解読の全記録は `docs/experiments/2026-11-26-a3d-span-notes.md`。計算の本体 `src/core/ae_span_impl.h`（CPU と CUDA で共通）、CPU 版 `src/core/ae_span.{h,cpp}`、GPU `src/gpu/ae_span.cu`（`--fmad=false`、`tools/build_ptx.ps1` が `ae_span_ptx.h` を生成）と `GpuAeSpans`（`gpu_raster.cpp`、コピー 1 枚ずつ、写る範囲だけ転送、テクスチャは `g_texGen`（HookTex で増える）で再転送）、フック `bee_hooks.cpp` の `HookA3dDraw` → `DrawCopyOurs` → `OurIterate`（対応外: 描き込み先の種類が 1 以外＝循環の塊など、8 bit 以外、動きのぼかしの標本 2 以上、画質 2、合成 2 以外、ライト、マスク、合成の表、CPU の旗 0、GPU の失敗 → AE が描く）。チェックの値はコピーの不透明度のフックで読んだ値（`NoteMergeSeen`、全スレッド共通）。以前の群れの方式は `DUPLIX_MERGE_OLD=1` のときだけ。作りかけの順序グラフの規則（0225fd9）は戻した（`ae_order.*` は使われないまま残っている）。診断 `DUPLIX_A3D_DRAW`: 0 AE だけ、1 記録、2 コピーを飛ばす、3 捕獲（`DUPLIX_A3D_CAPSUB`=番号の並び、`DUPLIX_A3D_CAPW`=幅、`DUPLIX_A3D_CAPDIR`）、4 画素の計算なし、5 我々の CPU、6 我々の GPU。
+- **確かめた試験:** 単体 ALL PASS（74、捕獲との照合は `DUPLIX_SPAN_CAP=<dir;dir>` のとき）、`build/gpu/gpu_test.exe` GPU ALL PASS（捕獲 14 枚＝`build/test/cap1`・`capT/s*`・`capA/s*` を GPU で描いて AE とビット一致）、`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"` MERGE ALL PASS（オンとオフが全部の回で完全一致、`check_merge.py` を新方式の判定に変更）、`run_ref.ps1` REF ALL PASS、`run_ui.ps1` UI ALL PASS。利用者のシーン（`run_user_time.ps1`、`DUPLIX_A3D_DRAW=6` で）: Test.aep 100 枚 30 フレーム完全一致・花の分 157→16 ms、Test A 30 フレーム完全一致・花の分 43→20 ms。
 - **未解決: 利用者の「レイヤーのレンダリング時間」（画面）は Test A の 380 枚で約 900 ms だが、レンダーキューでは花の分が 15〜30 ms しかなく（ぶれ ±20 ms）、利用者の測り方を再現できていない。** 画面では別の重さ（コピーごとの何か）がある可能性。→ 利用者に新しい版で同じ表示を見てもらう（20・100・380 枚、オン・オフ）。重いままなら `run_preview.ps1`（画面の経路）で内訳を調べる。
-- 次の候補: 画面の重さの調査、16/32 bit・画質 2（バイキュービック）への対応、群れの方式のコード（merge_plan など）の整理、手引き `docs/randamu-quickstart.md` の「軽量化」の節の書き直し。
+- 次の候補: 画面の重さの調査、16/32 bit・画質 2（バイキュービック）への対応、群れの方式のコード（merge_plan など）の整理、手引き `docs/duplix-quickstart.md` の「軽量化」の節の書き直し。
 
 ## 再開の手順（2026-11-26 午後、規則の方針を利用者に相談中）
 
@@ -252,19 +265,19 @@
 - **前の試験の事実:** 旧規則の群れ分けは、交わるコピー（`OrderItems` が 0）を 1 枚ずつにしていた。`wall_front_back`（回転あり 30 枚）などは合格 → コピーだけの塊を 1 枚ずつにする方式は、少なくともその場面では一致した。家の例は、ほかのレイヤー（家）を含む塊からコピーを抜いたのが原因。
 - **利用者に相談中（返事待ち）:** (1) 今の厳密な規則（循環か ties が 1 つでもあればフレーム全体をまとめない。平らな散らばりと密集した回転では効かない）、(2) 緩めた規則（ほかのレイヤーを含む塊・ties があればフレームをまとめない。コピーだけの塊・ties のコピーは 1 枚ずつにして残りをまとめる。まとめた後のグラフで塊が同じで群れの面が塊に入らないことを確かめる。AE の試験に密集・平らなケースを足して確かめる）、(3) AE のたどり方を一覧の順まで完全に再現する（時間がかかる）。おすすめは (2) → AE の試験 → ずれたら (3)。
 - 速さの修正（`allNb` の組を使い回す・予算で打ち切る）は方針が決まってから。
-- **（11/26 未明、利用者「最後まで進めてください」）AE のコピー 1 枚の描き方を解読中。全部 `docs/experiments/2026-11-26-a3d-span-notes.md` に記録（呼び出しの流れ・データの形・各関数の訳・捕獲の使い方）。** 捕獲（`RANDAMU_A3D_DRAW=3`）は動く（`build/test/cap1`、Test.aep のコピー 0、786 行）。PF.dll は `spike/ida/versions/2025/PF.dll(.i64)` に解析済み。**次: (1) PF の定数と `qword_180425A18`・範囲平均 0x18008A560 の機械語を読む → (2) CPU の参照版 `src/core/ae_span.{h,cpp}`（AE に依存しない）と、捕獲と比べる試験（単体テスト or `tests/tools` の道具）→ ビット一致 → (3) GPU 版 → (4) `HookA3dDraw` の本番（kind 1・標本 1・8 bit・画質 0/1・合成 2・ライトなし・マスクなしだけ置き換え、他は AE）→ (5) 利用者のシーンで実測。**
-- **（11/26 深夜 3）利用者の計測（レイヤーごとのレンダリング時間、Test A、軽量化オン）: flower_blue 380 枚 約 900 ms、20 枚 約 50 ms、100 枚 約 250 ms（1 枚 約 2.5 ms）、家 1〜2 ms。目標「100 枚で 50 ms 以下」。** 利用者には新方式の見込み「100 枚 10〜15 ms、380 枚 30〜40 ms」を伝えた。**確認 1（助言役の指摘、見込みの前提）:** `run_user_time.ps1 -Aep "tests/ae/user/DupliX Test.aep" -Count 100 -Variants off,none`（`-Count` を追加）を 2 回: 花なし 141〜159、通常 246〜249、`RANDAMU_A3D_DRAW=2`（飛ばす）153〜158 ms → 飛ばした後の残りは 100 枚で 6〜17 ms（1 枚 約 0.1 ms）。前の「1 枚 1.3 ms 残る」は `run_user.ps1 -SkipScene` が Test A の版を使っていた見かけ。**確認 2（完全一致の可否）:** Advanced3D 全体に `rcp`/`rsqrt`/FMA は 0 件（スクラッチパッドの `scan_approx.py`。8 bit の画素の処理と標本化の関数 24 個の機械語も書き出した）。単精度の四則・`vroundsd`・`vcvttss2si` なので、GPU で同じ順の計算（`--fmad=false`、IEEE の除算・平方根）なら一致できる見込み。`PF_Get_Xfer` の合成の関数は別の DLL（未確認）。**次（助言役の形）:** (1) 捕獲: 反復のラッパーの `d`（多角形の経路の v36: +8 が描画の状態 v45＝+16 テクスチャの PF_World、+24 SAT、+32 標本の項目（72 バイト）、+40 その数）で、選んだコピーの各行の範囲 [x0,x1) を元の行の関数の前後で写し、状態と絵も書き出す → (2) 機械語から命令ごとに訳した CPU の参照版を捕獲とビット単位で一致させる → (3) GPU 版を CPU の参照版と一致させる。本番の条件: `*(int*)a7 == 1`（直接の描き込み）かつ動きのぼかしの標本 1 つのときだけ置き換え、種類 2〜4（断片の表＝循環の塊を含む）は AE のまま。転送は連続するコピーの範囲だけ（全画面の往復は 約 12 ms）。
+- **（11/26 未明、利用者「最後まで進めてください」）AE のコピー 1 枚の描き方を解読中。全部 `docs/experiments/2026-11-26-a3d-span-notes.md` に記録（呼び出しの流れ・データの形・各関数の訳・捕獲の使い方）。** 捕獲（`DUPLIX_A3D_DRAW=3`）は動く（`build/test/cap1`、Test.aep のコピー 0、786 行）。PF.dll は `spike/ida/versions/2025/PF.dll(.i64)` に解析済み。**次: (1) PF の定数と `qword_180425A18`・範囲平均 0x18008A560 の機械語を読む → (2) CPU の参照版 `src/core/ae_span.{h,cpp}`（AE に依存しない）と、捕獲と比べる試験（単体テスト or `tests/tools` の道具）→ ビット一致 → (3) GPU 版 → (4) `HookA3dDraw` の本番（kind 1・標本 1・8 bit・画質 0/1・合成 2・ライトなし・マスクなしだけ置き換え、他は AE）→ (5) 利用者のシーンで実測。**
+- **（11/26 深夜 3）利用者の計測（レイヤーごとのレンダリング時間、Test A、軽量化オン）: flower_blue 380 枚 約 900 ms、20 枚 約 50 ms、100 枚 約 250 ms（1 枚 約 2.5 ms）、家 1〜2 ms。目標「100 枚で 50 ms 以下」。** 利用者には新方式の見込み「100 枚 10〜15 ms、380 枚 30〜40 ms」を伝えた。**確認 1（助言役の指摘、見込みの前提）:** `run_user_time.ps1 -Aep "tests/ae/user/DupliX Test.aep" -Count 100 -Variants off,none`（`-Count` を追加）を 2 回: 花なし 141〜159、通常 246〜249、`DUPLIX_A3D_DRAW=2`（飛ばす）153〜158 ms → 飛ばした後の残りは 100 枚で 6〜17 ms（1 枚 約 0.1 ms）。前の「1 枚 1.3 ms 残る」は `run_user.ps1 -SkipScene` が Test A の版を使っていた見かけ。**確認 2（完全一致の可否）:** Advanced3D 全体に `rcp`/`rsqrt`/FMA は 0 件（スクラッチパッドの `scan_approx.py`。8 bit の画素の処理と標本化の関数 24 個の機械語も書き出した）。単精度の四則・`vroundsd`・`vcvttss2si` なので、GPU で同じ順の計算（`--fmad=false`、IEEE の除算・平方根）なら一致できる見込み。`PF_Get_Xfer` の合成の関数は別の DLL（未確認）。**次（助言役の形）:** (1) 捕獲: 反復のラッパーの `d`（多角形の経路の v36: +8 が描画の状態 v45＝+16 テクスチャの PF_World、+24 SAT、+32 標本の項目（72 バイト）、+40 その数）で、選んだコピーの各行の範囲 [x0,x1) を元の行の関数の前後で写し、状態と絵も書き出す → (2) 機械語から命令ごとに訳した CPU の参照版を捕獲とビット単位で一致させる → (3) GPU 版を CPU の参照版と一致させる。本番の条件: `*(int*)a7 == 1`（直接の描き込み）かつ動きのぼかしの標本 1 つのときだけ置き換え、種類 2〜4（断片の表＝循環の塊を含む）は AE のまま。転送は連続するコピーの範囲だけ（全画面の往復は 約 12 ms）。
 - **（11/26 深夜 2）追加の計測（実験コードに絵の受け取りの時間 `a3d tex time` と、行ごとの処理の CPU 時間 `row-work` を追加）:** (1) 小さな花 1 枚の描画 約 1.4〜2 ms のうち、行の処理の CPU 時間の合計は 約 1.5 ms＝本当に画素の計算が重い（並列の立ち上げの手間ではない）→ AE と同じ計算の GPU 版が必要という結論は変わらない。(2) レイヤーの絵の受け取りはフレームに 1 回（サブレイヤーごとではない、2 ms 前後）。(3) Test A（レンダーキュー、MFR オフ、30 フレーム。PC の負荷で ±20 ms ぶれる）: 花なし 140〜166、通常 217、コピーを飛ばす 168 ms → 花の分は 約 50 ms、飛ばすと 約 28 ms（380 枚の AE 側の準備、1 枚 約 0.07 ms）。**注意: `run_user.ps1 -SkipScene` は前回作った版を使う。途中で Test A で版を作り直したので、それ以降の `v_norm100` は Test A のもの（380 枚）だった。** 利用者に「花を隠したときのレンダリング時間」を質問中（家だけの基準を知るため）。
-- **（11/26 深夜）利用者の測り方: コンポジションパネルのレンダリング時間、フル画質、Test A を開いた状態（家 1 つ、表示は青い花だけ約 20 枚、花の描画に約 130 ms）。** デスクトップの `DupliX Test A.aep` は `tests/ae/user/` のものと同じ内容（md5 一致）だったのでデスクトップ側を消した。新しい計測 `pwsh tests/ae/run_user_time.ps1 -Aep "tests/ae/user/DupliX Test A.aep" [-Frames 30] [-Variants asis,on,off,none]`（`user_time.jsx`: コピーを開き、MFR オフで種類ごとに連続フレームをレンダーキューで描いて ms/フレーム）。結果（30 フレーム）: そのまま 208、軽量化オン 205、オフ 203、花なし 151 ms（レンダーキューの TIFF 書き出しなどを含む。差の約 55 ms が花）。青い花は 380 枚（画面に入るのは一部）。`RANDAMU_A3D_DRAW=1` の記録では、オフの 10 フレームで AE がコピーを 1920 幅の画面に 369 回描いて 1071 ms（約 107 ms/フレーム、1 枚 約 2.9 ms）。**注意: 隠れた AE は開いたプロジェクトのビューアーも裏で描く（512 幅のバッファに元のコンポの花を 368 回）ので、記録は描き込み先の幅で分ける。家の描画は 10 フレームで 1 回しか記録されない（別の経路？未確認）。** 家があるので軽量化（群れ）は効かない。**方針: 新方式（AE の順のまま、コピーの画素の処理を DupliX が GPU で AE と同じ計算で行う）を進める。次: 8 bit の画素の処理 `sub_180037D90`/`sub_180045210` の読解（どちらが使われるか＝a1+40 の意味、標本化の方式、合成）。**
-- **（11/26 夜）利用者「100 枚で 200 ms は遅すぎ。100 ms 以下に。80 ms も嘘では？ Test A で 20 枚ほどでも 130 ms 前後」。** 測り直し（`DupliX Test.aep`、aerender MFR オフ 30 フレーム、秒単位の合計 ÷ 30）: コピー 0 枚 67 ms、軽量化 10 枚 133 ms、100 枚 167 ms、通常 100 枚 1870 ms → **前に報告した 83 ms は再現しない（誤り。利用者に謝罪済み）。** 軽量化 100 枚の内訳（`RANDAMU_A3D_DRAW=1`）: 群れの面 1 枚の描画 35〜55 ms（GPU の群れの絵 約 15 ms を含むとみられる）、フレームの間隔 約 150〜165 ms。残り約 50 ms は未特定。Test A（家・4 レイヤー 452 枚）は `user_scene.jsx` の版の作り方が合わず測れなかった。**家があるので、今のビルド（厳しい規則）では Test A は全フレームで軽量化が効かない**＝利用者の 130 ms は軽量化なしの値の可能性。**次: 利用者に測り方（どこで読んだ時間か・枚数・軽量化のオンオフ）を確認 → 同じ測り方で再現 → 内訳（コピーごとの絵の受け取り・面の準備・計画・群れの描画）を測る → 100 枚で 100 ms 以下の方法を決める（候補: 新方式でコピーの絵の受け取りを 1×1 の絵に差し替えて AE の準備を削る）。**
-- **（11/26 夕、実験の結果。利用者が案を承認「進めてください」）** 実験コード: `bee_hooks.cpp` の `HookA3dDraw`／`InstallA3dDrawHook`（`RANDAMU_A3D_DRAW`=1 記録、=2 コピーを描かずに飛ばす。SY_TRLayer の vtable は RVA 0x80438、slot 1 = 0x12B30 を照合してから差し替え）。分かったこと: (1) 面（SY_TRLayer、232 バイト）の +224 がレンダー内のレイヤー番号。`PR_ExtractRenderRefcon`（PR.dll）→`BEE_GetArtisanNthLayerToRender` でトレース → 既存の `kTraceArtLayer` でレイヤーとサブレイヤー番号が分かる（AE の試験で全コピーを特定、順番も取れた）。(2) 飛ばすと壁だけの絵になり落ちない。(3) 利用者のシーン（aerender MFR オフ）: 通常 100 枚 約 1900 ms/フレーム → 飛ばす 約 200 ms（コピー 0 枚 67 ms）。(4) 1 枚の描画 14〜17 ms のうち 93% が画素の処理（ctx+224 の並列の反復）、準備は 7%。→ 速くするには AE の画素の処理を DupliX が同じ結果で行う必要がある。(5) 描き込み先は a7 → {int 1, バッファ}、バッファ +32 データ、+40 rowbytes、+44 幅（8 bit で 1920×4）。(6) 画素の処理は `sub_180050B40`（種類 1→`sub_18004CFD0`）→ bpc ごと・a1+40 ごとの版（8 bit: `sub_180037D90` / `sub_180045210`、各 約 950 行、`PF_Get_Xfer`・`PF_LinearBlendingTables`・標本化の関数 `sub_18005C*`/`sub_1800559*` など）。**利用者に報告して返事待ち: AE の画素の処理（まず 8 bit・通常の合成）を GPU で同じ結果に作り直す計画でよいか。対応しない場合（16/32 bit、ライト、モーションブラー、描画モードなど）はそのコピーだけ AE が描く（フレーム全体は無効にならない）。**
+- **（11/26 深夜）利用者の測り方: コンポジションパネルのレンダリング時間、フル画質、Test A を開いた状態（家 1 つ、表示は青い花だけ約 20 枚、花の描画に約 130 ms）。** デスクトップの `DupliX Test A.aep` は `tests/ae/user/` のものと同じ内容（md5 一致）だったのでデスクトップ側を消した。新しい計測 `pwsh tests/ae/run_user_time.ps1 -Aep "tests/ae/user/DupliX Test A.aep" [-Frames 30] [-Variants asis,on,off,none]`（`user_time.jsx`: コピーを開き、MFR オフで種類ごとに連続フレームをレンダーキューで描いて ms/フレーム）。結果（30 フレーム）: そのまま 208、軽量化オン 205、オフ 203、花なし 151 ms（レンダーキューの TIFF 書き出しなどを含む。差の約 55 ms が花）。青い花は 380 枚（画面に入るのは一部）。`DUPLIX_A3D_DRAW=1` の記録では、オフの 10 フレームで AE がコピーを 1920 幅の画面に 369 回描いて 1071 ms（約 107 ms/フレーム、1 枚 約 2.9 ms）。**注意: 隠れた AE は開いたプロジェクトのビューアーも裏で描く（512 幅のバッファに元のコンポの花を 368 回）ので、記録は描き込み先の幅で分ける。家の描画は 10 フレームで 1 回しか記録されない（別の経路？未確認）。** 家があるので軽量化（群れ）は効かない。**方針: 新方式（AE の順のまま、コピーの画素の処理を DupliX が GPU で AE と同じ計算で行う）を進める。次: 8 bit の画素の処理 `sub_180037D90`/`sub_180045210` の読解（どちらが使われるか＝a1+40 の意味、標本化の方式、合成）。**
+- **（11/26 夜）利用者「100 枚で 200 ms は遅すぎ。100 ms 以下に。80 ms も嘘では？ Test A で 20 枚ほどでも 130 ms 前後」。** 測り直し（`DupliX Test.aep`、aerender MFR オフ 30 フレーム、秒単位の合計 ÷ 30）: コピー 0 枚 67 ms、軽量化 10 枚 133 ms、100 枚 167 ms、通常 100 枚 1870 ms → **前に報告した 83 ms は再現しない（誤り。利用者に謝罪済み）。** 軽量化 100 枚の内訳（`DUPLIX_A3D_DRAW=1`）: 群れの面 1 枚の描画 35〜55 ms（GPU の群れの絵 約 15 ms を含むとみられる）、フレームの間隔 約 150〜165 ms。残り約 50 ms は未特定。Test A（家・4 レイヤー 452 枚）は `user_scene.jsx` の版の作り方が合わず測れなかった。**家があるので、今のビルド（厳しい規則）では Test A は全フレームで軽量化が効かない**＝利用者の 130 ms は軽量化なしの値の可能性。**次: 利用者に測り方（どこで読んだ時間か・枚数・軽量化のオンオフ）を確認 → 同じ測り方で再現 → 内訳（コピーごとの絵の受け取り・面の準備・計画・群れの描画）を測る → 100 枚で 100 ms 以下の方法を決める（候補: 新方式でコピーの絵の受け取りを 1×1 の絵に差し替えて AE の準備を削る）。**
+- **（11/26 夕、実験の結果。利用者が案を承認「進めてください」）** 実験コード: `bee_hooks.cpp` の `HookA3dDraw`／`InstallA3dDrawHook`（`DUPLIX_A3D_DRAW`=1 記録、=2 コピーを描かずに飛ばす。SY_TRLayer の vtable は RVA 0x80438、slot 1 = 0x12B30 を照合してから差し替え）。分かったこと: (1) 面（SY_TRLayer、232 バイト）の +224 がレンダー内のレイヤー番号。`PR_ExtractRenderRefcon`（PR.dll）→`BEE_GetArtisanNthLayerToRender` でトレース → 既存の `kTraceArtLayer` でレイヤーとサブレイヤー番号が分かる（AE の試験で全コピーを特定、順番も取れた）。(2) 飛ばすと壁だけの絵になり落ちない。(3) 利用者のシーン（aerender MFR オフ）: 通常 100 枚 約 1900 ms/フレーム → 飛ばす 約 200 ms（コピー 0 枚 67 ms）。(4) 1 枚の描画 14〜17 ms のうち 93% が画素の処理（ctx+224 の並列の反復）、準備は 7%。→ 速くするには AE の画素の処理を DupliX が同じ結果で行う必要がある。(5) 描き込み先は a7 → {int 1, バッファ}、バッファ +32 データ、+40 rowbytes、+44 幅（8 bit で 1920×4）。(6) 画素の処理は `sub_180050B40`（種類 1→`sub_18004CFD0`）→ bpc ごと・a1+40 ごとの版（8 bit: `sub_180037D90` / `sub_180045210`、各 約 950 行、`PF_Get_Xfer`・`PF_LinearBlendingTables`・標本化の関数 `sub_18005C*`/`sub_1800559*` など）。**利用者に報告して返事待ち: AE の画素の処理（まず 8 bit・通常の合成）を GPU で同じ結果に作り直す計画でよいか。対応しない場合（16/32 bit、ライト、モーションブラー、描画モードなど）はそのコピーだけ AE が描く（フレーム全体は無効にならない）。**
 - **（追記 2）利用者「条件で軽量化が無効になるフレームがあるのは嫌（重なりが 1 つでもあるとカメラを動かしても常にオフ）。黒魔術でもっと自由にできないか」→ 新しい案を提案して返事待ち: AE の描画の中に入る。** AE には全コピーを 1 枚ずつ渡したまま（並べ方は AE 自身が全部の面で決める＝まとめないときと同じ順）、1 枚の面を描く関数 `sub_180014800`（`sub_180014470` が塊 1 枚ごとに呼ぶ）を差し替え、コピーの面なら DupliX が GPU で描く（AE の順に連続するコピーはまとめて 1 回で）。2 枚以上の塊（`sub_180013470`、断片の表）とコピー以外の面は AE のまま。群れ・判定・面の奥行きの計算が不要になり、無効になるフレームがない。未確認: 232 バイトの面からどのレイヤー・何枚目のコピーかを知る方法、描き込み先のバッファの形式、AE の 1 枚の描き方（補間・縁）との画素の差（今の群れの中身と同じ問題）、ライト・影・被写界深度・動きのぼかしのある面は AE に任せる条件。最初の実験: `sub_180014800` を差し替えてコピーの面の順と中身を記録 → コピーだけ描かずに飛ばす → 自前で描いて AE と比べる。
 - **（追記）利用者「難しく考えすぎ。もっと良い方法は？」→ 単純な考え方を提案して返事待ち:** 「答えが 1 つに決まるフレームだけまとめる」。重なる組がすべて前後はっきりで循環がなければ、AE がどの順にたどっても絵は幾何どおりの 1 通り（まとめた後も同じ条件なら一致）。AE の内部の順番の再現は不要。これは今の実装（規則 1）と同じ中身なので、残りは (1) 循環か ties を 1 つ見つけた時点で打ち切る（速さの問題が消える）、(2) 単体テストの期待を「決まるフレームはまとめる・決まらないフレームはまとめない」に直し、家の例は橋渡しの面を入れて作り直す、(3) 実際のシーン（利用者のシーンの家なし、平らな散らばり、密集）でどれだけまとまるかを AE で測る。足りなければ、その時に旧方式（互いに交わるコピーだけ 1 枚ずつ、`wall_front_back` などで一致済み）を足す。
 
 ## 再開の手順（2026-11-26 0:50、5 時間枠 70% で区切り。リセット 02:40）
 
 - **今の作業: AE（クラシック 3D）の並べ方を再現して、軽量化の可否を決める（利用者の決定 A）。** 解析の結果と設計は下の「（11/25 23:40〜）」の項。
-- **途中の状態（commit は WIP）:** `src/core/ae_order.{h,cpp}`（`AeOrderGraph`: 画面で重なる組の奥行きの差で辺 → Tarjan。循環する面の数と、差のない組（ties）を返す。`CameraFacingSurface`）を追加し、`BuildMergePlan` で (1) 全コピー 1 枚ずつのグラフに循環か ties があればフレームをまとめない、(2) まとめた後のグラフ（群れの面は 24 px 広げる）に循環か ties があればまとめない、に置き換えた（前の「またぎ合う組」の規則は削除。診断 `RANDAMU_MERGE_RULE=1` で検査を外せる）。**単体テストが 9 件 FAIL:** (a) `merge_plan_speed` が遅い（5000 枚 2.6 s、1000 枚 175 ms。全組を多角形で切る O(重なる組) で重い。`allNb` の組を使い回す・境界の箱で先に絞る・予算で打ち切る必要）。field 1000 枚は群れ 0（ties か循環が出ている。原因を確かめる）。(b) `merge_tilted_wall_sides` の突き抜けなしの版でもまとめない（何が循環・ties になるか要確認。板と平行でない面の組で ties が誤って出ている可能性：重なる多角形の頂点が辺の上にあると差 0 になる）。(c) `merge_ambiguous_no_merge` で循環が出ない（家の例を再現したはずの配置。コピーと板が画面で重ならない？）。
+- **途中の状態（commit は WIP）:** `src/core/ae_order.{h,cpp}`（`AeOrderGraph`: 画面で重なる組の奥行きの差で辺 → Tarjan。循環する面の数と、差のない組（ties）を返す。`CameraFacingSurface`）を追加し、`BuildMergePlan` で (1) 全コピー 1 枚ずつのグラフに循環か ties があればフレームをまとめない、(2) まとめた後のグラフ（群れの面は 24 px 広げる）に循環か ties があればまとめない、に置き換えた（前の「またぎ合う組」の規則は削除。診断 `DUPLIX_MERGE_RULE=1` で検査を外せる）。**単体テストが 9 件 FAIL:** (a) `merge_plan_speed` が遅い（5000 枚 2.6 s、1000 枚 175 ms。全組を多角形で切る O(重なる組) で重い。`allNb` の組を使い回す・境界の箱で先に絞る・予算で打ち切る必要）。field 1000 枚は群れ 0（ties か循環が出ている。原因を確かめる）。(b) `merge_tilted_wall_sides` の突き抜けなしの版でもまとめない（何が循環・ties になるか要確認。板と平行でない面の組で ties が誤って出ている可能性：重なる多角形の頂点が辺の上にあると差 0 になる）。(c) `merge_ambiguous_no_merge` で循環が出ない（家の例を再現したはずの配置。コピーと板が画面で重ならない？）。
 - **次の 1 手:** 単体テストの (b)(c) を直す（`AeOrderGraph` の ties の数え方：頂点ごとに差 0 は数えず、どの頂点でも差がないときだけ ties）→ (a) 速さ → `run_user_merge.ps1`（家のシーン 8 フレーム一致、`aegraph.py` と同じ結果か）→ 試験一式（`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`）。試験一式では `wall_tilted` など突き抜けるケースはまとめなくなるので `check_merge.py` の期待（groups）を直す必要。平らな散らばり（Z 範囲 0）で ties が出ればまとめなくなる点も確認（助言役の指摘）。
 - 利用者への報告済み: 解析で分かった仕組み（重なる組の辺 → 強連結成分 → 塊は断片の表）と、新しい規則の方針。予測の確認（家なし＝塊なし、元の不具合＝塊が変わる）は合ったが、「またぐコピーだけ 1 枚ずつ」の計画では塊が同じなのに前後が変わった → 塊の中の描き込み順（グラフ全体のたどり方）に左右されると判断し、「塊が 1 つでもあればフレーム全体をまとめない」にした。
 
@@ -272,20 +285,20 @@
 
 - **高速モードの GPU 化は完了**（最終レビューの修正 c6fe738、開発記録 5d019d9、push 済み）。GPU で描けないときは CPU で描き直す、カーネルは GPU の準備で読み込む、帯ごとに起動して中止できる、区画の一覧の上限。後回しにした軽微な指摘は開発記録 `docs/experiments/2026-11-25-dev-log.md` の 5 節の末尾。**利用者にはまだ一覧を伝えていない。**
 - **今の作業: 通常モードの軽量化（設計書 12.7 の (3)・12.12、群れを 1 枚の絵にまとめる）。** 利用者が実験に同意（11/25 午後）。利用者と合意した判定の考え方: 群れの外で画面上に重なるもの（他のレイヤー・まとめないコピー・他の群れ）は、群れの中身が写る画素で完全に手前か奥。3D 回転した板は「板のどちら側か」で分け、板を突き抜けるコピーはまとめない。手前の群れの面は群れの一番手前、奥の群れは一番奥の奥行きに置く。重なりはコピー 1 枚ずつの写る形で判定（数画素の余裕）。板の左右の空き場所のコピーは板と同じ奥行きでもまとめてよい。
-- **実験は完了**（commit d2b7914。記録は開発記録の 5b 節、差分は `spike/atlas/texture_swap_spike.patch`、実験の道具も `spike/atlas/`）。結論: 並べた絵を M3 で引き伸ばす方式は、まとめないコピーの縁が変わる（最大 3〜7）ので不採用。**AE がコピーごとに絵を受け取る `BEE_RenderTextureForArtisan`（AEGPDriver の IAT）を差し替え、群れの面のコピーだけ自前の絵（`AEGP_WorldSuite3::AEGP_New`。AE が `AEGP_DisposeTexture` で delete する）を渡す方式**が成功（ほかのコピーは差 0、画面と書き出しで動作）。`src/` は元に戻し、`dev_plugins\randamu.aex` は実験コードなしでビルドし直した（13:23）。
+- **実験は完了**（commit d2b7914。記録は開発記録の 5b 節、差分は `spike/atlas/texture_swap_spike.patch`、実験の道具も `spike/atlas/`）。結論: 並べた絵を M3 で引き伸ばす方式は、まとめないコピーの縁が変わる（最大 3〜7）ので不採用。**AE がコピーごとに絵を受け取る `BEE_RenderTextureForArtisan`（AEGPDriver の IAT）を差し替え、群れの面のコピーだけ自前の絵（`AEGP_WorldSuite3::AEGP_New`。AE が `AEGP_DisposeTexture` で delete する）を渡す方式**が成功（ほかのコピーは差 0、画面と書き出しで動作）。`src/` は元に戻し、`dev_plugins\DupliX.aex` は実験コードなしでビルドし直した（13:23）。
 - **設計書は利用者が承認（11/25 午後、「進めてください。後回しにした軽微な指摘も直してください」）。** 軽微な指摘は修正済み（commit 3bc90c5）。
-- **計画 `docs/superpowers/plans/2026-11-25-merge-optimization.md` を executing-plans の方式（このセッションで直接）で実行中。** 台帳 `.superpowers/sdd/2026-11-25-merge-optimization/progress.md`（git 管理外。判断 Ruling を全部ここに記録）。Task 1〜6 完了（7cd055e, a036a2d, 308a93c, 116c2a1, 624cd7a。11/25 16:30、5 時間枠 95% で区切り。リセット 17:20）。**次は Task 7（MFR オン・`-Gpu CUDA`・16/32 bpc・画面（run_ui の方式）・300 フレームのメモリ。`run_merge.ps1` に `-Mfrs ON`、`-Gpu`（merge.jsx は `RANDAMU_MERGE_GPU` をまだ使っていない: プロジェクトの GPU 設定と bpc の切り替えを足す）、`-Long` を足す）→ 8（状態の欄に理由・手引き・計測）→ 最終レビュー（executing-plans の手順、台帳の Ruling を利用者に一覧で報告）。**
-- **（11/25 17 時）利用者の質問「軽量化がレンダリング時間にあまり効いていない」に回答し、返事待ち**（試した枚数・測り方・レイヤーの条件を質問中。返事で Task 7 の前に改善をするか決まる）。調べた結果（利用者のシーン、aerender MFR オフ、30 フレーム、1 フレームあたり）: コピー 0 枚 67 ms、通常 10 枚 233 ms → まとめる 167 ms、通常 100 枚 1570 ms → まとめる 233 ms。10 枚では群れの面が 1752×1032 とほぼ画面全体になり、AE がその大きな面を描く時間と DupliX が CPU で描く時間が残るので効きが小さい。画面（ビューアー）でも 10 枚・100 枚ともまとめる処理が動くこと（テクスチャの差し替え）を確認。`preview_setup.jsx` に `pv_norm10/pv_merge10/pv_norm100/pv_merge100` を追加。**注意: `RANDAMU_TIMING` の span はフックの呼び出しの範囲だけで、まとめた絵を AE が描く時間を含まない（まとめる版の画面の速さはこの方法では測れない）。** 改善の候補（利用者に提案中）: 群れを画面上の小さな塊に分けて面を小さくする、少ない枚数ではまとめない、群れの絵を GPU で描く。
+- **計画 `docs/superpowers/plans/2026-11-25-merge-optimization.md` を executing-plans の方式（このセッションで直接）で実行中。** 台帳 `.superpowers/sdd/2026-11-25-merge-optimization/progress.md`（git 管理外。判断 Ruling を全部ここに記録）。Task 1〜6 完了（7cd055e, a036a2d, 308a93c, 116c2a1, 624cd7a。11/25 16:30、5 時間枠 95% で区切り。リセット 17:20）。**次は Task 7（MFR オン・`-Gpu CUDA`・16/32 bpc・画面（run_ui の方式）・300 フレームのメモリ。`run_merge.ps1` に `-Mfrs ON`、`-Gpu`（merge.jsx は `DUPLIX_MERGE_GPU` をまだ使っていない: プロジェクトの GPU 設定と bpc の切り替えを足す）、`-Long` を足す）→ 8（状態の欄に理由・手引き・計測）→ 最終レビュー（executing-plans の手順、台帳の Ruling を利用者に一覧で報告）。**
+- **（11/25 17 時）利用者の質問「軽量化がレンダリング時間にあまり効いていない」に回答し、返事待ち**（試した枚数・測り方・レイヤーの条件を質問中。返事で Task 7 の前に改善をするか決まる）。調べた結果（利用者のシーン、aerender MFR オフ、30 フレーム、1 フレームあたり）: コピー 0 枚 67 ms、通常 10 枚 233 ms → まとめる 167 ms、通常 100 枚 1570 ms → まとめる 233 ms。10 枚では群れの面が 1752×1032 とほぼ画面全体になり、AE がその大きな面を描く時間と DupliX が CPU で描く時間が残るので効きが小さい。画面（ビューアー）でも 10 枚・100 枚ともまとめる処理が動くこと（テクスチャの差し替え）を確認。`preview_setup.jsx` に `pv_norm10/pv_merge10/pv_norm100/pv_merge100` を追加。**注意: `DUPLIX_TIMING` の span はフックの呼び出しの範囲だけで、まとめた絵を AE が描く時間を含まない（まとめる版の画面の速さはこの方法では測れない）。** 改善の候補（利用者に提案中）: 群れを画面上の小さな塊に分けて面を小さくする、少ない枚数ではまとめない、群れの絵を GPU で描く。
 - （11/25 17:10）内訳を測った（`merge_texture.cpp` に `merge: group draw ... in X ms` のログを追加）: DupliX が群れの絵を CPU で描く時間は 10 枚で約 38 ms、100 枚で約 87 ms。残り（10 枚で約 60 ms）は AE がクラシック 3D でほぼ画面大の面を描く時間で、こちらは CPU のままで変えられない。GPU 化で減るのは DupliX の分だけ（10 枚 167 → 約 130 ms の見込み）と利用者に説明。
 - （11/25 17:20）利用者の案「群れを 2D レイヤーとしてレイヤー順に割り込ませる」に回答し、返事待ち。回答の要点: 2D を挟むと AE は 3D レイヤーをそこで別の塊に分けて描く（塊をまたぐ交差・影・前後の判定が消え、レイヤー順と奥行きが食い違うシーンで見た目が変わる）ので完全一致の条件に合わない。2D の速さの元は「画素ごとの補間をしない」ことで、群れの面は画面に 1 対 1 に重なるので、群れのコピーだけ AE にドラフト画質（最近傍）で描かせれば同じ絵のまま補間を省ける見込み（11/24 の計測: 10 枚で最高画質 161 ms → ドラフト 55 ms）。この実験（群れのコピーの画質の問い合わせをフックでドラフトにする→速さと画素の一致を測る）をしてよいか質問中。
-- **（11/25 18:30）ドラフトの実験（利用者が承認「進めてください」）。** 実装: `bee_hooks.cpp` の `HookGetLayerQuality`。Advanced3D.aex は `AEGP Layer Suite` を版 10 で取り、`AEGP_GetLayerQuality`（表の +64）で画質を読む → その版の表の 1 か所を差し替え、呼び出し元が Advanced3D で、まとめるオンで、そのフレームの計画のサブレイヤーが全部群れの面のときだけ DRAFT を返す。フレームの時刻は同じスレッドの Count のフックの時刻（不透明度より先に画質を聞かれるため。テクスチャのときの時刻との食い違い 0 件）。**今は環境変数 `RANDAMU_MERGE_DRAFT=1` のときだけ有効（実験）。** 結果: 画面（PNG 保存込み）10 枚 327→288 ms、100 枚 383→340 ms、絵は差 0。aerender（「最良設定」でも効く）10 枚 133→108 ms、100 枚 192→167 ms（コピー 0 枚は 50 ms）。`run_merge.ps1` 一式（MFR オフ）でフックの有無の絵が 46 枚とも完全一致。`seam` はどちらも FAIL だが `-ForceD` なしで流したため（既知、変更とは無関係）。MFR オン・フックありも、フックなし（MFR オフ）の絵と 23 枚とも完全一致（seam は同じく `-ForceD` なしの既知の FAIL）。利用者の決定（「おすすめの進行で」）: (1) ドラフトを正式に入れる → (2) 群れの絵の GPU 化。
-- **（11/25 21 時）(1) は実装済み: ドラフトは常に有効（`RANDAMU_MERGE_DRAFT=0` で切れる。毎回読む）。** 試験 `run_merge.ps1` を利用者の指摘で作り替えた: 既定は 1 つの AE の中で `merge.jsx` がシーンを作って全コンポを書き出す（`-Mfrs OFF,ON -CompareDraft -ForceD "200,150,300"` で 87 件 160 秒。前の方式は `-Aerender`）。プラグインはログの出力先・キャッシュのソルト・ドラフトの切り替えを毎回読み、ログの回数制限（`LogLimit`）と計画のキャッシュはログの切り替えで数え直す。結果: 前からの試験は MFR オフ・オンとも全部合格（seam も）。ドラフトの有無で 27 件一致。
+- **（11/25 18:30）ドラフトの実験（利用者が承認「進めてください」）。** 実装: `bee_hooks.cpp` の `HookGetLayerQuality`。Advanced3D.aex は `AEGP Layer Suite` を版 10 で取り、`AEGP_GetLayerQuality`（表の +64）で画質を読む → その版の表の 1 か所を差し替え、呼び出し元が Advanced3D で、まとめるオンで、そのフレームの計画のサブレイヤーが全部群れの面のときだけ DRAFT を返す。フレームの時刻は同じスレッドの Count のフックの時刻（不透明度より先に画質を聞かれるため。テクスチャのときの時刻との食い違い 0 件）。**今は環境変数 `DUPLIX_MERGE_DRAFT=1` のときだけ有効（実験）。** 結果: 画面（PNG 保存込み）10 枚 327→288 ms、100 枚 383→340 ms、絵は差 0。aerender（「最良設定」でも効く）10 枚 133→108 ms、100 枚 192→167 ms（コピー 0 枚は 50 ms）。`run_merge.ps1` 一式（MFR オフ）でフックの有無の絵が 46 枚とも完全一致。`seam` はどちらも FAIL だが `-ForceD` なしで流したため（既知、変更とは無関係）。MFR オン・フックありも、フックなし（MFR オフ）の絵と 23 枚とも完全一致（seam は同じく `-ForceD` なしの既知の FAIL）。利用者の決定（「おすすめの進行で」）: (1) ドラフトを正式に入れる → (2) 群れの絵の GPU 化。
+- **（11/25 21 時）(1) は実装済み: ドラフトは常に有効（`DUPLIX_MERGE_DRAFT=0` で切れる。毎回読む）。** 試験 `run_merge.ps1` を利用者の指摘で作り替えた: 既定は 1 つの AE の中で `merge.jsx` がシーンを作って全コンポを書き出す（`-Mfrs OFF,ON -CompareDraft -ForceD "200,150,300"` で 87 件 160 秒。前の方式は `-Aerender`）。プラグインはログの出力先・キャッシュのソルト・ドラフトの切り替えを毎回読み、ログの回数制限（`LogLimit`）と計画のキャッシュはログの切り替えで数え直す。結果: 前からの試験は MFR オフ・オンとも全部合格（seam も）。ドラフトの有無で 27 件一致。
 - **見つかった前からの不具合（ドラフトと無関係、利用者に報告して判断待ち）:** 新しい試験 `group_res5`（1/5）と `group_odd_res3`（401×301 の 1/3）が FAIL。(a) テクスチャの縮小率を「テクスチャの大きさ ÷ レイヤーの大きさ」で求めていて割り切れない大きさでずれる（利用者の花 577×680 は 1/2・1/3 で該当の見込み）。(b) 群れの面を 24 px 単位でそろえていて 1/5・1/7 では画素の境目に乗らない。描画の縮小率を AE から直接得る方法はまだない（テクスチャのフックの第 1 引数はレンダーコンテキストではなかった。渡したら AE が落ちた）。この 2 件ではドラフトの有無で絵が変わる（どちらも正解とは違う）。
 - **（11/25 21:05）(a)(b) は修正済み**（利用者の決定「おすすめの進行で」＝不具合が先、次に GPU 化）。描画の縮小率はキャンバスの関数表（版 10）の `AEGP_GetRenderDownsampleFactor` を差し替えて同じスレッドに覚える（`t_dsf`）。`run_merge.ps1 -Mfrs OFF,ON -CompareDraft -ForceD "200,150,300"` MERGE ALL PASS（158 s、ドラフトの有無 29 件一致）、REF ALL PASS、単体 ALL PASS（71）。**次の 1 手: GPU 化**（下の注意）。
-- **（11/25 21:40）GPU 化は実装済み。** `GpuRasterizeHost`（`src/gpu/gpu_raster.cpp`）: GPU のプライマリーコンテキスト＋自前の非同期ストリーム、MFR では排他、AE の画素のまま送って GPU で形式を変換（`fast_raster.cu` の `ArgbToBgraF` / `BgraFToArgb`、丸めは CPU 版の Store と同じ式）、失敗したら CPU で描く。使う条件 `MergeGpuAllowed()`: AE がこのエフェクトに CUDA の装置を準備した（GPU 設定が CUDA）とき。試験用 `RANDAMU_MERGE_GPU_DRAW`（0/1）。**GPU 設定が「ソフトウェアのみ」のプロジェクトでは GPU を使わない。** 速さ（利用者のシーン、aerender MFR オフ）: 群れの絵 10 枚 40→6 ms、100 枚 89→11.5 ms。1 フレーム 10 枚 約 83 ms・100 枚 約 83 ms（コピー 0 枚 50 ms、通常 10 枚 233 ms・100 枚 1570 ms）。CPU の形式の変換が 30〜40 ms かかって最初は効かなかった（変換を GPU に移して解決）。試験 `run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`（8 回分 292 s）: 全回合格、GPU と CPU の絵は 8 bit で最大 1 段階。16/32 bit の回は AE が 8 bit の TIFF にディザをかける（描くたびに 1 段階ずれる）ので 1 段階を許す（`check_merge.py` の `DITHER`）。
+- **（11/25 21:40）GPU 化は実装済み。** `GpuRasterizeHost`（`src/gpu/gpu_raster.cpp`）: GPU のプライマリーコンテキスト＋自前の非同期ストリーム、MFR では排他、AE の画素のまま送って GPU で形式を変換（`fast_raster.cu` の `ArgbToBgraF` / `BgraFToArgb`、丸めは CPU 版の Store と同じ式）、失敗したら CPU で描く。使う条件 `MergeGpuAllowed()`: AE がこのエフェクトに CUDA の装置を準備した（GPU 設定が CUDA）とき。試験用 `DUPLIX_MERGE_GPU_DRAW`（0/1）。**GPU 設定が「ソフトウェアのみ」のプロジェクトでは GPU を使わない。** 速さ（利用者のシーン、aerender MFR オフ）: 群れの絵 10 枚 40→6 ms、100 枚 89→11.5 ms。1 フレーム 10 枚 約 83 ms・100 枚 約 83 ms（コピー 0 枚 50 ms、通常 10 枚 233 ms・100 枚 1570 ms）。CPU の形式の変換が 30〜40 ms かかって最初は効かなかった（変換を GPU に移して解決）。試験 `run_merge.ps1 -Mfrs OFF,ON -CompareDraft -GpuDraw -ForceD "200,150,300"`（8 回分 292 s）: 全回合格、GPU と CPU の絵は 8 bit で最大 1 段階。16/32 bit の回は AE が 8 bit の TIFF にディザをかける（描くたびに 1 段階ずれる）ので 1 段階を許す（`check_merge.py` の `DITHER`）。
 - 計画の残り: Task 7 の残り（画面＝run_ui の方式、300 フレームのメモリ）→ Task 8（状態の欄に理由・手引き・計測）→ 最終レビュー（台帳の Ruling を利用者に一覧で報告）。
-- **（11/25 22 時）利用者が AE で新しい版を試し中（AE 起動中は AE の試験もリンクもできない。`randamu.aex` が使用中で LNK1168）。** その間に Task 8 のコードと手引きを書いた（コンパイルは通った、リンクと試験はまだ）: 状態の欄に「軽量化は次の理由で効きません: …」（`MergeBlockNow` → `ReadMergeBlock`（`merge_scene.cpp`、`LayerBlock` / `ReadCompLights` に切り出し）→ `MergeBlockedText`）、ログ `status: comp C layer L merge block B`（`check_merge.py` の `check_scene` がビルド時の `plugin.log` で照合。UPDATE_PARAMS_UI が隠れた AE で届くかは未確認）、手引き `docs/randamu-quickstart.md` の「軽量化」の節。（21:45 済み: ビルドして試験一式は状態の照合以外すべて合格。隠れた AE には UPDATE_PARAMS_UI が届かず status の行が出ない → 照合は行があるときだけにした。）
-- **（11/25 22:10）利用者の報告: `C:\Users\yakuruto\Desktop\DupliX Test A.aep`（コピーは `tests/ae/user/DupliX Test A.aep`）で軽量化をオンにすると前後が変わる所がある。** 再現: `pwsh tests/ae/run_user_merge.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -At 0`（`user_merge.jsx`: コピーを開いて軽量化オン・オフのコンポを作って描く。`cmp_merge_frames.py` で比較・差の画像 `build/test/user_merge/diff_*.png`）。シーン: 青い花 380 枚（保存時は軽量化オフ）、家の 3D レイヤー、カメラは拡大縮小 241% のヌルの子、斜めから見る。計画は 3 群れ（286・7・7 枚）＋80 枚が 1 枚ずつ。差は家の右の x≈960〜1040 の数か所（5×5 平均の差の最大 202、>16 が 0.08%）。**分かったこと: 差の画素（985〜995, 765〜772）では AE（オフ）はコピー 227 を、軽量化はコピー 187（群れ 1）を手前に描く。2 枚は平行な面で、幾何では 187 が 23 単位手前（カメラから面までの距離 7020 と 7043。中心・角のどの物差しでも 187 が手前）。つまり AE のクラシック 3D の前後は、幾何と食い違うことがある。** 重なる組の全体では、はっきり判定できた 775 組のうち 754 組が幾何と一致（密集していて第三のコピーが混じるので、残り 21 組の多くは判定の誤りの可能性）。家と半透明のコピー 298 の縁（1010,530）でも差があり、どちらも AE が描くもの（群れの面を足すと AE の描く順が変わる？）。計画の中身は `RANDAMU_MERGE_DUMP=<file>` で書き出せる（`merge_cache.cpp` の `DumpPlan`、`MergePlan::debugCopies`）。調べるための使い捨てのスクリプトはスクラッチパッドの `plan_at.py` / `who.py` / `pairs.py`。**（22:20〜23:10）原因と対策:** 家をオフ／遠くにすると AE の前後は幾何どおりになり、軽量化と一致（`run_user_merge.ps1 -Disable house1.png` / `-MoveZ house1.png:3000`）。コピー 187・227 は家の平面をまたぎ、家もコピーの平面をまたぎ、画面上で重なるが 3D では交わらない。AE はこういう面どうしを幾何どおりに並べられず、その順は描く面の集まりで変わる（187・227 を両方 1 枚ずつ描いても、ほかのコピーを群れにすると入れ替わった）。**対策: そういう組（コピーとほかのレイヤーの面が画面で重なり、互いの平面をまたぎ、3D で交わらない）があるフレームは何もまとめない（`MergePlan::ambiguous`、`QuadsIntersect3D` を `merge_geom` に追加。本当に突き抜けるコピーは AE が正しく切るので従来どおりそのコピーだけ 1 枚ずつ）。** 結果: 利用者のシーン 8 フレームとも軽量化オン＝オフ（差 0。このシーンは家があるので軽量化は効かない）。単体 ALL PASS（73、`quads_intersect_3d`・`merge_ambiguous_no_merge` を追加）。**残る心配: コピー同士（回転の範囲がある場合）でも同じことが起きうる（未確認）。**
+- **（11/25 22 時）利用者が AE で新しい版を試し中（AE 起動中は AE の試験もリンクもできない。`DupliX.aex` が使用中で LNK1168）。** その間に Task 8 のコードと手引きを書いた（コンパイルは通った、リンクと試験はまだ）: 状態の欄に「軽量化は次の理由で効きません: …」（`MergeBlockNow` → `ReadMergeBlock`（`merge_scene.cpp`、`LayerBlock` / `ReadCompLights` に切り出し）→ `MergeBlockedText`）、ログ `status: comp C layer L merge block B`（`check_merge.py` の `check_scene` がビルド時の `plugin.log` で照合。UPDATE_PARAMS_UI が隠れた AE で届くかは未確認）、手引き `docs/duplix-quickstart.md` の「軽量化」の節。（21:45 済み: ビルドして試験一式は状態の照合以外すべて合格。隠れた AE には UPDATE_PARAMS_UI が届かず status の行が出ない → 照合は行があるときだけにした。）
+- **（11/25 22:10）利用者の報告: `C:\Users\yakuruto\Desktop\DupliX Test A.aep`（コピーは `tests/ae/user/DupliX Test A.aep`）で軽量化をオンにすると前後が変わる所がある。** 再現: `pwsh tests/ae/run_user_merge.ps1 -Aep "tests/ae/user/DupliX Test A.aep" -At 0`（`user_merge.jsx`: コピーを開いて軽量化オン・オフのコンポを作って描く。`cmp_merge_frames.py` で比較・差の画像 `build/test/user_merge/diff_*.png`）。シーン: 青い花 380 枚（保存時は軽量化オフ）、家の 3D レイヤー、カメラは拡大縮小 241% のヌルの子、斜めから見る。計画は 3 群れ（286・7・7 枚）＋80 枚が 1 枚ずつ。差は家の右の x≈960〜1040 の数か所（5×5 平均の差の最大 202、>16 が 0.08%）。**分かったこと: 差の画素（985〜995, 765〜772）では AE（オフ）はコピー 227 を、軽量化はコピー 187（群れ 1）を手前に描く。2 枚は平行な面で、幾何では 187 が 23 単位手前（カメラから面までの距離 7020 と 7043。中心・角のどの物差しでも 187 が手前）。つまり AE のクラシック 3D の前後は、幾何と食い違うことがある。** 重なる組の全体では、はっきり判定できた 775 組のうち 754 組が幾何と一致（密集していて第三のコピーが混じるので、残り 21 組の多くは判定の誤りの可能性）。家と半透明のコピー 298 の縁（1010,530）でも差があり、どちらも AE が描くもの（群れの面を足すと AE の描く順が変わる？）。計画の中身は `DUPLIX_MERGE_DUMP=<file>` で書き出せる（`merge_cache.cpp` の `DumpPlan`、`MergePlan::debugCopies`）。調べるための使い捨てのスクリプトはスクラッチパッドの `plan_at.py` / `who.py` / `pairs.py`。**（22:20〜23:10）原因と対策:** 家をオフ／遠くにすると AE の前後は幾何どおりになり、軽量化と一致（`run_user_merge.ps1 -Disable house1.png` / `-MoveZ house1.png:3000`）。コピー 187・227 は家の平面をまたぎ、家もコピーの平面をまたぎ、画面上で重なるが 3D では交わらない。AE はこういう面どうしを幾何どおりに並べられず、その順は描く面の集まりで変わる（187・227 を両方 1 枚ずつ描いても、ほかのコピーを群れにすると入れ替わった）。**対策: そういう組（コピーとほかのレイヤーの面が画面で重なり、互いの平面をまたぎ、3D で交わらない）があるフレームは何もまとめない（`MergePlan::ambiguous`、`QuadsIntersect3D` を `merge_geom` に追加。本当に突き抜けるコピーは AE が正しく切るので従来どおりそのコピーだけ 1 枚ずつ）。** 結果: 利用者のシーン 8 フレームとも軽量化オン＝オフ（差 0。このシーンは家があるので軽量化は効かない）。単体 ALL PASS（73、`quads_intersect_3d`・`merge_ambiguous_no_merge` を追加）。**残る心配: コピー同士（回転の範囲がある場合）でも同じことが起きうる（未確認）。**
 - **（23:15）利用者の問い「交わる部分以外をまとめる棲み分けはできないか」→ 案 2 を実験（コードは戻した）:** 問題のコピーと、画面上の重なりでつながるコピーを AE に任せ、残りをまとめる。結果（利用者のシーン、フレーム 0）: 連鎖すべて → 377/380 枚が AE、まとまるのは 3 枚（一致）。1 段まで → まとまるのは 6 枚程度、差が少し残る（5×5 平均の最大 26、>16 が 0.001%）。問題のコピーだけ → 元の不具合。**密集したシーンでは案 2 は役に立たない。** 試験一式（新しい規則）は MERGE ALL PASS（327 s）。**利用者に報告し、案 1（AE のクラシック 3D の並べ方を Advanced3D の解析で突き止める）に進むかを相談中。**
 - **（23:30）利用者の指摘「奥行きが違えば実際に重なるコピーは少ないはず」「家とコピーは回転が違うので奥行きが違っても重なる」を受けた実験（コードは戻した）:** 連鎖を「画面と奥行きの範囲の両方で重なる組」に絞る → AE に任せるのは 2 枚、差（202）は残る。家と画面・奥行きで重なるコピーも起点に足す → 28 枚、差は残る。**決め手: コピー 187・227 は画面上で家と重なっていない（家の画面範囲 y 346〜732、2 枚は y 755 付近）のに、家の有無で AE の前後が変わる。AE は家の画像の範囲ではなく、家の無限の平面で空間を分けて順を決めているとみられ（平面で空間を分ける手法に似る、分け方が不正確）、その影響は画面の重なりの範囲に収まらない。** → 棲み分けの範囲は AE の分け方を解析しない限り決められない。**今の規則の穴: 家の平面をまたぐが画面で家と重ならないコピーだけのシーンは、規則に掛からずまとめるので、AE と前後がずれうる（未確認。ただし `wall_tilted` などの試験は一致している）。** 次: 利用者が A（解析）か B（計画の残りを先に）かを決める。週間枠 93%（11/26 8:00 リセット）。
 - **（11/25 23:40〜11/26 0:30）利用者の決定 A（週間枠は気にしない）。Advanced3D（Escher）の解析の結果:** 全関数の逆コンパイルは `spike/ida/dump_a3d_all/`（`ida_dump_all.py`、Python は `A:/Disassemble/acnl/project_v2/tools/python/idalib/Scripts/python.exe`、i64 はコピーを使う）、機械語 `ida_disasm.py`、vtable `ida_vtables.py`。描画 `sub_180014470`: 面（232 バイトの項目、画面の範囲 +8..+0x20、動きのぼかしの時刻ごとの 192 バイトの表 +0xC8/+0xD0）について、`sub_18002AB40` が画面の範囲が重なる組ごとに `sub_18002B040`→`sub_18002B350`（画面座標の平面の式 +0x18..+0x30 で、重なる多角形の頂点の奥行きの差の符号。閾値 ±1e-12）で「どこかで手前」の辺を張り、`sub_18002A880`（Tarjan）で強連結成分に分ける。1 枚の成分はその順に描き（`sub_180014800`）、2 枚以上の塊は `sub_180013470` で断片の表（`SY_MBufferAA/Draft/MB`、画素ごとの連結リスト、奥行き float +0x0C と傾き +0x10/+0x14、合成は vtable +24）に描いて合成。**検証（スクラッチパッドの `aegraph.py` で同じ規則のグラフ）: 利用者のシーンの軽量化オフでは塊が 1 つ（12 枚、家と 187・227 を含む）。** 軽量化でコピーを抜くと塊が変わり、AE の描き方が変わって前後がずれた。**設計: (1) 全コピーを 1 枚ずつにした場面で同じグラフを作り、塊のコピーはまとめない。(2) まとめた後（群れの面＝余白を足した長方形を奥行き d に置いた面）でもグラフを作り、塊が同じで群れの面がどの塊にも入らないことを確かめる。満たさない群れは解いて計画し直す。今の「またぎ合う組があればフレーム全体をまとめない」はこれで置き換える。** 実装中。
@@ -298,8 +311,8 @@
 
 ## 再開の手順（2026-11-25 正午、高速モードの GPU 化の途中で利用者の指示により中断。完了済み）
 
-- **計画 `docs/superpowers/plans/2026-11-25-fast-mode-gpu.md`（設計書 `docs/superpowers/specs/2026-11-25-fast-mode-gpu-design.md`、承認済み）の Task 1〜4 は完了・push 済み（最後の実装の commit 5e44c6e）。Task 5 は途中**: 計測は済み、手引き（`docs/randamu-quickstart.md` の高速モードの節に速さの表）と開発記録（`docs/experiments/2026-11-25-dev-log.md` の 5 節）を更新して commit 済み。
-- **残り: (1) 最終レビュー**（executing-plans の手順: `review-package` で差分一式を作り、別のレビュー役に見せる。範囲は計画の commit 6a82c29 から HEAD）→ 指摘の修正 → **(2) 利用者に AE で試してもらう**（今の `dev_plugins\randamu.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。
+- **計画 `docs/superpowers/plans/2026-11-25-fast-mode-gpu.md`（設計書 `docs/superpowers/specs/2026-11-25-fast-mode-gpu-design.md`、承認済み）の Task 1〜4 は完了・push 済み（最後の実装の commit 5e44c6e）。Task 5 は途中**: 計測は済み、手引き（`docs/duplix-quickstart.md` の高速モードの節に速さの表）と開発記録（`docs/experiments/2026-11-25-dev-log.md` の 5 節）を更新して commit 済み。
+- **残り: (1) 最終レビュー**（executing-plans の手順: `review-package` で差分一式を作り、別のレビュー役に見せる。範囲は計画の commit 6a82c29 から HEAD）→ 指摘の修正 → **(2) 利用者に AE で試してもらう**（今の `dev_plugins\DupliX.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。
 - 進み具合と判断（Ruling）の台帳: `.superpowers/sdd/2026-11-25-fast-mode-gpu/progress.md`（git 管理外。最終レビューのあと、判断を開発記録に移して消す）。
 - 中身: CPU 版は区画（16×16）ごとに、手前の点の近い順に処理し、不透明なかけらの奥は計算しない（結果は旧版と差 0）。GPU 版は CUDA のカーネル（`src/gpu/fast_raster.cu`）を CUDA 12.2 の `nvcc -ptx` で PTX にして埋め込み、`nvcuda.dll` から実行（`src/gpu/gpu_raster.*`）。AE の GPU 設定が CUDA のときだけ GPU、ほかは CPU。Furikake は実は CPU（Z バッファ）で描いていた。
 - 速さ（利用者のシーン、書き出し、1 フレーム）: 通常 10 枚 183 ms。高速 CUDA 10/100/1000 枚 = 約 50/50/117 ms、高速 CPU = 約 100/133/333 ms（対応前 117/570/10 秒以上）。利用者のプロジェクトの GPU 設定はもともと CUDA。
@@ -309,10 +322,10 @@
 ## 再開の手順（2026-11-25 昼前、高速モードの作り直しの実装後）
 
 - **計画 `docs/superpowers/plans/2026-11-25-fast-mode-plugin.md` の Task 1〜5 と最終レビューの修正は完了（ブランチ `feat/mvp`、commit 99a4c48、push 済み）。** 事実・判断・後回しにした軽微な指摘・トラブルは `docs/experiments/2026-11-25-dev-log.md`。
-- 中身: ワールド変形のパラメータ（両モード、群れ ＝ レイヤー × ワールド変形）、高速モードは 2D レイヤーの普通のプラグイン（フックなし）、オンにした瞬間に現在フレームのレイヤーの変形をワールド変形へ写す（取り消し 1 回で戻る）、オフは 3D に戻すだけ。使い方は `docs/randamu-quickstart.md` の「ワールド変形」「高速モード」。
+- 中身: ワールド変形のパラメータ（両モード、群れ ＝ レイヤー × ワールド変形）、高速モードは 2D レイヤーの普通のプラグイン（フックなし）、オンにした瞬間に現在フレームのレイヤーの変形をワールド変形へ写す（取り消し 1 回で戻る）、オフは 3D に戻すだけ。使い方は `docs/duplix-quickstart.md` の「ワールド変形」「高速モード」。
 - 確かめた試験: 単体 ALL PASS（47）、`run_transfer.ps1` TRANSFER ALL PASS、`run_fast_mode.ps1` FAST ALL PASS（MFR オフ・オン）、`run_ref.ps1`、`run_ui.ps1`、fx_remove、`world_xform.jsx` WORLD ALL PASS、`run_as_is.ps1`（利用者のシーン）、`run_orbit_order.ps1 -Deg 26`。
 - 最終レビューで直したもの: 位置の次元が分割されている・ワールド変形にキーフレームがある（レイヤーが初期状態でない）ときは、何も変えずに止めて「状態」で案内。カメラだけ動く場合の試験 `fast_camonly` を追加（問題なし）。
-- **次: 利用者に AE で試してもらう**（今の `dev_plugins\randamu.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。11/24 の高速モードで保存したプロジェクトは、高速モードを一度オフ → オンにし直すと新しい形になる（オンのまま開くと絵がずれる）。
+- **次: 利用者に AE で試してもらう**（今の `dev_plugins\DupliX.aex` は最新。ビルドの置き換えは利用者が AE を閉じているときだけ）。11/24 の高速モードで保存したプロジェクトは、高速モードを一度オフ → オンにし直すと新しい形になる（オンのまま開くと絵がずれる）。
 - 注意: 軌道のアニメーションを 120 フレーム比べる `run_orbit_order.ps1`（角度指定なし）は、親のアニメーションを写さない決定により前提がなくなった（`-Deg` 付きだけ有効）。
 - 次の作業の候補（利用者が順番を決める）: 複数の複製対象（設計書 12.13、高速モードのあと）、画質の選択、GPU での描画。保留は前のまま（まとめる最適化、シェイプ・テキスト対応、AE 2021/2026、改名、`dbg:` ログの整理、main への統合）。
 
@@ -324,52 +337,52 @@
 
 ## 再開の手順（2026-11-25 0 時半、セッションをクリアする前に記録）
 
-- **最初にすること: 利用者に、新しいビルド（`dev_plugins\randamu.aex`、11/25 0:2x）で「軌道ヌルの Y 回転 26° のフル画質で、通常モードと高速モードの前後が一致するか」を確かめてもらう。** 報告されていた入れ替わりの原因は、AE のディスクキャッシュの鍵に混ぜるビルド ID が `randamu.cpp` のコンパイル時刻だけだったこと（`raster.cpp` だけの修正で ID が変わらず、AE が修正前の絵をキャッシュから出した。1/2 画質は未キャッシュで正しかった）。ID に aex 自身の更新時刻と大きさを足して修正（`src/effect/randamu.cpp` の `BuildId()`）。開発記録 #36。
+- **最初にすること: 利用者に、新しいビルド（`dev_plugins\DupliX.aex`、11/25 0:2x）で「軌道ヌルの Y 回転 26° のフル画質で、通常モードと高速モードの前後が一致するか」を確かめてもらう。** 報告されていた入れ替わりの原因は、AE のディスクキャッシュの鍵に混ぜるビルド ID が `duplix.cpp` のコンパイル時刻だけだったこと（`raster.cpp` だけの修正で ID が変わらず、AE が修正前の絵をキャッシュから出した。1/2 画質は未キャッシュで正しかった）。ID に aex 自身の更新時刻と大きさを足して修正（`src/effect/duplix.cpp` の `BuildId()`）。開発記録 #36。
 - 利用者の実際のシーンは `tests/ae/user/DupliX Test.aep`（11/25 0:09 保存、軌道ヌル Y 26°、花のレイヤー 1 つに DupliX 10 枚）。これを手を加えずに描いて比べる試験 `pwsh tests/ae/run_as_is.ps1`（aerender とビューアーのフル・1/2）＝ AS-IS ALL PASS。**同じフォルダーの自動保存（20:56、4 レイヤー）は古い別の状態で、#34 ではこれを見誤った。**
-- 試験の穴の教訓: 試験は毎回 `RANDAMU_CACHE_SALT` でキャッシュを避けるので、利用者の AE とは条件が違う。キャッシュの鍵に関わる変更のあとは、ソルトなしで「前のビルドで描いた絵が出ないか」も考える（`docs/ae-test-harness.md` に足すとよい）。
+- 試験の穴の教訓: 試験は毎回 `DUPLIX_CACHE_SALT` でキャッシュを避けるので、利用者の AE とは条件が違う。キャッシュの鍵に関わる変更のあとは、ソルトなしで「前のビルドで描いた絵が出ないか」も考える（`docs/ae-test-harness.md` に足すとよい）。
 - 次の作業（利用者の確認後）: 高速モードの作り直し（設計書 12.13: 黒魔術なしの普通のプラグイン、2D レイヤー、コンプ大の出力、ワールド変形、オンにした瞬間にレイヤーの 3D の位置・回転をワールド変形へ自動で写す）の計画を writing-plans で立てる。複数の複製対象（掛けたレイヤーを含めるかのチェック＋追加の対象、取り込み方は 2 通りから選択、通常モードでも）は 12.13 に記録済みで、順番は利用者が決める（前回の質問に未回答）。
 
 ## 再開の手順（2026-11-24 深夜、高速モードの実装後）
 
-- **高速モードは実装済み（計画 `docs/superpowers/plans/2026-11-24-fast-mode.md` の Task 1〜4 と最終レビューの修正。ブランチ `feat/mvp`）。次: 利用者に AE で試してもらう**（ビルドの置き換えは利用者が AE を閉じているときだけ。今の `dev_plugins\randamu.aex` は最新）。使い方と失われるものは `docs/randamu-quickstart.md` の「高速モード」。
+- **高速モードは実装済み（計画 `docs/superpowers/plans/2026-11-24-fast-mode.md` の Task 1〜4 と最終レビューの修正。ブランチ `feat/mvp`）。次: 利用者に AE で試してもらう**（ビルドの置き換えは利用者が AE を閉じているときだけ。今の `dev_plugins\DupliX.aex` は最新）。使い方と失われるものは `docs/duplix-quickstart.md` の「高速モード」。
 - （11/24 23 時）利用者の報告「軌道ヌルの Y 回転で前後が入れ替わる」を修正（画素ごとの奥行きで重ねる。commit 651b00a。再現試験 `tests/ae/run_orbit_order.ps1`）。A ドライブの空きがほぼない（試験の大きな書き出しは %TEMP% へ）。
 - 確かめたこと: 単体テスト ALL PASS（43）、`run_fast_mode.ps1` FAST ALL PASS（9 ケース、MFR オフ・オン）、`run_ref.ps1` REF ALL PASS、`fx_remove`・`run_ui.ps1` 合格（高速モードはオフ）。
 - 速さ（利用者のシーン、aerender MFR オフ、CPU が他の作業で約 60% 使われた状態）: 通常 10 枚 150 ms、高速 10 枚 117 ms、100 枚 267 ms、1000 枚 2.2 秒。通常は 1 枚約 14 ms なので枚数が多いほど差が開くが、計画の「10 枚で半分以下」「1000 枚が 10 枚の 3 倍以内」は未達（自前の描画がコピーの覆う画素数に比例する）。次の高速化の候補は GPU（CUDA）か、CPU のさらなる最適化。**CUDA Toolkit は導入済み**（v13.3＝`CUDA_PATH`、v12.2 も。nvcc・NVRTC あり。RTX 3060、ドライバー 596.36。Everything 1.5a は `C:\Tools\es.exe -instance 1.5a` で検索できる）。
 - 判断の一覧（計画からの逸脱を含む）と、後回しにした軽微な指摘は `docs/superpowers/plans/2026-11-24-fast-mode-rulings.md`。主なもの: AE のエフェクトの画素はストレートアルファ（計画はプリマルチプライと書いていた）、面の表はレイヤー時間で鍵・64 件・最も近い時刻、2 画面表示の制限、`fast_identity` の判定の変更。
-- 計測の注意: AE のディスクキャッシュは同じビルド・同じ内容の絵を返す。`run_user.ps1` は毎回 `RANDAMU_CACHE_SALT` を変える。
+- 計測の注意: AE のディスクキャッシュは同じビルド・同じ内容の絵を返す。`run_user.ps1` は毎回 `DUPLIX_CACHE_SALT` を変える。
 - 保留（前のまま）: まとめる最適化（12.7 の (3)）、シェイプ・テキスト対応、AE 2021/2026 で落ちる件、12.5 の省く判定、改名（DupliX）、Final Review と `dbg:` ログの整理、main への統合。
 
 ## 再開の手順（2026-11-24 夜、高速モードの実装前。完了済み）
 
 - **次の作業: 高速モードの実装。計画 `docs/superpowers/plans/2026-11-24-fast-mode.md`（Task 1〜4）を、このセッションで直接、通しで実装する（利用者の指示「通しで実装します」＝ executing-plans の方式）。** 設計は設計書の 12.10〜12.12（承認済み）。ブランチは `feat/mvp`（push 済み、最新 commit は `git log -1`）。
 - 最初に読むもの: (1) 計画、(2) 設計書の第 12 節（12.4〜12.12。特に 12.10 の実験の事実と 12.11・12.12 の決定）、(3) 今日の記録 `docs/experiments/2026-11-24-dev-log.md`（試験の一覧、修正した不具合、測り方、小さな失敗）、(4) `docs/ae-test-harness.md` の 4.7〜4.9（速さの測り方、利用者のファイルを壊さない、AE の内部確認）。
-- 高速モードの要点: 全コピーを DupliX が CPU で 1 枚の絵に描き、カメラ正面の 1 枚の面（M4 = S·C·W⁻¹）として画面に 1 対 1 に重ねる。置き方は実験で画素一致済み（`RANDAMU_SPIKE_SCREEN=1` の実験コードは Task 3 で製品コードに置き換えて消す）。面の奥行きはアンカー、ライトは無視して案内、後ろのエフェクトは 1 枚の絵に掛かる、AE と画素一致はしなくてよい（縁の 1〜2 段階の差を許す）。GPU（CUDA）は CUDA Toolkit の導入を利用者が判断してから別計画。
+- 高速モードの要点: 全コピーを DupliX が CPU で 1 枚の絵に描き、カメラ正面の 1 枚の面（M4 = S·C·W⁻¹）として画面に 1 対 1 に重ねる。置き方は実験で画素一致済み（`DUPLIX_SPIKE_SCREEN=1` の実験コードは Task 3 で製品コードに置き換えて消す）。面の奥行きはアンカー、ライトは無視して案内、後ろのエフェクトは 1 枚の絵に掛かる、AE と画素一致はしなくてよい（縁の 1〜2 段階の差を許す）。GPU（CUDA）は CUDA Toolkit の導入を利用者が判断してから別計画。
 - 守ること: 前処理のすべての分岐で `GuidMixInPtr` を呼ぶ／`result_rect` は要求との共通部分・全体は `max_result_rect`／新しいパラメータは末尾／利用者の aep（`tests/ae/user/`）は必ずコピーを開く／AE を動かす試験の前に AfterFX・aerender が動いていないことを確かめる（利用者の AE を巻き込まない。ビルドの置き換えも利用者が AE を閉じているときだけ）。
 - 高速モードのあと: まとめる最適化（12.7 の (3)、高速モードの部品を使う）。保留中: シェイプ・テキストへの対応、AE 2021/2026 で落ちる件（知人のログ待ち）、12.5 の省く判定、GPU の差し替え（最終手段）、改名（DupliX、第 12.1 節。利用者の確認後）、Final Review と `dbg:` ログの整理、main への統合。
 - 速さの基準値（利用者のシーン、1 フレーム）: 通常のコピー 10 枚 142 ms、本物 10 枚 142 ms、画面全体の面 1 枚 58 ms。測り方は `pwsh tests/ae/run_user.ps1 -Aep "tests/ae/user/DupliX Test.aep" -Mfr OFF -Variants ...`（「合計経過時間」÷ フレーム数）と `run_preview.ps1`。
 
 （以下は古い順に積み上がった記録。上ほど新しい）
 
-**（11/24 11 時）Task 7 完了（commit 02b7010、push 済み）。`pwsh tests/ae/run_ui.ps1` → UI ALL PASS（ビューアーを開いて 30 フレームのスクラブ、コピー数・種・回転の変更、取り消し、fx オフ＝エフェクトなしの複製と画素一致、fx オン、キーフレームした回転の範囲で UI の絵＝aerender）。`run_ref.ps1` も全ケース合格。利用者向けの手引き `docs/randamu-quickstart.md`。未確認: ビューアーを手で操作したときのメインスレッドの経路（`-r` のスクリプトは終わると AE が終了するので自動では試せず、メインスレッドからの問い合わせは 0 回だった）。**次: 利用者に AE で試してもらう（ビルドの置き換えは利用者が AE を閉じているときだけ）→ 結果を聞く → executing-plans の Final Review → `src/` の `dbg:` ログの整理 → main への統合。**
-**（11/24 18 時）重さの調査: 利用者の「タイムラインのレンダリング時間がコピー 10 枚で約 300 ms」を受けて計測方法を変えた。aerender の「合計時間÷フレーム数」は MFR で複数フレームを同時に描くので 1 フレームの時間ではなかった（誤り）。新しい計測: `tests/ae/run_preview.ps1`（AE を起動したままにして `AfterFX.exe -r` でスクリプトを送る。起動完了前に送ると止まる。カメラにエクスプレッションで動きを付けて毎フレーム描き直させる＝AE は同じ内容のフレームを使い回す）＋プラグイン内の 1 フレームごとの計測（`RANDAMU_TIMING=1`、`src/hook/timing.*`）。直したもの: `IsLayerType` のフックを照合済みアドレスの比較だけに（UI で 64 万回呼ばれていた）、AEGP の読み取りの使い回し、前処理（1 フレームに約 23 回）の近道。結果（利用者のシーン、ビューアー経路）: DupliX 10 枚 141 ms ≒ 本物 10 枚 140 ms、プラグインの処理 4 ms。残りは AE のクラシック 3D が面 1 枚を描く時間（このシーンで約 14 ms/枚）。次: 利用者に今の版で同じ列を測り直してもらい、手で 10 枚複製した場合とも比べてもらう → その結果で 12.5（省く判定。ただし利用者のシーンではコピーがほぼ画面内なので効かない見込み）と 12.7（1 枚の絵にまとめる・高速モード）の順番を決める。利用者の aep は `tests/ae/user/`（Git 管理外）。必ずコピーを開く（AE は閉じるときに無確認で保存する）。**
+**（11/24 11 時）Task 7 完了（commit 02b7010、push 済み）。`pwsh tests/ae/run_ui.ps1` → UI ALL PASS（ビューアーを開いて 30 フレームのスクラブ、コピー数・種・回転の変更、取り消し、fx オフ＝エフェクトなしの複製と画素一致、fx オン、キーフレームした回転の範囲で UI の絵＝aerender）。`run_ref.ps1` も全ケース合格。利用者向けの手引き `docs/duplix-quickstart.md`。未確認: ビューアーを手で操作したときのメインスレッドの経路（`-r` のスクリプトは終わると AE が終了するので自動では試せず、メインスレッドからの問い合わせは 0 回だった）。**次: 利用者に AE で試してもらう（ビルドの置き換えは利用者が AE を閉じているときだけ）→ 結果を聞く → executing-plans の Final Review → `src/` の `dbg:` ログの整理 → main への統合。**
+**（11/24 18 時）重さの調査: 利用者の「タイムラインのレンダリング時間がコピー 10 枚で約 300 ms」を受けて計測方法を変えた。aerender の「合計時間÷フレーム数」は MFR で複数フレームを同時に描くので 1 フレームの時間ではなかった（誤り）。新しい計測: `tests/ae/run_preview.ps1`（AE を起動したままにして `AfterFX.exe -r` でスクリプトを送る。起動完了前に送ると止まる。カメラにエクスプレッションで動きを付けて毎フレーム描き直させる＝AE は同じ内容のフレームを使い回す）＋プラグイン内の 1 フレームごとの計測（`DUPLIX_TIMING=1`、`src/hook/timing.*`）。直したもの: `IsLayerType` のフックを照合済みアドレスの比較だけに（UI で 64 万回呼ばれていた）、AEGP の読み取りの使い回し、前処理（1 フレームに約 23 回）の近道。結果（利用者のシーン、ビューアー経路）: DupliX 10 枚 141 ms ≒ 本物 10 枚 140 ms、プラグインの処理 4 ms。残りは AE のクラシック 3D が面 1 枚を描く時間（このシーンで約 14 ms/枚）。次: 利用者に今の版で同じ列を測り直してもらい、手で 10 枚複製した場合とも比べてもらう → その結果で 12.5（省く判定。ただし利用者のシーンではコピーがほぼ画面内なので効かない見込み）と 12.7（1 枚の絵にまとめる・高速モード）の順番を決める。利用者の aep は `tests/ae/user/`（Git 管理外）。必ずコピーを開く（AE は閉じるときに無確認で保存する）。**
 **（11/24）利用者の報告: シェイプレイヤーとテキストレイヤーに掛けても複製されない。今の版は AV レイヤー（`BEE_AVLayer` の vtable）だけが対象。シェイプは別の vtable で、実験（試験 6・7）では差し替えで複製できた → 対応できる見込み。テキストは文字単位 3D のための独自のサブレイヤーと別の構造を持つので要調査。まだ着手していない。**
-**（11/24 16 時）Advanced 3D のコンプで落ちる問題を修正（クラシック 3D 以外ではコピーを出さない）。位置の範囲の表示が 255 倍だった問題を修正。計測: 書き出しではコピーの描画は軽い（設計書 12.8）。利用者が重いと感じた場面はまだ聞けていない。AE 2021・2026 で知人の環境が落ちた件: 2021 は差し替えが入らないはずなので、原因は差し替え以外（エフェクトの種類の番号を求める処理が差し替えなしでも動く点が怪しい）。2021 版の DLL 4 つは `spike/ida/versions/2021/`、照合は `spike/ida/abi_check.py`。ログ（`RANDAMU_LOG`）を知人に頼む。2021 対応は 2025 が一段落してから。**
+**（11/24 16 時）Advanced 3D のコンプで落ちる問題を修正（クラシック 3D 以外ではコピーを出さない）。位置の範囲の表示が 255 倍だった問題を修正。計測: 書き出しではコピーの描画は軽い（設計書 12.8）。利用者が重いと感じた場面はまだ聞けていない。AE 2021・2026 で知人の環境が落ちた件: 2021 は差し替えが入らないはずなので、原因は差し替え以外（エフェクトの種類の番号を求める処理が差し替えなしでも動く点が怪しい）。2021 版の DLL 4 つは `spike/ida/versions/2021/`、照合は `spike/ida/abi_check.py`。ログ（`DUPLIX_LOG`）を知人に頼む。2021 対応は 2025 が一段落してから。**
 **（11/24 14 時）利用者の報告「エフェクトを付けて外すとレイヤーの表示が壊れる」を修正（AE はエフェクトの削除・fx スイッチ・3D スイッチの変更でエフェクトにコマンドを送らず、登録の写しが古いまま残っていた。フックの判定に、BEE/FLT から直接読む「3D・このエフェクトが付いていてオン」を追加。試験 `tests/ae/fx_remove.jsx`＋`check_fx_remove.py`）。GPU 対応（CUDA/OpenCL/DirectX 12 のメモリコピー、`src/effect/gpu_copy.cpp`。この PC の AE では CUDA しか選べず、CUDA で画素一致を確認。`run_ref.ps1 -Gpu CUDA`）。設計書 第 12 節に 12.4 見送り・12.5 省く判定・12.6（深度テスト後のコピー全体へのエフェクト、(a) で調査→将来 (b)）を追記。次: 利用者が今のプラグインをテスト → 12.6 の調査。**
 **（11/24）次の版の要望（改名・英語化・開発者名とカテゴリ・GPU と高速化・インスタンスの最適化・画面外とエフェクトの保証・2 つのレイヤーの交差の調査）を設計書 第 12 節に記録。着手は、最初の版を利用者が確認してから。**
 
 **（11/24 06:00）試験 23（コピーごとの不透明度）まで成功。**
 **（11/24）利用者の決定: サブレイヤー方式・回転はアンカーポイント中心・散らすのはレイヤー座標・枚数の上限なし（重さは説明）・ばらつきは位置/回転/拡大縮小/種/不透明度（時間のずらしは将来）。詳細は `docs/decisions-2026-11-24.md` の冒頭。利用者は早く自分で試したい。次は設計書をサブレイヤー方式に書き直して承認 → writing-plans → 実装。**
-**（11/24 実装中）ブランチ `feat/mvp` で計画を実行中（このセッションで直接実装）。進み具合は `.superpowers/sdd/2026-11-24-randamu-sublayer-mvp/progress.md`（git 管理外）と `git log`。Task 1〜6 完了（11/24 10 時前、5 時間枠 98% で区切り。リセット 10:50）。Task 6: `pwsh tests/ae/run_ref.ps1` で全ケース（拡大縮小・アンカー・対象自身の回転/拡大縮小/親・不透明度・1 枚目固定・PNG＋エフェクト・影/被写界深度/調整レイヤー/モーションブラー・100 枚・0 枚・エフェクトのオフ/削除・コンプ複製）が aerender の MFR オフ・オンと開き直しで正解と差 0〜1/255。**次は Task 7**（`tests/ae/ui_session.jsx`・`run_ui.ps1` で UI 操作中に止まらないか＋フックのスレッド集計、`docs/randamu-quickstart.md`、利用者に試してもらう）。その前に `tests/ae/ref_cases.json` の `hyp_x2`・`hyp_xneg` を消す（仮説確認の名残）。Task 7 のあとは最終レビュー（executing-plans スキルの Final Review）。`src/` の `dbg:` ログは UI 試験のスレッド集計に使ってから整理する。分かったこと: SEQUENCE_SETUP 中に AEGP でエフェクトを読むと追加が失敗する／パラメータ名は CP932 で渡す／フックの鍵（BEE の comp ID）は AEGP の項目 ID と一致。**
-**（11/24）公開リポジトリ https://github.com/yak9909/randamu （main）。push は利用者に確認せずに行ってよい（利用者の指示）。`spike/ida` の `BEE.dll`・`.i64`・逆コンパイルの書き出し、`spike/logs`、`.claude/` は `.gitignore` で除外（Adobe のバイナリと解析結果は公開しない）。README は natural-japanese スキルで書いた。**
-**（11/24）設計書 v2 は利用者が承認済み。2D レイヤーへの適用は将来可能にする（最初の版は案内のみ）。実装計画: `docs/superpowers/plans/2026-11-24-randamu-sublayer-mvp.md`（Task 1〜7。利用者の確認と実行方法の選択待ち）。フックの中の鍵は「コンプの項目 ID＋レイヤー ID」（`BEE_Layer::GetParentComp`→`BEE_Item::GetID`、公開関数あり）。**
-**（11/24）設計書 v2 を作成: `docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md`（承認待ち。第 6 節の 2 問は回答済み: 元のレイヤーは「コピーだけ＋1 枚目は元の位置のチェック」、2D レイヤーは「コピーを出さず 3D にするよう案内」）。承認後は writing-plans で、最初の区切りを「UI で触れる最小の版」にする。利用者に渡す前の必須確認は設計書 第 9 節の上 4 つ（UI プレビューで止まらない・拡大縮小とアンカー・読み込み時の自己登録・コンプ複製での ID 重複）。**
+**（11/24 実装中）ブランチ `feat/mvp` で計画を実行中（このセッションで直接実装）。進み具合は `.superpowers/sdd/2026-11-24-duplix-sublayer-mvp/progress.md`（git 管理外）と `git log`。Task 1〜6 完了（11/24 10 時前、5 時間枠 98% で区切り。リセット 10:50）。Task 6: `pwsh tests/ae/run_ref.ps1` で全ケース（拡大縮小・アンカー・対象自身の回転/拡大縮小/親・不透明度・1 枚目固定・PNG＋エフェクト・影/被写界深度/調整レイヤー/モーションブラー・100 枚・0 枚・エフェクトのオフ/削除・コンプ複製）が aerender の MFR オフ・オンと開き直しで正解と差 0〜1/255。**次は Task 7**（`tests/ae/ui_session.jsx`・`run_ui.ps1` で UI 操作中に止まらないか＋フックのスレッド集計、`docs/duplix-quickstart.md`、利用者に試してもらう）。その前に `tests/ae/ref_cases.json` の `hyp_x2`・`hyp_xneg` を消す（仮説確認の名残）。Task 7 のあとは最終レビュー（executing-plans スキルの Final Review）。`src/` の `dbg:` ログは UI 試験のスレッド集計に使ってから整理する。分かったこと: SEQUENCE_SETUP 中に AEGP でエフェクトを読むと追加が失敗する／パラメータ名は CP932 で渡す／フックの鍵（BEE の comp ID）は AEGP の項目 ID と一致。**
+**（11/24）公開リポジトリ https://github.com/yak9909/DupliX （main）。push は利用者に確認せずに行ってよい（利用者の指示）。`spike/ida` の `BEE.dll`・`.i64`・逆コンパイルの書き出し、`spike/logs`、`.claude/` は `.gitignore` で除外（Adobe のバイナリと解析結果は公開しない）。README は natural-japanese スキルで書いた。**
+**（11/24）設計書 v2 は利用者が承認済み。2D レイヤーへの適用は将来可能にする（最初の版は案内のみ）。実装計画: `docs/superpowers/plans/2026-11-24-duplix-sublayer-mvp.md`（Task 1〜7。利用者の確認と実行方法の選択待ち）。フックの中の鍵は「コンプの項目 ID＋レイヤー ID」（`BEE_Layer::GetParentComp`→`BEE_Item::GetID`、公開関数あり）。**
+**（11/24）設計書 v2 を作成: `docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md`（承認待ち。第 6 節の 2 問は回答済み: 元のレイヤーは「コピーだけ＋1 枚目は元の位置のチェック」、2D レイヤーは「コピーを出さず 3D にするよう案内」）。承認後は writing-plans で、最初の区切りを「UI で触れる最小の版」にする。利用者に渡す前の必須確認は設計書 第 9 節の上 4 つ（UI プレビューで止まらない・拡大縮小とアンカー・読み込み時の自己登録・コンプ複製での ID 重複）。**
 **（11/24 早朝、旧）試験 22 まで完了、試験 23 の 2 回目はビルド済み・未実行だった。利用者向けの判断材料は `docs/decisions-2026-11-24.md`。以下は旧見出し。**
 **（11/24）試験 18 まで: 平面・PNG 素材（エフェクト付き）のコピーが、位置・回転・陰影・影・交差・被写界深度・調整レイヤー・モーションブラーで正解と画素単位で一致。aerender（MFR オフ・オン）でも一致。キャッシュはエフェクトのパラメータ変更で正しく更新、hook から複製レイヤーのパラメータも読める。再開したら「試験 15」の下の「次の 1 手」の 4（設計の相談）と「その先」から。利用者は就寝中: 中断するときは必ずこのメモを更新してクリアしてよい状態にする。** 見張りの閾値は全プロジェクト共通で 95% に変更済み。
 - 利用者への説明済み: レイヤーセットはエフェクトではなく、レイヤー自身のプロパティのグループ（トランスフォームやマスクと同じ並び）。未公開で、作りかけの可能性もある。
 
 ## まず読むもの
 1. `docs/experiments/2026-11-22-spike-log.md` … これまでに試したことの全記録（環境、失敗の原因、分かったこと）
-2. `docs/superpowers/specs/2026-11-22-randamu-depth-scatter-design.md` … 設計書（下書き）
+2. `docs/superpowers/specs/2026-11-22-duplix-depth-scatter-design.md` … 設計書（下書き）
 3. `docs/ae-test-harness.md` … 自動テスト環境の使い方と注意点（ほかのプロジェクトでも使う）
 
 ## 利用者が決めたこと（蒸し返さない）
@@ -395,13 +408,13 @@
 - クラッシュ修復ダイアログは、起動前に `Repair-AeCrashState`（`spike/tools/ae_guard.ps1`）で防ぐ。詳細は実験記録 5.1 節。
 
 ## 状況
-- 設計書（下書き）: `docs/superpowers/specs/2026-11-22-randamu-depth-scatter-design.md`。実験結果の反映と利用者の承認はまだ。
+- 設計書（下書き）: `docs/superpowers/specs/2026-11-22-duplix-depth-scatter-design.md`。実験結果の反映と利用者の承認はまだ。
 - 実験コード（使い捨て）: `spike/`。ビルドは `spike/tools/build.ps1`、実行と自動判定は `spike/tools/run_s1.ps1`。
-- プラグインの配置: `MediaCore\randamu_dev` → `randamu\dev_plugins` のジャンクション（作成済み）。
+- プラグインの配置: `MediaCore\duplix_dev` → `DupliX\dev_plugins` のジャンクション（作成済み）。
 
 ## 実験で分かったこと
 - S1 合格: 小さな 2D レイヤーのエフェクトが、コンプ全体の出力をコンプ座標に正確に合わせられる（移動・縮小・回転・アンカー変更の 4 種）。出力ワールドの `origin_x/origin_y` が、結果の矩形の原点と一致する。回転・拡大したレイヤーでは、AE の再サンプリングで縁に 1px 程度のにじみが出る。
-- S2 一部確認: レイヤーパラメータを 64 個定義できる。エクスプレッションで `effect('RandamuSpike')('Slot 1')` から Layer を参照でき、`toComp()` でカメラ投影後の画面座標が取れる。`activeCamera.fromWorld(L.toWorld(p))[2]` でカメラ空間の深度が取れる。チェックアウトはレイヤー座標の画素で、空のスロットは 0×0。
+- S2 一部確認: レイヤーパラメータを 64 個定義できる。エクスプレッションで `effect('DupliXSpike')('Slot 1')` から Layer を参照でき、`toComp()` でカメラ投影後の画面座標が取れる。`activeCamera.fromWorld(L.toWorld(p))[2]` でカメラ空間の深度が取れる。チェックアウトはレイヤー座標の画素で、空のスロットは 0×0。
 - S2 の形の一致判定（透視補正つき）は未確認。直前の実行は下の AE の問題で止まった。
 - 重要: AE のディスクキャッシュは再起動しても残り、プラグインを作り直しても古い絵を返す。`PF_OutFlag2_I_MIX_GUID_DEPENDENCIES` を立て、PreRender でビルド ID を `GuidMixInPtr` に混ぜて対策した（ビルド済み、未検証）。本番にも必要。
 - AE の自動実行の注意:
@@ -443,11 +456,11 @@
 - **はみ出すエフェクトは解決**。`AEGP_LayerRenderOptionsH` は AE 内部の `BEE_LayerRenderOptions*` そのもので、`BEE.dll` が公開する `BEE_RenderOptions::SetROI`／`GetROI`（`M_Rect` = int16 ×4 `{top,left,bottom,right}`、コンプ座標）で範囲を広げられる。t_effect は IoU 0.757 → 0.9938。
 - **コラップスしたプリコンプも AEGP で取れるようになった**（ROI を ±約 3 万に広げたとき。コンプ座標の絵で返り、IoU 0.9912）。`AEGP_LayerFlag_COLLAPSE` でコンプ座標として扱う。
 - `zero`（{0,0,0,0}）は「空」で不可。MFR オン／オフとも同じ結果。クラッシュなし。
-- 実験コードは環境変数 `RANDAMU_S5C_ROI=margin:N` で切り替え（未設定なら既定の範囲）。
+- 実験コードは環境変数 `DUPLIX_S5C_ROI=margin:N` で切り替え（未設定なら既定の範囲）。
 - 本番の未決: 範囲の上限の決め方（巨大な結果を返すエフェクト対策）と、関数が見つからない版の AE での扱い。
 
 ## S5c のあとに分かったこと・したこと（11/23 昼）
-- 範囲の拡大は**既定でオン**にした（環境変数が未設定なら `margin:30000`。`RANDAMU_S5C_ROI=none` で既定の範囲に戻る）。
+- 範囲の拡大は**既定でオン**にした（環境変数が未設定なら `margin:30000`。`DUPLIX_S5C_ROI=none` で既定の範囲に戻る）。
 - `check_s1.py`: `t_collapse` を合否に入れた（AEGP 経由を必須）。`t_text` は細い字なので、IoU の下限を 0.80 に下げた（縁から 2px の規則は同じ）。この状態の基準の実行では、**不合格は `t_matte` だけ**だった。
 - `BEE.dll` の公開関数を `dumpbin` で調べた。`BEE_LayerRenderOptions::SetLayerStage`（既定 3）を 4・5 に変えても、トラックマットは掛からなかった（マットはコンプでの合成で掛かる）。黒魔術での近道はここで打ち切り、案 A に進んだ。
 
@@ -470,13 +483,13 @@
 - マスク・エフェクト・プリコンプの中身・マットのマスク・移動・カメラの変更は、すべて再描画されて正解と一致。
 - 不透明度は AEGP の絵に入らない → `AEGP_StreamSuite6` で読んで自前で掛ける方式で解決（マットの不透明度も）。
 - **S5b: 位置・深度は AEGP の行列（`GetLayerToWorldXform`＋`GetEffectCameraMatrix`）で、エクスプレッションと小数第 4 位まで同じ値が出る**。1 回 0.6ms。エクスプレッションは 1 フレームあたり 300〜690ms かかっていた。AEGP の描画そのものは 1 フレームあたり 3〜13ms（PreRender の合計の大半は実験用のログ）。
-- **スロットもエクスプレッションも使わない条件（本番に近い）で、S4 の全ケース（`-S5b 1 -NoSlot`）と、スロットなしで作り直したシーンの S1 全 18 項目（`RANDAMU_S1_NOSLOT=1`＋`RANDAMU_S5B=1`）が合格**。計算した位置は鍵に混ぜる必要がある（混ぜないと、自分のレイヤーの変形だけが違うコンプで別のコンプのキャッシュが流用された）。
+- **スロットもエクスプレッションも使わない条件（本番に近い）で、S4 の全ケース（`-S5b 1 -NoSlot`）と、スロットなしで作り直したシーンの S1 全 18 項目（`DUPLIX_S1_NOSLOT=1`＋`DUPLIX_S5B=1`）が合格**。計算した位置は鍵に混ぜる必要がある（混ぜないと、自分のレイヤーの変形だけが違うコンプで別のコンプのキャッシュが流用された）。
 - 表示されないレイヤー（目のスイッチがオフ・時間の範囲外）も AEGP は画素を返すので、`AEGP_IsVideoActive` が偽なら不透明度 0 として扱う（`t_hidden`、`t_outrange` で合格）。カメラのないコンプも合格（`t_nocam`）。
 - **含意（利用者に確認したい）**: スロット＋エクスプレッションをやめて、全部 AEGP で取る方式にできる。そうすると S3（スロットの自動割り当て）は不要になり、スロット数の上限もなくなる（「将来は上限なし」がすぐ実現できる）。
 - 未確認: 画面のプレビューでの挙動、レイヤーの追加・削除・並べ替え（レイヤー一覧を鍵に混ぜる）、合成の段階で掛かるほかの性質（対象より上の調整レイヤー、描画モード、レイヤースタイル、ソロ）、`AEGP_SetTime` の時間の種類、MFR の切り替え。
 
 ## S7（全レイヤーを対象にする）: **合格**（11/23 夕方、実験記録 7.6 節）
-- `RANDAMU_S7=1` で、コンプの全レイヤーを対象にする（重ね絵は和集合）。対象から外すもの: 自分、カメラ・ライト、ヌル、ガイド、調整レイヤー、ソロ以外（ソロがあるとき）、`IsVideoActive` が偽、このエフェクトを持つレイヤー、実験用の `BG`。
+- `DUPLIX_S7=1` で、コンプの全レイヤーを対象にする（重ね絵は和集合）。対象から外すもの: 自分、カメラ・ライト、ヌル、ガイド、調整レイヤー、ソロ以外（ソロがあるとき）、`IsVideoActive` が偽、このエフェクトを持つレイヤー、実験用の `BG`。
 - S1（スロットなしのシーン、24 項目）全合格。S4（`run_s4.ps1 -S7 -S5b 1`）で表示の切り替え・追加・削除・並べ替え・49 枚を含む全 12 ケース合格。
 - 49 枚: AEGP 部分は 1 フレームあたり約 300ms（PreRender 3 回分。ログ込み、未最適化）。
 - 再入の防止は実装したが、実際に働く場面（別のエフェクトがこちらをエフェクト込みで取り込む）は未検証。
@@ -509,7 +522,7 @@
 - セットのグループは、空なら UI で隠される（`UpdateStreamVisibility`）。保存形式の版 92 以上で書かれる。
 - **試験 1（11/23 17:40、`spike/tools/run_probe.ps1 -Jsx scenes\probe_sets.jsx -Name sets`、結果は `spike/logs/probe_sets`）**: スクリプトから `L.property("ADBE Layer Sets").addProperty("ADBE Layer Set")` で**セットを足せる**（UI 名「セット」>「設定 1」>「コピー数」（既定 5）・「プロパティ」）。`collapseTransformation` は変わらない。ところが、**セットを足すとレイヤーが丸ごと描かれなくなる**（3D の白い平面・不透明度 50%、中央 128 → 0、全面が黒）。さらに **`コピー数.setValue(3)` で AE が止まる**（応答なし、強制終了）。仮説: スクリプトの経路では `CreateSet` が立てるスイッチ 0x80000・128 が立たない／プロパティ（止まり点）がないと描けない／機能フラグで止められている。
 - **`AEGP_LayerH` は `BEE_Layer*` そのもの**（AEGPDriver の CreateNullLayer の実装が、出力の LayerH をそのまま `BEE_CmdSetLayerSwitch` に渡している。`spike/ida/AEGPDriver.aex.i64` に移した、`ida_importers.py` で確認）。
-- **試験 2（17:46、`probe_sets2.jsx`＋プラグインの `ProbeSets`、環境変数 `RANDAMU_PROBE_SETS=create|switch`、`PF_Cmd_SEQUENCE_SETUP` で "Target" に対して実行。結果は `spike/logs/probe_create`）**: プラグインから `BEE_AVLayer::CreateSet` を呼べた（undo グループ内、例外なし）。**スイッチ 128 はコラップス**（`collapseTransformation` が true になる）。描画は元と同じ（中央 128、形も同じ）で、消えもしないが、コピーが重なった跡もない（5 枚なら約 251 のはず）。→ プロパティ（`ADBE Set Property`＋止まり点）がないとコピーに展開されないとみられる。`switch` モード（スクリプトで足した後にスイッチだけ立てる）は未実行。
+- **試験 2（17:46、`probe_sets2.jsx`＋プラグインの `ProbeSets`、環境変数 `DUPLIX_PROBE_SETS=create|switch`、`PF_Cmd_SEQUENCE_SETUP` で "Target" に対して実行。結果は `spike/logs/probe_create`）**: プラグインから `BEE_AVLayer::CreateSet` を呼べた（undo グループ内、例外なし）。**スイッチ 128 はコラップス**（`collapseTransformation` が true になる）。描画は元と同じ（中央 128、形も同じ）で、消えもしないが、コピーが重なった跡もない（5 枚なら約 251 のはず）。→ プロパティ（`ADBE Set Property`＋止まり点）がないとコピーに展開されないとみられる。`switch` モード（スクリプトで足した後にスイッチだけ立てる）は未実行。
 - 次: コピーごとの変形の作り方を読む（`BEE_AVLayer::SubLayerRenderCount` の `*a3` が非空の経路 = `sub_180284090` がコピーの一覧（72 バイト/件）を作る）。プロパティの足し方は `BEE_LayerSet::AddProperty(BEE_StreamSpec const&)` と `BEE_CmdSetLayerSetPropStreamRef(BEE_Layer*, TDB_StreamIDPath const& set側, TDB_StreamIDPath const& 参照先)`、止まり点は `BEE_LayerSetStops::AddStop(BEE_Layer*, TDB_Stream*, double)`。UI の入口は AfterFXLib.dll（巨大、未解析）。
 - 未確認: スクリプトから `addProperty("ADBE Layer Set")` できるか（→ できた）、コピーごとの変形がどう決まるか（`GetSubLayerLocalMatrix3D` は vtable +1800 と `sub_180284090` のキャッシュに委ねる）、ライト・影・被写界深度が効くか。
 
@@ -523,20 +536,20 @@
 - 保存して開き直すと（セットは残る、sets n=1）、描画（`saveFrameToPng`）で AE が止まる。ただしこのときは共有の vtable にログ用の包みが入っていた（包みの戻り値の型の推測違いが原因の可能性あり）。
 - Artisan 側: レイヤー一覧を作る `sub_1803855B0` が「別々に描く」ならコピー数ぶんのエントリを作る。クラシック 3D はここを通る見込み。
 - 道具（`spike/ida/`）: `ida_fn.py`（関数とその呼び先、`vt:正規表現:枠数`、`asm:0xADDR`）、`ida_vcall.py`（`call/mov [reg+disp]` で仮想呼び出しの場所を探す）、`ida_callers.py`（呼び元を数段）、`ida_bytes.py`（定数を読む）。`BEE_exports.txt`・`BEE_imports.txt`・`AEGP_imports.txt` は dumpbin の出力。
-- プラグイン（`RandamuSpike.cpp` の `ProbeSets`）: `RANDAMU_PROBE_SETS=prop`、`RANDAMU_PROBE_SW=0x400`（追加のスイッチ）、`RANDAMU_PROBE_VTLOG=1`（そのインスタンスだけ）／`g`（共有の vtable に包み）。シーンは `scenes/probe_sets2.jsx`（purge・保存・開き直し付き）。判定はスクラッチパッドの `bbox.py`（範囲と明るさの段）。
+- プラグイン（`DupliXSpike.cpp` の `ProbeSets`）: `DUPLIX_PROBE_SETS=prop`、`DUPLIX_PROBE_SW=0x400`（追加のスイッチ）、`DUPLIX_PROBE_VTLOG=1`（そのインスタンスだけ）／`g`（共有の vtable に包み）。シーンは `scenes/probe_sets2.jsx`（purge・保存・開き直し付き）。判定はスクラッチパッドの `bbox.py`（範囲と明るさの段）。
 - ~~次: (1)〜(3)~~ → 実施済み（下記）。
 
 ### （11/23 20:45）試験 4・5 の結果
 - **ロガーなしで開き直し → AE が落ちる**（止まるのではなく、自分で終了。ダンプは見つからず）。ENTER/LEAVE ログでは、描画スレッドの複製で `別々に描く → コピー数 → NewXformCache2D → GetSubLayerRects` と進み、**`GetSubLayerRects`（本来の `BEE_LayerSet` 経路）の中で落ちる**。→ 本来のレイヤーセット機能は、描画では使えない（壊れている／未完成）。
 - 同じセッション内では、複製のセット数は 0（`sets=0`）。**SEQUENCE_SETUP からプラグインが BEE を直接いじった変更は、描画用の複製に同期されない**（スクリプトでの変更は届く。試験 1）。
-- **試験 5「fill」（`RANDAMU_PROBE_SETS=fill`、`spike/logs/probe_fill*`）**: セットは使わず、**共有の vtable の 3 枠を差し替え**る（217 別々に描く→真、219 コピー数→5、233 `GetSubLayerRects`→元を呼ばずに矩形・M3・M4 を自分で 5 件詰める。メモリは ucrtbase の malloc、4096 以上は MSVC の 32 バイト整列の取り決め）。対象は `BEE_Layer::GetID()`（公開関数）で見分ける（描画用の複製でも同じ ID=17 だった）。行列は U.dll の `M_Matrix3/4::SetIdentity/Translate`。x を 60 ずつずらした 5 枚。
+- **試験 5「fill」（`DUPLIX_PROBE_SETS=fill`、`spike/logs/probe_fill*`）**: セットは使わず、**共有の vtable の 3 枠を差し替え**る（217 別々に描く→真、219 コピー数→5、233 `GetSubLayerRects`→元を呼ばずに矩形・M3・M4 を自分で 5 件詰める。メモリは ucrtbase の malloc、4096 以上は MSVC の 32 バイト整列の取り決め）。対象は `BEE_Layer::GetID()`（公開関数）で見分ける（描画用の複製でも同じ ID=17 だった）。行列は U.dll の `M_Matrix3/4::SetIdentity/Translate`。x を 60 ずつずらした 5 枚。
   - **落ちない**。描画スレッドが複製に対して、コピーごとに `GetSubLayerXform3D`(225)・`GetSubLayerLocalMatrix3D`(168) を 5 回、`Rasterize2DGraph`(235)・`GetBoundsFromCache`(229)・`GetSubLayerXform2D`(222/223) を呼ぶ（= AE がコピーを 5 枚の板として扱い始めている）。
   - **ところが絵ではレイヤーが消える（全面黒、f_after・f_reopen とも）**。試験 1（スクリプトでセットを足すと消えた）と同じ症状。
   - 不透明度（226）は常に 1.0、範囲（229）はこちらの M3 と矩形から計算 → この 2 つは原因ではない。
-- **次の 1 手**: 消える原因を探す。候補: (a) コピーごとの絵（`Rasterize2DGraph` の結果、あるいは `BEE_RenderTextureForArtisan` のサブレイヤー版）が空、(b) 行列の座標系の違い（M4 の平行移動の単位・原点、2D 側 M3 との組み合わせ）、(c) `GetSubLayerXform2D` の 4 つの版が返す行列のどれかが未設定。まず平行移動 0（単位行列 5 枚）にして、重なって明るくなる（約 1−0.5^5）か消えるかを見る。消えるなら (a)、出るなら (b)。ログは `RANDAMU_PROBE_VTLOG=g` を併用（fill と同時に使える）。
+- **次の 1 手**: 消える原因を探す。候補: (a) コピーごとの絵（`Rasterize2DGraph` の結果、あるいは `BEE_RenderTextureForArtisan` のサブレイヤー版）が空、(b) 行列の座標系の違い（M4 の平行移動の単位・原点、2D 側 M3 との組み合わせ）、(c) `GetSubLayerXform2D` の 4 つの版が返す行列のどれかが未設定。まず平行移動 0（単位行列 5 枚）にして、重なって明るくなる（約 1−0.5^5）か消えるかを見る。消えるなら (a)、出るなら (b)。ログは `DUPLIX_PROBE_VTLOG=g` を併用（fill と同時に使える）。
 - **利用者の仮説（有力）: ベクターとラスターの違い**。サブレイヤーの仕組みは文字単位 3D のテキスト（ベクター）用で、コピーごとに形から描き直せる。平面（ラスター）では「サブレイヤー i の絵」を作れず空になる → 消える。エフェクトが付くとラスター化（Flatten）されるので別々に描かない判定になる、とも一致する。反する点: レイヤーセットは一般の AV レイヤーに付いている（ただし本来の経路は落ちる＝作りかけの可能性）。**確かめ方**: (1) 平面で単位行列 5 枚 → 消えるなら「コピーの絵が空」が確定。(2) シェイプレイヤーを対象に同じ差し替え（シェイプは別の vtable なので、その表の 217/219/233 を差し替える）→ 描ければ仮説を支持。正しければ、「サブレイヤー i の絵」の要求にレイヤー全体の絵を返す箇所（`Rasterize2DGraph` 周辺）も差し替える必要がある。
 ### （11/23 22:10）試験 6: 仮説の確認 → **支持された**
-- 環境変数: `RANDAMU_FILL_SPACING`（x の間隔、既定 60）、`RANDAMU_FILL_COL=1`（M4 の平行移動を列側へ）、`RANDAMU_FILL_M3ID=1`（M3 は単位行列のまま）、シーン側 `RANDAMU_TARGET_KIND=shape`（対象をシェイプの白い四角に）。ログは `spike/logs/probe_fill0`・`probe_fillshape`・`probe_shape0`・`probe_shapecol`・`probe_shapem3`。
+- 環境変数: `DUPLIX_FILL_SPACING`（x の間隔、既定 60）、`DUPLIX_FILL_COL=1`（M4 の平行移動を列側へ）、`DUPLIX_FILL_M3ID=1`（M3 は単位行列のまま）、シーン側 `DUPLIX_TARGET_KIND=shape`（対象をシェイプの白い四角に）。ログは `spike/logs/probe_fill0`・`probe_fillshape`・`probe_shape0`・`probe_shapecol`・`probe_shapem3`。
 - 平面（ラスター）・間隔 0 → **消える**。行列は無関係で、コピーの絵が空。
 - シェイプ・間隔 0 → 元と同じ形で中央 248（50% の板 5 枚の理論値 ≈247）。**AE 自身の 3D 描画で、5 枚が別々の板として正しく合成された**。
 - シェイプ・間隔 60（M3 と M4 の両方に平行移動）→ 遠近のついた板が 3 つ、台形にゆがみ、切れて見える（`probe_fillshape/f_after.png`）。
@@ -545,50 +558,50 @@
 - **分かったこと**: M3（2D）と M4（3D）の意味・座標系が分かっていない。テキストの本物の値を見るのが早い → `BEE_TextLayer::GetSubLayerRects`（vtable 233 のテキスト版）を逆コンパイルするか、文字単位 3D のテキストで差し替えずに 233 を包んでログに M3・M4・矩形を出し、文字ごとの値の作り方を真似る（テキストは BEE_TextLayer の別の vtable）。
 ### （11/23 夜）試験 7: **シェイプで任意の配置に成功**
 - 規則（AV 版の `GetSubLayerXform2D` と試験から）: **コピー i の絵 = 元のレイヤーのうち M3(rect) の範囲の中身、その板を M4 で 3D に置く**（M4 は行ベクトル形式、4 行目が平行移動、レイヤー座標の単位）。テキストでは M3 が文字の位置、M4 が文字の 3D 変形。
-- **M3 = 単位行列、M4 = 平行移動 → 正解**（`RANDAMU_FILL_M3ID=1`、`spike/logs/probe_shapem3b/f_after.png`）: 横 100・不透明度 50% の板 5 枚が 60 間隔に並び、重なり 40 の幅だけ 192、他は 128、全体の幅 302（理論 ≈299）。前の `probe_shapem3` が画面いっぱいに崩れたのは、前の実行の `RANDAMU_FILL_COL` が残っていたため（今はログに設定値を出す）。
+- **M3 = 単位行列、M4 = 平行移動 → 正解**（`DUPLIX_FILL_M3ID=1`、`spike/logs/probe_shapem3b/f_after.png`）: 横 100・不透明度 50% の板 5 枚が 60 間隔に並び、重なり 40 の幅だけ 192、他は 128、全体の幅 302（理論 ≈299）。前の `probe_shapem3` が画面いっぱいに崩れたのは、前の実行の `DUPLIX_FILL_COL` が残っていたため（今はログに設定値を出す）。
 - 環境変数は PowerShell の呼び出しをまたいで残ることがある。試験ごとに明示的に消すこと。
 - テキストの文字ごとの M4 は TXT.dll の `TXT_GetCharacter3DTransformPlus` が作る（未解析、不要になった）。テキストの xform キャッシュは AV と別の構造（+96 等を読むと落ちる）。
 ### 試験 8: **ラスター（平面）でも成功**
-- シェイプは `BEE_VectorLayer`。AV との違いで効くのは `Rasterize2DGraph`(235)。AV 版はキャッシュなしで `SubLayerRenderCount` を聞き、2 以上だとセット用の特別なノード `sub_180299BB0` で描く（セットのデータがないので空）。→ **キャッシュなし（shared_ptr が空）で聞かれたら元の答え（0）を返す**（`RANDAMU_FILL_NOCACHE_ORIG=1`）と、通常のノードでレイヤー全体の絵になり、平面でもシェイプと同じ正解の絵（`spike/logs/probe_solid2`、開き直しも同じ）。
-- **今の「fill」の全条件**: 共有の AV vtable の 217→真、219→N（キャッシュありのときだけ）、233→矩形=元の矩形・M3=単位行列・M4=コピーの変形。`RANDAMU_PROBE_SETS=fill RANDAMU_FILL_M3ID=1 RANDAMU_FILL_NOCACHE_ORIG=1`。
+- シェイプは `BEE_VectorLayer`。AV との違いで効くのは `Rasterize2DGraph`(235)。AV 版はキャッシュなしで `SubLayerRenderCount` を聞き、2 以上だとセット用の特別なノード `sub_180299BB0` で描く（セットのデータがないので空）。→ **キャッシュなし（shared_ptr が空）で聞かれたら元の答え（0）を返す**（`DUPLIX_FILL_NOCACHE_ORIG=1`）と、通常のノードでレイヤー全体の絵になり、平面でもシェイプと同じ正解の絵（`spike/logs/probe_solid2`、開き直しも同じ）。
+- **今の「fill」の全条件**: 共有の AV vtable の 217→真、219→N（キャッシュありのときだけ）、233→矩形=元の矩形・M3=単位行列・M4=コピーの変形。`DUPLIX_PROBE_SETS=fill DUPLIX_FILL_M3ID=1 DUPLIX_FILL_NOCACHE_ORIG=1`。
 ### 試験 9: **対象にエフェクトが付いていても成功**
 - エフェクトがあると、Artisan の判定 `sub_180385CD0`（BEE RVA 0x385CD0〜0x385DB0）が「AV 型（`IsLayerType(0)`）かつエフェクトあり」で真になり、コピーに分かれない（`probe_solidfx`、確認済み）。
-- 対策: slot 79 `IsLayerType` を差し替え、**呼び元（`_ReturnAddress()`）がこの関数の範囲のときだけ、対象レイヤーに偽を返す**（`RANDAMU_FILL_FXBYPASS=1`）。→ 5 枚に分かれ、エフェクト（塗り：赤）も全コピーに入る（`spike/logs/probe_solidfx2/f_after.png`）。シーン側は `RANDAMU_EFFECT_ON_TARGET=1`。
+- 対策: slot 79 `IsLayerType` を差し替え、**呼び元（`_ReturnAddress()`）がこの関数の範囲のときだけ、対象レイヤーに偽を返す**（`DUPLIX_FILL_FXBYPASS=1`）。→ 5 枚に分かれ、エフェクト（塗り：赤）も全コピーに入る（`spike/logs/probe_solidfx2/f_after.png`）。シーン側は `DUPLIX_EFFECT_ON_TARGET=1`。
 - 注意: アドレスは今の AE 2025 の BEE.dll 固定。製品ではバイト列のパターン検索などで探す必要がある。
 ### 試験 10: **3D シーンで正解と画素単位で完全一致**（`spike/scenes/probe_3d.jsx`、`spike/logs/probe_3d`）
-- シーン: クラシック 3D、床（X 回転 90）、交差する青い壁（Y 回転 90）、ライト（スポット、影なし）、カメラ。"probe" は Target 1 枚＋fill（固定の配置表 5 件、x/y/z ばらばら、`RANDAMU_FILL_TABLE=1`）、"ref" は本物の複製レイヤー 5 枚を同じ位置に。
+- シーン: クラシック 3D、床（X 回転 90）、交差する青い壁（Y 回転 90）、ライト（スポット、影なし）、カメラ。"probe" は Target 1 枚＋fill（固定の配置表 5 件、x/y/z ばらばら、`DUPLIX_FILL_TABLE=1`）、"ref" は本物の複製レイヤー 5 枚を同じ位置に。
 - **差の最大 0（12 万画素すべて同じ）**。陰影・壁との交差・前後関係を含めて、AE 自身が描いたものと同一。
-- 実行: `RANDAMU_FILL_TABLE=1 RANDAMU_FILL_FXBYPASS=1 RANDAMU_PROBE_SETS=fill RANDAMU_FILL_M3ID=1 RANDAMU_FILL_NOCACHE_ORIG=1`、`run_probe.ps1 -Jsx scenes\probe_3d.jsx -Name 3d`、比較はスクラッチパッドの `cmp.py`。
-- **未解決**: スクリプトからライトの「影を落とす」を設定すると、見えないデスクトップの AE が止まる（`RANDAMU_3D_SHADOWS=1` で再現。ダイアログ待ちの可能性）。影の試験は別の手段で設定する必要がある。
-- **試験 11: 回転も完全一致（差 0）**（`spike/logs/probe_3drot2`）。M4 = T(−アンカー)·Rz·Ry·Rx·T(アンカー＋オフセット)（行ベクトル、角度は度で、AE の Rotate X/Y/Z と同じ符号）。順序を X→Y→Z にすると 3 軸を組み合わせたコピーだけずれる（`probe_3drot`）。`RANDAMU_FILL_ROT=1 RANDAMU_FILL_ROTORDER=ZYX`。アンカーは矩形の中心（既定のアンカー）。
-- **試験 12: 被写界深度（絞り 120）＋調整レイヤー（ガウスぼかし 4）＋モーションブラー（カメラを 1 秒で x+600）を全部入れても完全一致（差 0）**（`spike/logs/probe_3dx`、`RANDAMU_3D_EXTRA=dof,adj,mb`）。ただしコピー自身は動いていない（コピーの動きのブラーは、時間ごとに行列を変える段階で確かめる。hook は時間引数を今は無視）。
-- **試験 13: 動くコピーのモーションブラーも一致（差の最大 1/255）**（`spike/logs/probe_3dmb3`、`RANDAMU_FILL_ANIM=1 RANDAMU_3D_TIME=0.5 RANDAMU_3D_EXTRA=mb`）。`GetSubLayerRects` の第 3 引数は時刻 `{int value; unsigned scale}`（レイヤー時間とみられる）で、AE はシャッター内の時刻（0.50104 s…）ごとに呼んでくる → 時間の関数として行列を返せばモーションブラーが正しく付く。
+- 実行: `DUPLIX_FILL_TABLE=1 DUPLIX_FILL_FXBYPASS=1 DUPLIX_PROBE_SETS=fill DUPLIX_FILL_M3ID=1 DUPLIX_FILL_NOCACHE_ORIG=1`、`run_probe.ps1 -Jsx scenes\probe_3d.jsx -Name 3d`、比較はスクラッチパッドの `cmp.py`。
+- **未解決**: スクリプトからライトの「影を落とす」を設定すると、見えないデスクトップの AE が止まる（`DUPLIX_3D_SHADOWS=1` で再現。ダイアログ待ちの可能性）。影の試験は別の手段で設定する必要がある。
+- **試験 11: 回転も完全一致（差 0）**（`spike/logs/probe_3drot2`）。M4 = T(−アンカー)·Rz·Ry·Rx·T(アンカー＋オフセット)（行ベクトル、角度は度で、AE の Rotate X/Y/Z と同じ符号）。順序を X→Y→Z にすると 3 軸を組み合わせたコピーだけずれる（`probe_3drot`）。`DUPLIX_FILL_ROT=1 DUPLIX_FILL_ROTORDER=ZYX`。アンカーは矩形の中心（既定のアンカー）。
+- **試験 12: 被写界深度（絞り 120）＋調整レイヤー（ガウスぼかし 4）＋モーションブラー（カメラを 1 秒で x+600）を全部入れても完全一致（差 0）**（`spike/logs/probe_3dx`、`DUPLIX_3D_EXTRA=dof,adj,mb`）。ただしコピー自身は動いていない（コピーの動きのブラーは、時間ごとに行列を変える段階で確かめる。hook は時間引数を今は無視）。
+- **試験 13: 動くコピーのモーションブラーも一致（差の最大 1/255）**（`spike/logs/probe_3dmb3`、`DUPLIX_FILL_ANIM=1 DUPLIX_3D_TIME=0.5 DUPLIX_3D_EXTRA=mb`）。`GetSubLayerRects` の第 3 引数は時刻 `{int value; unsigned scale}`（レイヤー時間とみられる）で、AE はシャッター内の時刻（0.50104 s…）ごとに呼んでくる → 時間の関数として行列を返せばモーションブラーが正しく付く。
   - 注意: `probe_3d.jsx` のコンプの長さを 1/30 秒にしていた（`addComp` の引数の順を誤り）。2 秒に直した。0.5 秒で真っ白になったのはこのため。
 - **影（未解決）**: ライトのオプション（「影を落とす」など、強度より後ろの項目）にスクリプトで触ると、見えないデスクトップの AE がモーダルのダイアログ（`#32770`、中身は AE 独自描画で読めない、入力欄 1 つ）で止まる。ライトの種類はスポット（4413）。プラグインからの `AEGP_SetStreamValue` も失敗（0）し、同様に止まる。CPU は増えない＝ダイアログ待ち。`WM_COMMAND IDOK` では進まない。→ 案: 利用者に影つきのシーンを手で作った .aep を用意してもらい、それを開いて試す。
-- **試験 14: キャッシュ**（`spike/logs/probe_3dcache`、`RANDAMU_3D_CACHETEST=1 RANDAMU_FILL_FILE=<倍率のファイル>`）: hook が返す配置を外から変えただけでは、AE は古い絵を返す（`f_p2_nochange` = 倍率 1 の正解）。**対象レイヤーのエフェクトのパラメータ（スライダー）を変えると問い合わせ直して、新しい配置で正解と一致**（`f_p3_slider` = 倍率 0.5 の正解、差 0）。→ 製品では、配置をエフェクトのパラメータだけから決めれば、キャッシュは AE の仕組みのまま正しく働く。
-- **試験 15: hook の中（描画スレッド）で、描画用の複製レイヤーからエフェクトのパラメータを AEGP で読める**（`spike/logs/probe_3dparam`、`RANDAMU_FILL_PARAM=1`）。`AEGP_EffectSuite4` でレイヤーのエフェクトを列挙→マッチ名で探す→`AEGP_GetNewEffectStreamByIndex`→`AEGP_GetNewStreamValue`（レイヤー時間、時刻は hook の第 3 引数）。SPBasicSuite は SEQUENCE_SETUP で保存したものを使う。止まりも落ちもなし。スライダー 0→倍率 1 の正解、5→倍率 0.5 の正解と差 0。→ **配置をエフェクトのパラメータだけから決める製品の形が成り立つ**（ID の対応表は、hook を入れる対象の判定にだけ使う。製品では「このエフェクトを持つレイヤーか」で判定できる）。
+- **試験 14: キャッシュ**（`spike/logs/probe_3dcache`、`DUPLIX_3D_CACHETEST=1 DUPLIX_FILL_FILE=<倍率のファイル>`）: hook が返す配置を外から変えただけでは、AE は古い絵を返す（`f_p2_nochange` = 倍率 1 の正解）。**対象レイヤーのエフェクトのパラメータ（スライダー）を変えると問い合わせ直して、新しい配置で正解と一致**（`f_p3_slider` = 倍率 0.5 の正解、差 0）。→ 製品では、配置をエフェクトのパラメータだけから決めれば、キャッシュは AE の仕組みのまま正しく働く。
+- **試験 15: hook の中（描画スレッド）で、描画用の複製レイヤーからエフェクトのパラメータを AEGP で読める**（`spike/logs/probe_3dparam`、`DUPLIX_FILL_PARAM=1`）。`AEGP_EffectSuite4` でレイヤーのエフェクトを列挙→マッチ名で探す→`AEGP_GetNewEffectStreamByIndex`→`AEGP_GetNewStreamValue`（レイヤー時間、時刻は hook の第 3 引数）。SPBasicSuite は SEQUENCE_SETUP で保存したものを使う。止まりも落ちもなし。スライダー 0→倍率 1 の正解、5→倍率 0.5 の正解と差 0。→ **配置をエフェクトのパラメータだけから決める製品の形が成り立つ**（ID の対応表は、hook を入れる対象の判定にだけ使う。製品では「このエフェクトを持つレイヤーか」で判定できる）。
 - **未確認（重要）**: ここまでの一致はすべて「エフェクトを付けた直後に SEQUENCE_SETUP で hook を入れ、同じ AE の中で `saveFrameToPng`」で得たもの。aerender（新しいプロセス）・MFR・読み込み直したプロジェクト・影・画像素材は未確認。
-- **試験 16（11/24）: aerender（新しいプロセス、保存した .aep）で MFR オフ・オンとも完全一致（差 0）**。`spike/tools/run_3d_aerender.ps1 -Name 3daer`（シーン生成→`TARGET_ID` を jsx.log から取得→aerender→`r_probe`/`r_ref` の TIFF を比較）。hook は GLOBAL_SETUP で `GetProcAddress(BEE.dll, "??_7BEE_AVLayer@@6B@")` の表に入れる（`RANDAMU_FILL_GLOBAL=1 RANDAMU_FILL_LAYERID=<id>`）。slot 217 は 1 フレームで十数回、ID の判定は合計 0.04 ms。比較スクリプトは `RANDAMU_CMP_PY` で渡す。
+- **試験 16（11/24）: aerender（新しいプロセス、保存した .aep）で MFR オフ・オンとも完全一致（差 0）**。`spike/tools/run_3d_aerender.ps1 -Name 3daer`（シーン生成→`TARGET_ID` を jsx.log から取得→aerender→`r_probe`/`r_ref` の TIFF を比較）。hook は GLOBAL_SETUP で `GetProcAddress(BEE.dll, "??_7BEE_AVLayer@@6B@")` の表に入れる（`DUPLIX_FILL_GLOBAL=1 DUPLIX_FILL_LAYERID=<id>`）。slot 217 は 1 フレームで十数回、ID の判定は合計 0.04 ms。比較スクリプトは `DUPLIX_CMP_PY` で渡す。
 - **試験 19（11/24）: アドレスの決め打ちをなくした版で、PNG 素材＋影のシーンが aerender の MFR オフ・オンとも完全一致**（`spike/logs/probe_3dshape`、`run_3d_aerender.ps1 -Name 3dshape [-SkipScene]`）。
   - 仮想関数表の枠は、公開関数（`?IsLayerType@BEE_AVLayer@@UEBAEH@Z` など 4 つ）のアドレスと表を照合して実行時に求める（`FindSlot`）。見つからなければ hook を入れない。
-  - エフェクト判定のかわし方は、`IsLayerType(0)` の戻り先の命令の並びで判定する（`IsFlattenCheckSite`）: `test al,al; jnz; call BEE_BetaFeature_AreExpressionEffectsAlwaysAllowedEnabled; test; jz; mov rax,[rbx]; mov rcx,rbx; call [rax+d]; mov rdx,[rax]; mov rcx,rax; call [rdx+d]; test eax,eax; jnz; mov rax,[rbx]; mov rcx,rbx; call [rax+d]; test al,al; jnz; mov rcx,rbx; call (GetSelectedTrackMatte)`。前半だけだと**音声合成の判定 `sub_18043E350`（`HasAudio` から）にも合致してしまった**ので、後半まで照合する。合致は BEE+0x385CF9 だけになった。`RANDAMU_FILL_FXBYPASS=addr` で旧来の固定アドレス方式。
-- **試験 22: 枚数と重さ**。1 回目（`perf.out`）は**無効**: シーンを使い回したため、N=1000・5000 では AE のディスクキャッシュから N=5 の絵が返り、hook は 1 度も呼ばれなかった（hook の配置はキャッシュの鍵に入らない。製品ではパラメータから決めるので問題ない）。2 回目の結果（`perf2.out`）: **N=7 → 72.7/48.0 s、N=1000 → 54.4/54.5 s（MFR オフ/オン、起動込み。1000 枚は N=7 と差がない）、N=5000 → 300 秒で打ち切り（オフ・オンとも）**。hook には N=5000 で問い合わせが来ている。3 回目の結果（`perf3.out`）: **N=2500 → 74.2 s（起動を除くと約 20 秒）**。`FillRects` は 1 回 67 ms（デバッグビルド）で全体のごく一部。→ 時間の大半は AE の 3D 描画側。4 回目の結果（`perf4.out`）: **N=5000 → 512 s（起動を除くと約 455 秒）**。2500 枚の約 20 秒から急増（枚数 2 倍で 20 倍超）。hook 側は `FillRects` 1 回 18 ms、slot 217 は 1 万回で ID 照合合計 5 ms → **時間はほぼすべて AE のクラシック 3D 描画側**（板どうしの交差の分割などで枚数に対して急に重くなるとみられる。同じ枚数の本物のレイヤーでの比較は未実施）。→ 設計の相談事項: 枚数の目安、重さの対策（交差しにくい配置、品質設定など）。2 回目の方法: N ごとにシーンを作り直し、Target に「スライダー制御 = N」を付けて鍵を変える（`RANDAMU_3D_NOREF=1`、`-Name 3dperf<N>`、N=7・1000・5000、出力はスクラッチパッドの `perf2.out`）。時間は AE の起動（約 55 秒）込みで、probe と ref の 2 フレーム分。
+  - エフェクト判定のかわし方は、`IsLayerType(0)` の戻り先の命令の並びで判定する（`IsFlattenCheckSite`）: `test al,al; jnz; call BEE_BetaFeature_AreExpressionEffectsAlwaysAllowedEnabled; test; jz; mov rax,[rbx]; mov rcx,rbx; call [rax+d]; mov rdx,[rax]; mov rcx,rax; call [rdx+d]; test eax,eax; jnz; mov rax,[rbx]; mov rcx,rbx; call [rax+d]; test al,al; jnz; mov rcx,rbx; call (GetSelectedTrackMatte)`。前半だけだと**音声合成の判定 `sub_18043E350`（`HasAudio` から）にも合致してしまった**ので、後半まで照合する。合致は BEE+0x385CF9 だけになった。`DUPLIX_FILL_FXBYPASS=addr` で旧来の固定アドレス方式。
+- **試験 22: 枚数と重さ**。1 回目（`perf.out`）は**無効**: シーンを使い回したため、N=1000・5000 では AE のディスクキャッシュから N=5 の絵が返り、hook は 1 度も呼ばれなかった（hook の配置はキャッシュの鍵に入らない。製品ではパラメータから決めるので問題ない）。2 回目の結果（`perf2.out`）: **N=7 → 72.7/48.0 s、N=1000 → 54.4/54.5 s（MFR オフ/オン、起動込み。1000 枚は N=7 と差がない）、N=5000 → 300 秒で打ち切り（オフ・オンとも）**。hook には N=5000 で問い合わせが来ている。3 回目の結果（`perf3.out`）: **N=2500 → 74.2 s（起動を除くと約 20 秒）**。`FillRects` は 1 回 67 ms（デバッグビルド）で全体のごく一部。→ 時間の大半は AE の 3D 描画側。4 回目の結果（`perf4.out`）: **N=5000 → 512 s（起動を除くと約 455 秒）**。2500 枚の約 20 秒から急増（枚数 2 倍で 20 倍超）。hook 側は `FillRects` 1 回 18 ms、slot 217 は 1 万回で ID 照合合計 5 ms → **時間はほぼすべて AE のクラシック 3D 描画側**（板どうしの交差の分割などで枚数に対して急に重くなるとみられる。同じ枚数の本物のレイヤーでの比較は未実施）。→ 設計の相談事項: 枚数の目安、重さの対策（交差しにくい配置、品質設定など）。2 回目の方法: N ごとにシーンを作り直し、Target に「スライダー制御 = N」を付けて鍵を変える（`DUPLIX_3D_NOREF=1`、`-Name 3dperf<N>`、N=7・1000・5000、出力はスクラッチパッドの `perf2.out`）。時間は AE の起動（約 55 秒）込みで、probe と ref の 2 フレーム分。
 - **試験 23 の 1 回目: 失敗（差の最大 86）**。slot 226 `GetSubLayerOpacity` はクラシック 3D から 1 度も呼ばれない（`spike/logs/probe_3dopacity`）。
-- **試験 23 の 2 回目の結果（11/24 05:53）: 成功。aerender の MFR オフ・オンとも正解との差 0**（`spike/logs/probe_3dopacity2`、出力はスクラッチパッド `a66d4780-…\scratchpad\opacity2.out`）。ログに `FILL artisan opacity sub=0..4 base=1.0 x 0.30/0.84/0.61/0.38/0.92` が出た（IAT の差し替えが効いた）。環境変数: `RANDAMU_FILL_TABLE=1 FILL_FXBYPASS=1 3D_SHADOWS=1 FILL_ROT=1 FILL_ROTORDER=ZYX FILL_NOCACHE_ORIG=1 PROBE_SETS=fill FILL_M3ID=1 FILL_OPACITY=1 3D_IMAGE=spike\assets\probe_img.png`、`RANDAMU_CMP_PY`=旧スクラッチパッド `1c09b12a-…\scratchpad\cmp.py`。→ コピーごとの不透明度は slot 226 ではなく `BEE_GetArtisanLayerOpacity`（AEGPDriver の IAT）で付ける。**次は「次の 1 手」の 4（設計の相談、`docs/decisions-2026-11-24.md`）。**
+- **試験 23 の 2 回目の結果（11/24 05:53）: 成功。aerender の MFR オフ・オンとも正解との差 0**（`spike/logs/probe_3dopacity2`、出力はスクラッチパッド `a66d4780-…\scratchpad\opacity2.out`）。ログに `FILL artisan opacity sub=0..4 base=1.0 x 0.30/0.84/0.61/0.38/0.92` が出た（IAT の差し替えが効いた）。環境変数: `DUPLIX_FILL_TABLE=1 FILL_FXBYPASS=1 3D_SHADOWS=1 FILL_ROT=1 FILL_ROTORDER=ZYX FILL_NOCACHE_ORIG=1 PROBE_SETS=fill FILL_M3ID=1 FILL_OPACITY=1 3D_IMAGE=spike\assets\probe_img.png`、`DUPLIX_CMP_PY`=旧スクラッチパッド `1c09b12a-…\scratchpad\cmp.py`。→ コピーごとの不透明度は slot 226 ではなく `BEE_GetArtisanLayerOpacity`（AEGPDriver の IAT）で付ける。**次は「次の 1 手」の 4（設計の相談、`docs/decisions-2026-11-24.md`）。**
 - （旧）**試験 23 の 2 回目（ビルド済み・未実行）**: AEGPDriver.aex の取り込み表（IAT）で `BEE_GetArtisanLayerOpacity` を `HookArtOpacity` に差し替え（`PatchImport`）、元の値 × コピーごとの値を返す。コピーの番号はトレースから取る: `v = *(char**)(trace+16)`、レイヤー = `*(void**)(v-48)`、サブレイヤー番号 = `*(int*)(v-40)`（`BEE_GetArtisanLayerFromTrace` の逆コンパイルで確認）。この関数は BEE 内からは直接呼ばれず、AEGPDriver の `sub_18001A150`（Artisan に層の不透明度を渡す AEGP の関数）から呼ばれる。実行: 下の 1 回目と同じ環境変数で `run_3d_aerender.ps1 -Name 3dopacity2`。ログの `FILL artisan opacity` が出るかと、正解との差を見る。
-- **試験 23: コピーごとの不透明度**（1 回目の方法）。slot 226 `GetSubLayerOpacity`（`double (int i, shared_ptr<XformCache> const&)`、公開名で照合）を差し替え、i 番目のコピーに 0.3＋0.7×((i×37) mod 10)/9 を返す（`RANDAMU_FILL_OPACITY=1`）。ref の複製にも同じ不透明度。5 枚の表、PNG 素材、影あり。`run_3d_aerender.ps1 -Name 3dopacity`、出力はスクラッチパッドの `opacity.out`。
+- **試験 23: コピーごとの不透明度**（1 回目の方法）。slot 226 `GetSubLayerOpacity`（`double (int i, shared_ptr<XformCache> const&)`、公開名で照合）を差し替え、i 番目のコピーに 0.3＋0.7×((i×37) mod 10)/9 を返す（`DUPLIX_FILL_OPACITY=1`）。ref の複製にも同じ不透明度。5 枚の表、PNG 素材、影あり。`run_3d_aerender.ps1 -Name 3dopacity`、出力はスクラッチパッドの `opacity.out`。
 - 利用者向けの判断材料: `docs/decisions-2026-11-24.md`（方式の確定、回転の中心、散らす座標の基準、枚数と重さ、ばらつきの種類）。
 - **試験 21 の結果: 成功**。saveFrameToPng・aerender（MFR オフ・オン）のすべてで正解（本物のレイヤー 100 枚）との差が最大 1/255（`spike/logs/probe_3drand100`）。大きい確保の経路も問題なし。slot 217 は 100 回で ID 照合の合計 0.01 ms。
-- **試験 21: 乱数で 100 枚**。`RANDAMU_FILL_RANDOM=100`（プラグインの `RandomXform` と jsx が同じ Park–Miller 法（種 12345）で位置 ±150/±100/±300・回転 ±60° を作る）。PNG 素材、影なし。`run_3d_aerender.ps1 -Name 3drand100`、出力はスクラッチパッドの `3drand.out`。100 枚だと M4 の一覧が 12800 バイト → `VecReserve` の 4096 以上の整列確保の経路を初めて通る。
+- **試験 21: 乱数で 100 枚**。`DUPLIX_FILL_RANDOM=100`（プラグインの `RandomXform` と jsx が同じ Park–Miller 法（種 12345）で位置 ±150/±100/±300・回転 ±60° を作る）。PNG 素材、影なし。`run_3d_aerender.ps1 -Name 3drand100`、出力はスクラッチパッドの `3drand.out`。100 枚だと M4 の一覧が 12800 バイト → `VecReserve` の 4096 以上の整列確保の経路を初めて通る。
 - **試験 20 の結果: 成功**。2 枚の対象（ID 53・54）が登録され、それぞれ自分のスライダー（0→倍率 1、5→0.5）を描画スレッドで読み、saveFrameToPng と aerender（MFR オフ・オン）のすべてで正解と完全一致（`spike/logs/probe_3dmulti`）。ID の照合は 10 回で合計 0.003 ms。
 - **試験 20: 目印のエフェクトで対象を見分ける＋複数レイヤー**。
   - 1 回目: hook の判定 `IsMine` の中で AEGP のエフェクト列挙を呼んだら、シーン生成中（エフェクト適用の直後）に AE が止まった（UI スレッドの BEE の仮想関数の中から AEGP を呼ぶのは危険）。
-  - 2 回目（今）: hook の中では**登録済みのレイヤー ID の一覧と照合するだけ**。一覧は SEQUENCE_SETUP でコンプのレイヤーを AEGP で調べて登録（試作）、aerender では `RANDAMU_FILL_LAYERIDS=53,54`（`run_3d_aerender.ps1` が jsx.log の全 `TARGET_ID` から渡す）。製品では自分のエフェクトが各コマンドで自分のレイヤー ID を登録する形になる。
-  - `RANDAMU_FILL_BYEFFECT=1`、`RANDAMU_FILL_PARAM=1`（倍率をそのスライダーから）、シーン `RANDAMU_3D_MULTI=1`（probe に Target＝スライダー 0→倍率 1 と Target2＝スライダー 5→倍率 0.5、P0 から (80,40,120) ずらす。ref には両方のコピー）。影・PNG 素材も入れて、`run_3d_aerender.ps1 -Name 3dmulti` で saveFrameToPng と aerender（MFR オフ・オン）を比較。出力はスクラッチパッドの `3dmulti.out`。
+  - 2 回目（今）: hook の中では**登録済みのレイヤー ID の一覧と照合するだけ**。一覧は SEQUENCE_SETUP でコンプのレイヤーを AEGP で調べて登録（試作）、aerender では `DUPLIX_FILL_LAYERIDS=53,54`（`run_3d_aerender.ps1` が jsx.log の全 `TARGET_ID` から渡す）。製品では自分のエフェクトが各コマンドで自分のレイヤー ID を登録する形になる。
+  - `DUPLIX_FILL_BYEFFECT=1`、`DUPLIX_FILL_PARAM=1`（倍率をそのスライダーから）、シーン `DUPLIX_3D_MULTI=1`（probe に Target＝スライダー 0→倍率 1 と Target2＝スライダー 5→倍率 0.5、P0 から (80,40,120) ずらす。ref には両方のコピー）。影・PNG 素材も入れて、`run_3d_aerender.ps1 -Name 3dmulti` で saveFrameToPng と aerender（MFR オフ・オン）を比較。出力はスクラッチパッドの `3dmulti.out`。
 - **次の 1 手（順に）**:
   1. ~~aerender で通す~~ → 済（試験 16）。旧メモ: hook を GLOBAL_SETUP で入れる（表は `GetProcAddress(BEE.dll, "??_7BEE_AVLayer@@6B@")` でインスタンスなしで取れる見込み）。対象の判定は、試作ではレイヤー ID を環境変数で渡す。`probe_3d.jsx` の最後でプロジェクトを保存し、レンダーキューに probe と ref を足す（`make_s1.jsx` の `addRQ` と同じく、TIFF のテンプレートを `RNDM_TIFF_A` として保存・適用）。aerender で描いて比べる。MFR のオン・オフの両方。slot 217 が全 AV レイヤーに何回呼ばれるかと、判定の時間も測る。
-  2. ~~PNG の画像素材レイヤー~~ → **済（試験 17）: 半透明・模様つきの PNG（120×100、`spike/assets/probe_img.png`）で、saveFrameToPng と aerender の MFR オフ・オンのすべてで完全一致**（`spike/logs/probe_3dimg`、シーン側 `RANDAMU_3D_IMAGE=<png のパス>`）。
-  3. ~~影~~ → **済（試験 18）: 影も完全一致（差 0）**（`spike/logs/probe_3dsh5`、`RANDAMU_3D_SHADOWS=1`）。床にコピーそれぞれの影が落ちる。止まっていた原因は、スクリプトで**ライトの「カラー」（`ADBE Light Color`、オプションの 6 番目）の値を読むと、見えないデスクトップの AE がダイアログ待ちになる**こと（内部名での検索もこれに触れて止まるとみられる）。回避: 7 番目以降を番号で回り、`matchName` だけを見て設定する。ライトの「影を落とす」の内部名は `ADBE Casts Shadows`（12 番目。`ADBE Light Casts Shadows` ではない）。旧メモ: ライトのオプションの項目ごとに、内部名を値を読む前にログへ出し、どの項目に触ると止まるかを特定する（1 回だけ）。回避できなければ、影つきの .aep を利用者に用意してもらう。
+  2. ~~PNG の画像素材レイヤー~~ → **済（試験 17）: 半透明・模様つきの PNG（120×100、`spike/assets/probe_img.png`）で、saveFrameToPng と aerender の MFR オフ・オンのすべてで完全一致**（`spike/logs/probe_3dimg`、シーン側 `DUPLIX_3D_IMAGE=<png のパス>`）。
+  3. ~~影~~ → **済（試験 18）: 影も完全一致（差 0）**（`spike/logs/probe_3dsh5`、`DUPLIX_3D_SHADOWS=1`）。床にコピーそれぞれの影が落ちる。止まっていた原因は、スクリプトで**ライトの「カラー」（`ADBE Light Color`、オプションの 6 番目）の値を読むと、見えないデスクトップの AE がダイアログ待ちになる**こと（内部名での検索もこれに触れて止まるとみられる）。回避: 7 番目以降を番号で回り、`matchName` だけを見て設定する。ライトの「影を落とす」の内部名は `ADBE Casts Shadows`（12 番目。`ADBE Light Casts Shadows` ではない）。旧メモ: ライトのオプションの項目ごとに、内部名を値を読む前にログへ出し、どの項目に触ると止まるかを特定する（1 回だけ）。回避できなければ、影つきの .aep を利用者に用意してもらう。
   4. 設計の相談に回すこと（設計書 5.4 節）: 回転の軸を矩形の中心にするかレイヤーの実際のアンカーにするか。対象レイヤー自身に回転・拡大縮小・親がある場合、配置をレイヤーの座標で行うかワールドの座標で行うか。
 - その先: 製品の設計（hook を入れる時機と外す時機、複数インスタンス・複数レイヤー、MFR での同時呼び出し、AE の版ごとのアドレス探し、`IsLayerType` の戻りアドレス判定の範囲の探し方）、設計書の書き直しと利用者の承認。
 - （旧メモ）ラスターのレイヤー（製品の本命）で使うには、「サブレイヤー i の絵」を作る処理（`Rasterize2DGraph`(235) 周辺）でレイヤー全体の絵を返させる必要がある。
@@ -597,7 +610,7 @@
 ## 次の 1 手（11/23 17:55 更新。5 時間枠 90% で区切り、リセット 19:30）
 0. **レイヤーセットでコピーを別々の変形で描かせる**。読む順: `BEE_AVLayer::SharedXformTimeCacheFactory` → `sub_1804B3BD0`（`sub_180284090` が呼ぶ。`BEE_LayerXformCache` を作り、+120/+128 の vector が 1 件 72 バイトのコピー一覧）→ そこから `BEE_LayerSet`／`ADBE Set Property`／止まり点がどう使われるか。書き出しは `spike/ida/ida_dump2.py BEE.dll.i64 <出力先> <正規表現>`（関数単体なら idalib で `ida_hexrays.decompile(ea)` をファイルへ）。
    - 次の試験: プラグインから Position を参照するセットのプロパティ（`AddProperty`／`BEE_CmdSetLayerSetPropStreamRef`）と止まり点 2 つ（`AddStop`）を作り、コピーが別々の位置に描かれるかを見る。中央の画素で判定（重なれば 1−0.5^n）。
-   - 道具: `spike/tools/run_probe.ps1 -Jsx scenes\probe_sets2.jsx -Name <名前>`（`RANDAMU_PROBE_SETS`・`RANDAMU_SPIKE_LOG` を先に設定）。AE は毎回「閉じない → 90 秒後に強制終了」になるが、結果には影響なし。
+   - 道具: `spike/tools/run_probe.ps1 -Jsx scenes\probe_sets2.jsx -Name <名前>`（`DUPLIX_PROBE_SETS`・`DUPLIX_SPIKE_LOG` を先に設定）。AE は毎回「閉じない → 90 秒後に強制終了」になるが、結果には影響なし。
    - コピー数の `setValue` はスクリプトから行うと AE が止まる（試験 1）。コピー数はプラグインから変えるか、止まる原因を調べる。
    - 利用者に見せる前に分かっていること: セットを作るとレイヤーのコラップスのスイッチが立ち、タイムラインに「セット」のグループが見える。
 - （済）`BEE.dll` の全体解析: `spike/ida/BEE.dll.i64`（`.i64` は消さない・止めない）。
@@ -619,7 +632,7 @@
 6. 結果を設計書に反映し、5.4 節の未決事項を利用者と決めて、承認をもらう。
 
 ## 再開時の注意
-- 実験コードの現状: `spike/RandamuSpike/RandamuSpike.cpp` は S5 用に AEGP の描画を足した版（`RANDAMU_S5_SITE`＝pre|smart、`RANDAMU_S5_SALT` で切り替え）。ビルドは `spike/tools/build.ps1`、実行は `spike/tools/run_s1.ps1`（`-SkipScene` でシーン生成を省略、`-Mfr ON|OFF`）。
-- S4 の試験: `spike/tools/run_s4.ps1`（`s1.aep` が必要。出力は `spike/logs/s4`）。S5b の切り替えは環境変数 `RANDAMU_S5B`（0／compare／1）、対照は `RANDAMU_S4_NOGUID`・`RANDAMU_S5B_NOMIX`。
+- 実験コードの現状: `spike/DupliXSpike/DupliXSpike.cpp` は S5 用に AEGP の描画を足した版（`DUPLIX_S5_SITE`＝pre|smart、`DUPLIX_S5_SALT` で切り替え）。ビルドは `spike/tools/build.ps1`、実行は `spike/tools/run_s1.ps1`（`-SkipScene` でシーン生成を省略、`-Mfr ON|OFF`）。
+- S4 の試験: `spike/tools/run_s4.ps1`（`s1.aep` が必要。出力は `spike/logs/s4`）。S5b の切り替えは環境変数 `DUPLIX_S5B`（0／compare／1）、対照は `DUPLIX_S4_NOGUID`・`DUPLIX_S5B_NOMIX`。
 - 実行前に AfterFX / aerender が動いていないことを確かめる（利用者の AE を巻き込まない）。
 - エフェクトが落ちると `Effect Crashed.txt` で次の起動時にダイアログが出る。`run_s1.ps1` は起動前に `Repair-AeCrashState` で防ぐ。「AfterFX did not close」と出たら、まずここを疑う。

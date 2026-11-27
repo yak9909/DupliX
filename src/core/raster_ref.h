@@ -1,4 +1,4 @@
-// randamu core: the reference CPU rasterizer (unit tests only). Same contract as RasterizeCopies.
+// DupliX core: the reference CPU rasterizer (unit tests only). Same contract as RasterizeCopies.
 #pragma once
 
 #include "core/raster.h"

@@ -1,8 +1,8 @@
-# randamu
+# DupliX
 
 After Effects 2025 用のエフェクトです。適用したレイヤーを、3D 空間にランダムに n 枚のコピーとして並べます。コピーは AE 自身のクラシック 3D レンダラーで本物の 3D レイヤーとして描画されます。そのため、ほかのレイヤーとの前後・交差、ライトの陰影と影、被写界深度、モーションブラー、上にある調整レイヤーの結果が、同じ位置に複製レイヤーを置いた場合と画素単位で同じになります。
 
-現在は実験の段階で、製品のコードはまだありません。`spike/` は方式を確かめるための使い捨てのコードです。製品の設計は [docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md](docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md)、実装計画は [docs/superpowers/plans/2026-11-24-randamu-sublayer-mvp.md](docs/superpowers/plans/2026-11-24-randamu-sublayer-mvp.md) にあります。
+現在は実験の段階で、製品のコードはまだありません。`spike/` は方式を確かめるための使い捨てのコードです。製品の設計は [docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md](docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md)、実装計画は [docs/superpowers/plans/2026-11-24-duplix-sublayer-mvp.md](docs/superpowers/plans/2026-11-24-duplix-sublayer-mvp.md) にあります。
 
 AE の非公開の内部関数をフックして動かすため、対象は After Effects 2025（25.6）の Windows 版だけです。
 
@@ -18,7 +18,7 @@ AE の非公開の内部関数をフックして動かすため、対象は Afte
 | `SubLayerRenderCount` | サブレイヤーの数 |
 | `GetSubLayerRects` | サブレイヤーごとの矩形・2D 行列（`M_Matrix3`）・3D 行列（`M_Matrix4`） |
 
-テキスト以外の AV レイヤーでは、これらの関数は「サブレイヤーなし」を返します。randamu は、このエフェクトを持つレイヤーに対してだけ「サブレイヤーが n 枚あり、それぞれこの変形」と返させます。あとはレンダラーが n 枚の面として扱うので、前後判定・陰影・影・被写界深度・モーションブラーはすべて AE のレンダラーが通常どおり計算します。
+テキスト以外の AV レイヤーでは、これらの関数は「サブレイヤーなし」を返します。DupliX は、このエフェクトを持つレイヤーに対してだけ「サブレイヤーが n 枚あり、それぞれこの変形」と返させます。あとはレンダラーが n 枚の面として扱うので、前後判定・陰影・影・被写界深度・モーションブラーはすべて AE のレンダラーが通常どおり計算します。
 
 ### vtable の書き換え
 
@@ -37,7 +37,7 @@ AE の非公開の内部関数をフックして動かすため、対象は Afte
 
 引数は、時刻（`{int value; unsigned scale}`、レイヤー時間）、レイヤーの矩形、出力先の `std::vector<M_FloatRect>`（1 要素 32 バイト）・`std::vector<M_Matrix3>`（72 バイト）・`std::vector<M_Matrix4>`（128 バイト）です。
 
-コピー i の画像は「元のレイヤーのうち、M3 で変換した矩形の範囲」で、その面を M4 で 3D 空間に配置します。テキストでは M3 が文字の位置、M4 が文字の 3D 変形に当たります。randamu は次のように書き込みます。
+コピー i の画像は「元のレイヤーのうち、M3 で変換した矩形の範囲」で、その面を M4 で 3D 空間に配置します。テキストでは M3 が文字の位置、M4 が文字の 3D 変形に当たります。DupliX は次のように書き込みます。
 
 - 矩形は、元のレイヤーの矩形のまま
 - M3 は単位行列（レイヤー全体をコピーの画像にする）
@@ -57,7 +57,7 @@ vector のメモリは AE 側が解放するので、AE と同じ `ucrtbase.dll`
 
 ### エフェクト付きのレイヤー
 
-Artisan（3D レンダラー）には、「エフェクトが付いた AV レイヤーは 1 枚にフラット化して描画する」という判定があり、ここで真になるとサブレイヤーに分かれません。randamu 自身がエフェクトなので、この判定を偽にする必要があります。
+Artisan（3D レンダラー）には、「エフェクトが付いた AV レイヤーは 1 枚にフラット化して描画する」という判定があり、ここで真になるとサブレイヤーに分かれません。DupliX 自身がエフェクトなので、この判定を偽にする必要があります。
 
 判定の中では `IsLayerType(0)` が呼ばれます。書き換えた `IsLayerType` は、リターンアドレスが指す命令列をパターンと照合し、この判定からの呼び出しのときだけ、対象レイヤーに偽を返します。照合するパターンは次のとおりです。
 
@@ -85,7 +85,7 @@ index = *(int*)(v - 40)     // サブレイヤーの番号
 
 `AEGP_LayerH` は `BEE_Layer*` そのものです。描画はレイヤーの複製オブジェクトに対して行われますが、`BEE_Layer::GetID()` の値は複製でも同じでした。フックした関数の中では、エフェクトが登録した ID の一覧と照合するだけで、AEGP は呼びません。UI スレッドで呼ばれた BEE の仮想関数の中から AEGP を呼ぶと、AE が止まったためです。レイヤー ID はコンプごとの番号なので、製品ではコンプのアイテム ID（`BEE_Layer::GetParentComp()` → `BEE_Item::GetID()`）と組にして照合します。
 
-描画スレッドからの呼び出しでは、そのレイヤーの randamu のパラメータを、AEGP（`AEGP_GetNewEffectStreamByIndex`・`AEGP_GetNewStreamValue`）で、呼び出し時の時刻の値として読めます。配置はパラメータだけから決まるので、パラメータを変えれば AE のキャッシュは通常どおり破棄されます。逆に、フックが返す配置をパラメータ以外の理由で変えると、AE はキャッシュに残った古い画像を返します。
+描画スレッドからの呼び出しでは、そのレイヤーの DupliX のパラメータを、AEGP（`AEGP_GetNewEffectStreamByIndex`・`AEGP_GetNewStreamValue`）で、呼び出し時の時刻の値として読めます。配置はパラメータだけから決まるので、パラメータを変えれば AE のキャッシュは通常どおり破棄されます。逆に、フックが返す配置をパラメータ以外の理由で変えると、AE はキャッシュに残った古い画像を返します。
 
 ### 見つけた経緯
 
@@ -115,7 +115,7 @@ index = *(int*)(v - 40)     // サブレイヤーの番号
 
 | パス | 中身 |
 |---|---|
-| `spike/RandamuSpike/` | 実験用のエフェクト。環境変数で動作を切り替える |
+| `spike/DupliXSpike/` | 実験用のエフェクト。環境変数で動作を切り替える |
 | `spike/scenes/` | 試験のシーンを作る ExtendScript（`probe_3d.jsx` が参照コンプとの比較） |
 | `spike/tools/` | ビルド、AE を非表示のデスクトップで動かすスクリプト、aerender での比較 |
 | `spike/ida/` | `BEE.dll` を idalib で解析するのに使ったスクリプト（DLL と解析結果は含めていない） |
@@ -129,6 +129,6 @@ index = *(int*)(v - 40)     // サブレイヤーの番号
 pwsh spike/tools/build.ps1
 ```
 
-出力先は `dev_plugins/` です。AE に読み込ませるには、`C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\randamu_dev` からこのフォルダへのジャンクションを作ります。
+出力先は `dev_plugins/` です。AE に読み込ませるには、`C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\duplix_dev` からこのフォルダへのジャンクションを作ります。
 
-参照コンプとの比較は `spike/tools/run_3d_aerender.ps1 -Name <名前>` で行います。条件は環境変数 `RANDAMU_FILL_*`・`RANDAMU_3D_*` で指定します。組み合わせの例は HANDOFF.md の各試験にあります。自動テストの環境は [docs/ae-test-harness.md](docs/ae-test-harness.md) にまとめてあります。
+参照コンプとの比較は `spike/tools/run_3d_aerender.ps1 -Name <名前>` で行います。条件は環境変数 `DUPLIX_FILL_*`・`DUPLIX_3D_*` で指定します。組み合わせの例は HANDOFF.md の各試験にあります。自動テストの環境は [docs/ae-test-harness.md](docs/ae-test-harness.md) にまとめてあります。

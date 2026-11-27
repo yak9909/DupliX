@@ -1,4 +1,4 @@
-// randamu core: how After Effects' classic 3D renderer (Advanced3D.aex, "Escher") orders the surfaces of a frame,
+// DupliX core: how After Effects' classic 3D renderer (Advanced3D.aex, "Escher") orders the surfaces of a frame,
 // rebuilt from its code (docs/experiments/2026-11-25-dev-log.md, 11/26): for every pair of surfaces whose screen
 // quads overlap, the depth difference at the overlap's corners gives "a is in front somewhere" / "b is in front
 // somewhere"; the resulting graph is split into strongly connected components. Single surfaces are painted in that

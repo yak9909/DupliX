@@ -9,7 +9,7 @@
 #include <map>
 #include <mutex>
 
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 #include "hook/bee_hooks.h"
 #include "hook/merge_scene.h"
 
@@ -23,12 +23,12 @@ MergePlanCache g_plans;  // by comp and comp time
 std::mutex g_lastMu;
 std::map<std::pair<long long, long long>, std::shared_ptr<const MergePlan>> g_last;
 
-// Diagnostics: RANDAMU_MERGE_DUMP names a file that gets the first plan of each log generation (camera, other
+// Diagnostics: DUPLIX_MERGE_DUMP names a file that gets the first plan of each log generation (camera, other
 // surfaces, every copy's screen quad / world corners / group, the groups' depths and rects), one record per line.
 void DumpPlan(const MergeSceneInput& in, const MergePlan& p)
 {
     char path[MAX_PATH] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_MERGE_DUMP", path, sizeof(path)) <= 0 || !path[0]) return;
+    if (GetEnvironmentVariableA("DUPLIX_MERGE_DUMP", path, sizeof(path)) <= 0 || !path[0]) return;
     static LogLimit once;
     if (!once.Take(1)) return;
     FILE* f = nullptr;
@@ -105,7 +105,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     const auto tRead = std::chrono::steady_clock::now();
     const bool readOk = ReadMergeScene(layer, layerTime, &in);
     {
-        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
         static LogLimit lg;
         if (s_time && lg.Take(200))
             RLog("group time: scene read %.2f ms (%zu planes, %zu layers)",
@@ -122,9 +122,9 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
     // the log generation (changes only when a test switches logs): each test render builds and logs its own plan
     const unsigned long long h = HashMergeScene(in) ^ ((unsigned long long)RLogGeneration() * 0x9E3779B97F4A7C15ull);
     auto plan = g_plans.Get(((long long)comp << 20) ^ (long long)(h & 0xFFFFF), h, [&in, comp] {
-        // the earlier group planes (RANDAMU_MERGE_OLD=1) or the group drawing (isolated copies drawn by AE's functions)
+        // the earlier group planes (DUPLIX_MERGE_OLD=1) or the group drawing (isolated copies drawn by AE's functions)
         char ov[4] = {0};
-        const bool old = GetEnvironmentVariableA("RANDAMU_MERGE_OLD", ov, sizeof(ov)) > 0 && ov[0] == '1';
+        const bool old = GetEnvironmentVariableA("DUPLIX_MERGE_OLD", ov, sizeof(ov)) > 0 && ov[0] == '1';
         const auto tPlan = std::chrono::steady_clock::now();
         // a comp whose front/back plan ran over its budget: the next frames go straight to the isolated groups (the
         // same result as running out again), trying the front/back plan again every 16th frame
@@ -146,13 +146,13 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
             else s_over.erase(comp);
         }
         static LogLimit fbl;
-        if (p.fb[13]) RLog("group: isolated plan: %d overlapping pairs of grouped copies meet in 3D (RANDAMU_PLAN_MEETS)", p.fb[13]);
+        if (p.fb[13]) RLog("group: isolated plan: %d overlapping pairs of grouped copies meet in 3D (DUPLIX_PLAN_MEETS)", p.fb[13]);
         if (fb && p.fb[12] && fbl.Take(40)) RLog("group: front/back plan over budget: isolated groups only");
         else if (fb && fbl.Take(40))
             RLog("group: front/back plan: %d copies may group, %d front, %d back; not grouped: %d unsure, %d between, %d alone; "
                  "unsure pairs (sliver/no depth/level) copies %d/%d/%d, with other surfaces %d/%d/%d",
                  p.fb[0], p.fb[1], p.fb[2], p.fb[3], p.fb[4], p.fb[5], p.fb[6], p.fb[7], p.fb[8], p.fb[9], p.fb[10], p.fb[11]);
-        static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+        static const bool s_time = GetEnvironmentVariableA("DUPLIX_A3D_TIME", nullptr, 0) > 0;
         static LogLimit lg;
         if (s_time && lg.Take(200))
             RLog("group time: plan %.2f ms (isolated plan: copies %.2f, pairs %.2f ms; %.0f candidates, %.0f overlapping)",
@@ -161,7 +161,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
         // test only (tests/ae/merge.jsx "seam"): every group plane at the camera depth of a world point "x,y,z"
         char fv[96] = {0};
         double wp[3];
-        if (GetEnvironmentVariableA("RANDAMU_MERGE_FORCE_DW", fv, sizeof(fv)) > 0 &&
+        if (GetEnvironmentVariableA("DUPLIX_MERGE_FORCE_DW", fv, sizeof(fv)) > 0 &&
             sscanf_s(fv, "%lf,%lf,%lf", &wp[0], &wp[1], &wp[2]) == 3) {
             double inv[16];
             if (Invert4(p.cam.camToWorld, inv)) {

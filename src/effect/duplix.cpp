@@ -1,6 +1,6 @@
-// randamu effect entry: parameters, pass-through render, and (later tasks) registration of the
+// DupliX effect entry: parameters, pass-through render, and (later tasks) registration of the
 // layer for the sub-layer hooks.
-#include "randamu.h"
+#include "duplix.h"
 
 #include <algorithm>
 #include <atomic>
@@ -28,7 +28,7 @@
 
 namespace {
 
-const char kBuildId[] = "randamu build " __DATE__ " " __TIME__;
+const char kBuildId[] = "DupliX build " __DATE__ " " __TIME__;
 
 // The identity of THIS build for AE's disk cache: the loaded .aex file's last-write time and size.
 // __DATE__/__TIME__ alone only change when this .cpp is recompiled, so a fix in another file (raster.cpp,
@@ -55,32 +55,10 @@ const std::string& BuildId()
 
 std::mutex g_logMutex;
 
-// AE reads parameter names in the system ANSI code page (CP932 on Japanese Windows), not UTF-8.
-// Returns the Japanese name converted to CP932 on CP932 systems, the English name elsewhere.
-// The returned pointer stays valid for the process lifetime (checkbox labels are kept by pointer).
-const char* UiName(const char* utf8, const char* english)
-{
-    static std::mutex m;
-    static std::deque<std::string> store;
-    std::lock_guard<std::mutex> lk(m);
-    if (GetACP() != 932) {
-        store.emplace_back(english);
-        return store.back().c_str();
-    }
-    wchar_t w[1024] = {0};
-    char a[1024] = {0};
-    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 1024) || !WideCharToMultiByte(932, 0, w, -1, a, 1024, nullptr, nullptr)) {
-        store.emplace_back(english);
-    } else {
-        store.emplace_back(a);
-    }
-    return store.back().c_str();
-}
-
 }  // namespace
 
 namespace {
-std::atomic<int> g_logGen{0};  // bumped when RANDAMU_LOG changes (a test switching logs between comps)
+std::atomic<int> g_logGen{0};  // bumped when DUPLIX_LOG changes (a test switching logs between comps)
 }
 
 int RLogGeneration() { return g_logGen.load(std::memory_order_relaxed); }
@@ -100,13 +78,13 @@ bool LogLimit::Take(int limit, bool powersOfTwo, int* countOut)
 void RLog(const char* fmt, ...)
 {
     // Logging on or off is decided once (thread-safe static init); when off, return without taking the lock.
-    static const bool enabled = GetEnvironmentVariableA("RANDAMU_LOG", nullptr, 0) > 0;
+    static const bool enabled = GetEnvironmentVariableA("DUPLIX_LOG", nullptr, 0) > 0;
     if (!enabled) return;
     std::lock_guard<std::mutex> lk(g_logMutex);
     // The path is read on every line: a test script running in AE ($.setenv) gives each comp its own log.
     static char path[MAX_PATH] = {0};
     char now[MAX_PATH] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_LOG", now, sizeof(now)) > 0 && std::strcmp(now, path)) {
+    if (GetEnvironmentVariableA("DUPLIX_LOG", now, sizeof(now)) > 0 && std::strcmp(now, path)) {
         if (path[0]) ++g_logGen;
         std::memcpy(path, now, sizeof(path));
     }
@@ -169,16 +147,7 @@ struct SeqDataV2 {
 static_assert(sizeof(rnd::WorldXform) == 72, "WorldXform layout is saved in projects");
 static_assert(sizeof(SeqDataV2) == 192, "SeqDataV2 layout is saved in projects");
 
-enum class SelfState {
-    Ready, NoHooks, Not3D, Off, Unknown, Need2D,
-    // notes left by the last switch to fast mode
-    FastAnimDropped, TransferFailed, RefusedSeparated, RefusedWorldAnimated
-};
-
-// What the last switch to fast mode left to tell (per layer), shown while fast mode stays on.
-std::mutex g_noteMutex;
-std::map<long long, SelfState> g_transferNote;
-long long NoteKey(int comp, int layer) { return ((long long)comp << 32) | (unsigned)layer; }
+enum class SelfState { Ready, NoHooks, Not3D, Off, Unknown, Need2D };
 
 rnd::ScatterParams DefaultParams()
 {
@@ -204,9 +173,8 @@ rnd::ScatterParams ParamsFromArray(PF_ParamDef* params[])
     p.opacityMin = params[RP_OPACITY_MIN]->u.fs_d.value;
     p.opacityMax = params[RP_OPACITY_MAX]->u.fs_d.value;
     p.keepFirst = params[RP_KEEP_FIRST]->u.bd.value != 0;
-    p.fast = params[RP_FAST]->u.bd.value != 0;
-    // projects saved before the merge checkbox have no such param (null)
-    p.merge = RP_MERGE < RP_NUM_PARAMS && params[RP_MERGE] && params[RP_MERGE]->u.bd.value != 0;
+    p.fast = IsFastMode(params[RP_RENDER_MODE]->u.pd.value);
+    p.merge = params[RP_MERGE]->u.bd.value != 0;
     return p;
 }
 
@@ -417,72 +385,6 @@ SelfState RegisterSelf(PF_InData* in_data, PF_OutData* out_data, ParamSource src
     return st;
 }
 
-const char* StatusText(SelfState st)
-{
-    static const char* ready = UiName("準備できています", "Ready");
-    static const char* noHooks = UiName("この AE の版ではコピーを作れません", "Not supported in this AE version");
-    static const char* not3d = UiName("3D レイヤーにしてください", "Make the layer 3D");
-    static const char* off = UiName("エフェクトがオフです", "Effect is off");
-    static const char* unknown = UiName("状態を確認できません", "Unknown");
-    static const char* need2d = UiName("高速モードでは 2D レイヤーにしてください", "Fast Mode: make the layer 2D");
-    static const char* dropped = UiName("準備できています（レイヤーのアニメーションは写していません。取り消しで戻せます）",
-                                        "Ready (the layer's animation was not moved; Undo restores it)");
-    static const char* failed = UiName("レイヤーの変形をワールド変形に写せませんでした", "Could not move the layer transform");
-    static const char* separated = UiName("位置の次元が分割されているので、レイヤーの変形を写せません。分割を戻してからオンにし直してください",
-                                          "Position has separated dimensions: join them and turn Fast Mode on again");
-    static const char* worldAnim = UiName("ワールド変形にキーフレームがあるので、レイヤーの変形を写せません。レイヤーを初期状態にしてからオンにし直してください",
-                                          "World Transform is animated: reset the layer transform and turn Fast Mode on again");
-    switch (st) {
-    case SelfState::RefusedSeparated: return separated;
-    case SelfState::RefusedWorldAnimated: return worldAnim;
-    case SelfState::FastAnimDropped: return dropped;
-    case SelfState::TransferFailed: return failed;
-    case SelfState::Need2D: return need2d;
-    case SelfState::Ready: return ready;
-    case SelfState::NoHooks: return noHooks;
-    case SelfState::Not3D: return not3d;
-    case SelfState::Off: return off;
-    default: return unknown;
-    }
-}
-
-// "Ready" with the whole-layer reasons why the merge does not work on this layer (block: MergeBlock bits, not 0).
-// One string per combination, kept for the process (AE keeps the label by pointer).
-const char* MergeBlockedText(unsigned block)
-{
-    static std::mutex m;
-    static std::map<unsigned, const char*> made;
-    std::lock_guard<std::mutex> lk(m);
-    auto it = made.find(block);
-    if (it != made.end()) return it->second;
-    struct R {
-        unsigned bit;
-        const char *ja, *en;
-    };
-    static const R reasons[] = {
-        {rnd::MB_LIGHTS, "ライトを受ける", "accepts lights"},
-        {rnd::MB_SHADOWS, "影を落とす", "casts shadows"},
-        {rnd::MB_MOTION_BLUR, "モーションブラー", "motion blur"},
-        {rnd::MB_DOF, "被写界深度", "depth of field"},
-        {rnd::MB_BLEND, "描画モードが通常でない", "blending mode"},
-        {rnd::MB_OPACITY, "不透明度が 100% 未満", "opacity below 100%"},
-        {rnd::MB_MATTE, "トラックマット", "track matte"},
-        {rnd::MB_OTHER_EFFECTS, "ほかのエフェクトがある", "other effects"},
-        {rnd::MB_SOLID, "平面レイヤー", "solid layer"},
-        {rnd::MB_UNREADABLE, "設定を読み取れない", "settings unreadable"},
-    };
-    std::string ja = "準備できています（軽量化は次の理由で効きません: ", en = "Ready (Merge does not work: ";
-    bool first = true;
-    for (const R& r : reasons)
-        if (block & r.bit) {
-            if (!first) ja += "、", en += ", ";
-            ja += r.ja, en += r.en;
-            first = false;
-        }
-    ja += "）", en += ")";
-    return made[block] = UiName(ja.c_str(), en.c_str());
-}
-
 // The merge's whole-layer reasons for the effect's layer at the current time (0 if none or unknown).
 unsigned MergeBlockNow(PF_InData* in_data)
 {
@@ -501,41 +403,27 @@ unsigned MergeBlockNow(PF_InData* in_data)
 
 PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
-    SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
-    // normal mode with merge on: say why it cannot merge this layer (the reasons that hold for the whole layer)
-    unsigned mergeBlock = 0;
-    if (st == SelfState::Ready && !params[RP_FAST]->u.bd.value && params[RP_MERGE] && params[RP_MERGE]->u.bd.value) {
-        mergeBlock = MergeBlockNow(in_data);
-        static LogLimit logged;  // read by tests/ae/check_merge.py (scene_light)
+    const SelfState st = RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
+    const bool fast = IsFastMode(params[RP_RENDER_MODE]->u.pd.value);
+    // 3D Layers with Optimize on: the whole-layer reasons it cannot merge this layer, logged (read by
+    // tests/ae/check_merge.py, scene_light)
+    if (st == SelfState::Ready && !fast && params[RP_MERGE]->u.bd.value) {
+        const unsigned mergeBlock = MergeBlockNow(in_data);
+        static LogLimit logged;
         if (logged.Take(50))
             RLog("status: comp %d layer %d merge block %x", g_lastKey.compItemId, g_lastKey.layerId, mergeBlock);
     }
-    if ((st == SelfState::Ready || st == SelfState::Need2D) && params[RP_FAST]->u.bd.value) {
-        std::lock_guard<std::mutex> lk(g_noteMutex);
-        auto it = g_transferNote.find(NoteKey(g_lastKey.compItemId, g_lastKey.layerId));
-        // a refusal explains why the layer is still 3D; the others are shown while fast mode works
-        if (it != g_transferNote.end() &&
-            (st == SelfState::Need2D || it->second == SelfState::FastAnimDropped || it->second == SelfState::TransferFailed))
-            st = it->second;
-    }
-    PF_ParamDef copy = *params[RP_STATUS];
-    copy.ui_flags |= PF_PUI_DISABLED;
-    copy.u.bd.u.nameptr = mergeBlock ? MergeBlockedText(mergeBlock) : StatusText(st);
+    // Optimize does nothing in Fast (2D): greyed out there
     PF_ParamUtilsSuite3* pu = nullptr;
     if (in_data->pica_basicP->AcquireSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3, (const void**)&pu) ==
             kSPNoError &&
         pu) {
-        pu->PF_UpdateParamUI(in_data->effect_ref, RP_STATUS, &copy);
-        // the merge checkbox does nothing in fast mode: grey it out there
-        if (params[RP_MERGE]) {
-            PF_ParamDef m = *params[RP_MERGE];
-            const bool fast = params[RP_FAST]->u.bd.value != 0;
-            const bool was = (m.ui_flags & PF_PUI_DISABLED) != 0;
-            if (fast != was) {
-                if (fast) m.ui_flags |= PF_PUI_DISABLED;
-                else m.ui_flags &= ~PF_PUI_DISABLED;
-                pu->PF_UpdateParamUI(in_data->effect_ref, RP_MERGE, &m);
-            }
+        PF_ParamDef m = *params[RP_MERGE];
+        const bool was = (m.ui_flags & PF_PUI_DISABLED) != 0;
+        if (fast != was) {
+            if (fast) m.ui_flags |= PF_PUI_DISABLED;
+            else m.ui_flags &= ~PF_PUI_DISABLED;
+            pu->PF_UpdateParamUI(in_data->effect_ref, RP_MERGE, &m);
         }
         in_data->pica_basicP->ReleaseSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
     }
@@ -546,8 +434,7 @@ PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* par
 // Transform and the layer to its initial 2D state. Off: the layer becomes 3D again; nothing is moved back.
 void FastToggled(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[])
 {
-    const bool on = params[RP_FAST]->u.bd.value != 0;
-    SelfState note = SelfState::Ready;
+    const bool on = IsFastMode(params[RP_RENDER_MODE]->u.pd.value);
     if (on) {
         rnd::WorldXform w;
         bool worldChanged = false;
@@ -562,23 +449,16 @@ void FastToggled(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[]
                 params[RP_WORLD_SCALE_X + k]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
             }
         }
-        note = r == TransferResult::Failed || r == TransferResult::Partial ? SelfState::TransferFailed
-               : r == TransferResult::RefusedSeparated                     ? SelfState::RefusedSeparated
-               : r == TransferResult::RefusedWorldAnimated                 ? SelfState::RefusedWorldAnimated
-               : r == TransferResult::DoneAnimationDropped                 ? SelfState::FastAnimDropped
-                                                                           : SelfState::Ready;
+        RLog("fast mode: the layer transform's transfer %s",
+             r == TransferResult::Failed || r == TransferResult::Partial ? "failed"
+             : r == TransferResult::RefusedSeparated                     ? "refused (separated dimensions)"
+             : r == TransferResult::RefusedWorldAnimated                 ? "refused (World Transform animated)"
+             : r == TransferResult::DoneAnimationDropped                 ? "done (the layer's animation dropped)"
+                                                                         : "done");
     } else {
         SetLayer3D(in_data, true);
     }
-    RegisterSelf(in_data, out_data, ParamSource::Array, params, false);  // sets g_lastKey
-    {
-        std::lock_guard<std::mutex> lk(g_noteMutex);
-        long long k = NoteKey(g_lastKey.compItemId, g_lastKey.layerId);
-        if (note == SelfState::Ready)
-            g_transferNote.erase(k);
-        else
-            g_transferNote[k] = note;
-    }
+    RegisterSelf(in_data, out_data, ParamSource::Array, params, false);
     out_data->out_flags |= PF_OutFlag_REFRESH_UI;
 }
 
@@ -599,7 +479,7 @@ PF_Err SequenceSetdown(PF_InData* in_data, PF_OutData* out_data)
 
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
 {
-    out_data->my_version = PF_VERSION(0, 1, 0, PF_Stage_DEVELOP, 1);
+    out_data->my_version = PF_VERSION(kDupliXVersion[0], kDupliXVersion[1], kDupliXVersion[2], PF_Stage_DEVELOP, 1);
     out_data->out_flags = PF_OutFlag_PIX_INDEPENDENT | PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_SEND_UPDATE_PARAMS_UI;
     out_data->out_flags2 = PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
                            PF_OutFlag2_I_MIX_GUID_DEPENDENCIES | PF_OutFlag2_SUPPORTS_THREADED_RENDERING |
@@ -607,9 +487,9 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
     RLog("GlobalSetup: %s, host %d.%d", BuildId().c_str(), in_data->version.major, in_data->version.minor);
     rnd::GpuRasterSetLog(&RLog);
     // test only (tests/ae/run_fast_mode.ps1 -GpuFail): every fast-mode GPU launch fails, the CPU fallback draws
-    if (GetEnvironmentVariableA("RANDAMU_GPU_FAIL", nullptr, 0) > 0) rnd::GpuRasterTestFail(true);
+    if (GetEnvironmentVariableA("DUPLIX_GPU_FAIL", nullptr, 0) > 0) rnd::GpuRasterTestFail(true);
     Suite<AEGP_UtilitySuite6> util(in_data->pica_basicP, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
-    if (util && !util->AEGP_RegisterWithAEGP(nullptr, "randamu", &g_pluginId))
+    if (util && !util->AEGP_RegisterWithAEGP(nullptr, "DupliX", &g_pluginId))
         rnd::InstallHooks(in_data->pica_basicP, g_pluginId);
     else
         RLog("GlobalSetup: AEGP_RegisterWithAEGP failed; hooks not installed");
@@ -619,59 +499,82 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data)
 PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 {
     PF_ParamDef def;
-
-    // Status line: a checkbox the user cannot operate; its label text shows the state.
-    AEFX_CLR_STRUCT(def);
-    def.ui_flags = PF_PUI_DISABLED;
-    PF_ADD_CHECKBOX(UiName("状態", "Status"), UiName("準備できています", "Ready"), FALSE, PF_ParamFlag_CANNOT_TIME_VARY, RD_STATUS);
-
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_SLIDER(UiName("コピー数", "Copies"), 0, 100000, 1, 1000, 10, RD_COUNT);
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_SLIDER(UiName("乱数の種", "Random Seed"), 0, 1000000, 0, 1000, 0, RD_SEED);
-
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 X", "Position Range X"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_X);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Y", "Position Range Y"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_Y);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置の範囲 Z", "Position Range Z"), 0, 100000, 0, 2000, 200, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_POS_Z);
-
-    PF_ADD_FLOAT_SLIDERX(UiName("回転の範囲 X", "Rotation Range X"), 0, 180, 0, 180, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_ROT_X);
-    PF_ADD_FLOAT_SLIDERX(UiName("回転の範囲 Y", "Rotation Range Y"), 0, 180, 0, 180, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_ROT_Y);
-    PF_ADD_FLOAT_SLIDERX(UiName("回転の範囲 Z", "Rotation Range Z"), 0, 180, 0, 180, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_ROT_Z);
-
-    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小の最小", "Scale Min"), 0, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_SCALE_MIN);
-    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小の最大", "Scale Max"), 0, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_SCALE_MAX);
-    PF_ADD_FLOAT_SLIDERX(UiName("不透明度の最小", "Opacity Min"), 0, 100, 0, 100, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_OPACITY_MIN);
-    PF_ADD_FLOAT_SLIDERX(UiName("不透明度の最大", "Opacity Max"), 0, 100, 0, 100, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_OPACITY_MAX);
-
-    PF_ADD_CHECKBOXX(UiName("1 枚目は元の位置", "Keep First at Original"), FALSE, 0, RD_KEEP_FIRST);
-    // USER_CHANGED_PARAM on toggling (the transfer); a keyframed toggle would make no sense with it
-    PF_ADD_CHECKBOXX(UiName("高速モード", "Fast Mode"), FALSE, PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY,
-                     RD_FAST);
+    // (the SDK's macros return from this function on an error)
+#define DX_RANGE(name, max, sliderMax, dflt, id) \
+    AEFX_CLR_STRUCT(def);                        \
+    PF_ADD_FLOAT_SLIDERX(name, 0, max, 0, sliderMax, dflt, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, id)
+#define DX_PERCENT(name, min, max, sliderMin, sliderMax, id) \
+    AEFX_CLR_STRUCT(def);                                    \
+    PF_ADD_FLOAT_SLIDERX(name, min, max, sliderMin, sliderMax, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, id)
+#define DX_TOPIC(name, id) \
+    AEFX_CLR_STRUCT(def);  \
+    PF_ADD_TOPIC(name, id)
+#define DX_END_TOPIC(id)  \
+    AEFX_CLR_STRUCT(def); \
+    PF_END_TOPIC(id)
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_TOPIC(UiName("ワールド変形", "World Transform"), RD_WORLD_TOPIC);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置 X", "Position X"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_X);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置 Y", "Position Y"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Y);
-    PF_ADD_FLOAT_SLIDERX(UiName("位置 Z", "Position Z"), -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Z);
+    PF_ADD_SLIDER("Copies", 0, 100000, 1, 1000, 10, RD_COUNT);
     AEFX_CLR_STRUCT(def);
-    PF_ADD_ANGLE(UiName("回転 X", "Rotation X"), 0, RD_WORLD_ROT_X);
+    PF_ADD_SLIDER("Random Seed", 0, 1000000, 0, 1000, 0, RD_SEED);
     AEFX_CLR_STRUCT(def);
-    PF_ADD_ANGLE(UiName("回転 Y", "Rotation Y"), 0, RD_WORLD_ROT_Y);
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_ANGLE(UiName("回転 Z", "Rotation Z"), 0, RD_WORLD_ROT_Z);
-    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 X", "Scale X"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_X);
-    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 Y", "Scale Y"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_Y);
-    PF_ADD_FLOAT_SLIDERX(UiName("拡大縮小 Z", "Scale Z"), -10000, 10000, 0, 400, 100, PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT, 0, RD_WORLD_SCALE_Z);
-    AEFX_CLR_STRUCT(def);
-    PF_END_TOPIC(RD_WORLD_TOPIC_END);
+    PF_ADD_CHECKBOXX("Keep Original in Place", FALSE, 0, RD_KEEP_FIRST);
 
-    // Normal mode only (greyed out in fast mode). Merged copies may differ by 1-2 levels at their edges; the
-    // order against other layers stays exact; nothing merges with lights, shadows, depth of field or motion blur.
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_CHECKBOX(UiName("軽量化（群れをまとめる）", "Lightweight (Merge Groups)"),
-                    UiName("縁が少し変わることがあります", "edges may differ slightly"), FALSE,
-                    PF_ParamFlag_CANNOT_TIME_VARY, RD_MERGE);
+    DX_TOPIC("Position", RD_POS_TOPIC);
+    DX_RANGE("Position Range X", 100000, 2000, 200, RD_POS_X);
+    DX_RANGE("Position Range Y", 100000, 2000, 200, RD_POS_Y);
+    DX_RANGE("Position Range Z", 100000, 2000, 200, RD_POS_Z);
+    DX_END_TOPIC(RD_POS_TOPIC_END);
 
+    DX_TOPIC("Rotation", RD_ROT_TOPIC);
+    DX_RANGE("Rotation Range X", 180, 180, 0, RD_ROT_X);
+    DX_RANGE("Rotation Range Y", 180, 180, 0, RD_ROT_Y);
+    DX_RANGE("Rotation Range Z", 180, 180, 0, RD_ROT_Z);
+    DX_END_TOPIC(RD_ROT_TOPIC_END);
+
+    DX_TOPIC("Scale", RD_SCALE_TOPIC);
+    DX_PERCENT("Scale Min", 0, 10000, 0, 400, RD_SCALE_MIN);
+    DX_PERCENT("Scale Max", 0, 10000, 0, 400, RD_SCALE_MAX);
+    DX_END_TOPIC(RD_SCALE_TOPIC_END);
+
+    DX_TOPIC("Opacity", RD_OPACITY_TOPIC);
+    DX_PERCENT("Opacity Min", 0, 100, 0, 100, RD_OPACITY_MIN);
+    DX_PERCENT("Opacity Max", 0, 100, 0, 100, RD_OPACITY_MAX);
+    DX_END_TOPIC(RD_OPACITY_TOPIC_END);
+
+    // the world the copies live in (both render modes); names unique in the effect (expressions find them by name)
+    DX_TOPIC("World Transform", RD_WORLD_TOPIC);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("World Position X", -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_X);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("World Position Y", -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Y);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("World Position Z", -100000, 100000, -2000, 2000, 0, PF_Precision_TENTHS, PF_ValueDisplayFlag_NONE, 0, RD_WORLD_POS_Z);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("World Rotation X", 0, RD_WORLD_ROT_X);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("World Rotation Y", 0, RD_WORLD_ROT_Y);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("World Rotation Z", 0, RD_WORLD_ROT_Z);
+    DX_PERCENT("World Scale X", -10000, 10000, 0, 400, RD_WORLD_SCALE_X);
+    DX_PERCENT("World Scale Y", -10000, 10000, 0, 400, RD_WORLD_SCALE_Y);
+    DX_PERCENT("World Scale Z", -10000, 10000, 0, 400, RD_WORLD_SCALE_Z);
+    DX_END_TOPIC(RD_WORLD_TOPIC_END);
+
+    DX_TOPIC("Rendering", RD_RENDER_TOPIC);
+    // USER_CHANGED_PARAM on a change (the layer transform's transfer); a keyframed mode would make no sense with it
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Render Mode", 2, RM_3D_LAYERS, "3D Layers|Fast (2D)", PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY,
+                  RD_RENDER_MODE);
+    // 3D Layers only (greyed out in Fast (2D))
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Optimize", "", FALSE, PF_ParamFlag_CANNOT_TIME_VARY, RD_MERGE);
+    DX_END_TOPIC(RD_RENDER_TOPIC_END);
+
+#undef DX_RANGE
+#undef DX_PERCENT
+#undef DX_TOPIC
+#undef DX_END_TOPIC
     out_data->num_params = RP_NUM_PARAMS;
     return PF_Err_NONE;
 }
@@ -682,12 +585,12 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
 // moves the whole image. The copies sit on a virtual 3D layer in its initial state: copies * G * V.
 
 // The build ID (a new build never reuses AE's disk cache of an old one) and, for timing tests only, the
-// value of RANDAMU_CACHE_SALT (a new salt makes AE render again instead of reading its disk cache).
+// value of DUPLIX_CACHE_SALT (a new salt makes AE render again instead of reading its disk cache).
 void MixBuildId(PF_InData* in_data, PF_PreRenderExtra* extra)
 {
     // read on every call: a test script running in AE ($.setenv) changes it between renders
     char v[64] = {0};
-    DWORD vn = GetEnvironmentVariableA("RANDAMU_CACHE_SALT", v, sizeof(v));
+    DWORD vn = GetEnvironmentVariableA("DUPLIX_CACHE_SALT", v, sizeof(v));
     const std::string salt(v, vn < sizeof(v) ? vn : 0);
     const std::string& id = BuildId();
     extra->cb->GuidMixInPtr(in_data->effect_ref, (A_u_long)id.size(), id.data());
@@ -731,9 +634,9 @@ bool FastModeOn(PF_InData* in_data)
 {
     PF_ParamDef d;
     AEFX_CLR_STRUCT(d);
-    if (PF_CHECKOUT_PARAM(in_data, RP_FAST, in_data->current_time, in_data->time_step, in_data->time_scale, &d))
+    if (PF_CHECKOUT_PARAM(in_data, RP_RENDER_MODE, in_data->current_time, in_data->time_step, in_data->time_scale, &d))
         return false;
-    bool on = d.u.bd.value != 0;
+    const bool on = IsFastMode(d.u.pd.value);
     PF_CHECKIN_PARAM(in_data, &d);
     return on;
 }
@@ -920,8 +823,8 @@ PF_Err FastSmartRender(PF_InData* in_data, const FastPre* f, PF_EffectWorld* inW
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     {
-        // RANDAMU_PRE_STACK=1 (diagnostics): who asks for the pre-render (module+offset of the callers)
-        static const bool s_stack = GetEnvironmentVariableA("RANDAMU_PRE_STACK", nullptr, 0) > 0;
+        // DUPLIX_PRE_STACK=1 (diagnostics): who asks for the pre-render (module+offset of the callers)
+        static const bool s_stack = GetEnvironmentVariableA("DUPLIX_PRE_STACK", nullptr, 0) > 0;
         static std::atomic<int> n{0};
         if (s_stack && ++n % 50 == 0 && n <= 5000) {
             void* fr[24] = {};
@@ -1170,8 +1073,8 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
     int d = ++dbg;
     if (d <= 200) RLog("dbg: cmd %d enter", (int)cmd);
     {
-        // RANDAMU_CMDLOG=1 (diagnostics): every command with its thread and time
-        static const bool s_cmdLog = GetEnvironmentVariableA("RANDAMU_CMDLOG", nullptr, 0) > 0;
+        // DUPLIX_CMDLOG=1 (diagnostics): every command with its thread and time
+        static const bool s_cmdLog = GetEnvironmentVariableA("DUPLIX_CMDLOG", nullptr, 0) > 0;
         if (s_cmdLog && in_data)
             RLog("cmd: %d main %d time %d/%u", (int)cmd, (int)rnd::IsMainThread(), (int)in_data->current_time,
                  (unsigned)in_data->time_scale);
@@ -1180,6 +1083,11 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
         switch (cmd) {
         case PF_Cmd_GLOBAL_SETUP:
             err = GlobalSetup(in_data, out_data);
+            break;
+        case PF_Cmd_ABOUT:
+            // the Effect Controls' About: the name, the version and where to find more (the SDK's practice)
+            PF_SPRINTF(out_data->return_msg, "DupliX %d.%d.%d\rRandom 3D copies of a layer.\rhttps://github.com/yak9909/DupliX",
+                       kDupliXVersion[0], kDupliXVersion[1], kDupliXVersion[2]);
             break;
         case PF_Cmd_PARAMS_SETUP:
             err = ParamsSetup(in_data, out_data);
@@ -1193,7 +1101,7 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             break;
         case PF_Cmd_USER_CHANGED_PARAM:
             if (rnd::IsMainThread()) {
-                if (((PF_UserChangedParamExtra*)extra)->param_index == RP_FAST)
+                if (((PF_UserChangedParamExtra*)extra)->param_index == RP_RENDER_MODE)
                     FastToggled(in_data, out_data, params);
                 RegisterSelf(in_data, out_data, ParamSource::Array, params, true);
             }
@@ -1232,12 +1140,12 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
 }
 
 // The merge draws its group textures on the GPU when AE's GPU acceleration is CUDA (a CUDA device set up for this
-// effect, its kernel loaded) and no GPU launch has failed. RANDAMU_MERGE_GPU_DRAW (read per call; tests): 0 = never,
+// effect, its kernel loaded) and no GPU launch has failed. DUPLIX_MERGE_GPU_DRAW (read per call; tests): 0 = never,
 // 1 = whenever the driver can (also without AE's CUDA setting).
 bool MergeGpuAllowed()
 {
     char v[8] = {0};
-    if (GetEnvironmentVariableA("RANDAMU_MERGE_GPU_DRAW", v, sizeof(v)) > 0) {
+    if (GetEnvironmentVariableA("DUPLIX_MERGE_GPU_DRAW", v, sizeof(v)) > 0) {
         if (v[0] == '0') return false;
         if (v[0] == '1') return rnd::GpuRasterUsable();
     }

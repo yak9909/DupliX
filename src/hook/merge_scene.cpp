@@ -5,7 +5,7 @@
 
 #include "core/scatter.h"
 #include "core/world.h"
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 #include "hook/bee_hooks.h"
 #include "hook/registry.h"
 

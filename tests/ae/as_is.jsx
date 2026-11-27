@@ -1,20 +1,20 @@
 // Renders a COPY of the user's project as it is: the comp with the effect, duplicated into as_fm (every
 // DupliX in fast mode) and as_nm (every DupliX in normal mode), at the comp's current time.
-// aerender output: RANDAMU_RENDER_DIR/r_as_{fm,nm}_[#####].tif; viewer path: ui_{full,half}_{fm,nm}.png.
+// aerender output: DUPLIX_RENDER_DIR/r_as_{fm,nm}_[#####].tif; viewer path: ui_{full,half}_{fm,nm}.png.
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function fxOf(L) {
         var p = L.property("ADBE Effect Parade");
         if (!p) return null;
-        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "RANDAMU Scatter") return p.property(i);
+        for (var i = 1; i <= p.numProperties; i++) if (p.property(i).matchName === "DupliX") return p.property(i);
         return null;
     }
     try {
         app.beginSuppressDialogs();
-        app.open(new File($.getenv("RANDAMU_USER_AEP")));
+        app.open(new File($.getenv("DUPLIX_USER_AEP")));
         var P = app.project, main = null;
         for (var i = 1; i <= P.numItems && !main; i++) {
             var it = P.item(i);
@@ -35,12 +35,12 @@
         function make(name, fast) {
             var c = main.duplicate();
             c.name = name;
-            for (var a = 1; a <= c.numLayers; a++) { var f = fxOf(c.layer(a)); if (f) f.property(15).setValue(fast ? 1 : 0); }
+            for (var a = 1; a <= c.numLayers; a++) { var f = fxOf(c.layer(a)); if (f) f.property("DupliX-0037").setValue(fast ? 2 : 1); }
             var rq = P.renderQueue.items.add(c);
             var om = rq.outputModule(1), tl = om.templates, tpl = null;
             for (var q = 0; q < tl.length; q++) if (/TIFF/i.test(tl[q]) && tl[q] !== "RNDM_TIFF_A") { tpl = tl[q]; break; }
             om.applyTemplate(tpl);
-            om.file = new File($.getenv("RANDAMU_RENDER_DIR") + "/r_" + name + "_[#####].tif");
+            om.file = new File($.getenv("DUPLIX_RENDER_DIR") + "/r_" + name + "_[#####].tif");
             rq.timeSpanStart = t;
             rq.timeSpanDuration = c.frameDuration;
             return c;

@@ -1,8 +1,9 @@
 // Probe: do the copies appear with each 3D renderer of the comp (Classic 3D / Advanced 3D / ...)?
-// For every renderer in comp.renderers: probe_<i> (Target + randamu, 20 copies) and ref_<i> (Target
+// For every renderer in comp.renderers: probe_<i> (Target + DupliX, 20 copies) and ref_<i> (Target
 // without the effect), PNG each, and log the renderer names. Writes jsx.log ("done").
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -26,11 +27,11 @@
         var L = comp.layers.addSolid([1, 1, 1], "Target", 60, 60, 1);
         L.threeDLayer = true;
         if (withFx) {
-            var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-            fx.property(2).setValue(count);
-            fx.property(3).setValue(3);
-            for (var q = 4; q <= 6; q++) fx.property(q).setValue(150);
-            for (var r = 7; r <= 9; r++) fx.property(r).setValue(60);
+            var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
+            fx.property("DupliX-0002").setValue(count);
+            fx.property("DupliX-0003").setValue(3);
+            for (var q = 4; q <= 6; q++) fx.property(dx(q)).setValue(150);
+            for (var r = 7; r <= 9; r++) fx.property(dx(r)).setValue(60);
         }
         return comp;
     }

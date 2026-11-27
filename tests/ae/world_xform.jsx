@@ -2,8 +2,9 @@
 // For each case: wx_<case>.png (layer in its initial 3D state, placement in the World Transform parameters) and
 // wl_<case>.png (World Transform at its defaults, the same placement on the layer's own transform).
 // check_world_xform.py compares them (max diff <= 1). Writes jsx.log ("CASE <name>", "done").
+function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }  // a DupliX parameter by its disk ID
 (function () {
-    var outDir = $.getenv("RANDAMU_TEST_DIR");
+    var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
@@ -34,22 +35,22 @@
         var L = comp.layers.add(img);
         L.threeDLayer = true;
         L.property("ADBE Transform Group").property("ADBE Scale").setValue([30, 30, 30]);
-        var fx = L.property("ADBE Effect Parade").addProperty("RANDAMU Scatter");
-        fx.property(P_COUNT).setValue(10);
-        fx.property(P_SEED).setValue(3);
-        fx.property(P_POS).setValue(300);
-        fx.property(P_POS + 1).setValue(200);
-        fx.property(P_POS + 2).setValue(400);
-        fx.property(P_ROT + 2).setValue(90);
-        fx.property(P_SCMIN).setValue(60);
-        fx.property(P_SCMAX).setValue(130);
+        var fx = L.property("ADBE Effect Parade").addProperty("DupliX");
+        fx.property(dx(P_COUNT)).setValue(10);
+        fx.property(dx(P_SEED)).setValue(3);
+        fx.property(dx(P_POS)).setValue(300);
+        fx.property(dx(P_POS + 1)).setValue(200);
+        fx.property(dx(P_POS + 2)).setValue(400);
+        fx.property(dx(P_ROT + 2)).setValue(90);
+        fx.property(dx(P_SCMIN)).setValue(60);
+        fx.property(dx(P_SCMAX)).setValue(130);
         var t = tg(L);
         if (inParams) {
             t.property("ADBE Position").setValue([W / 2, H / 2, 0]);
             for (var k = 0; k < 3; k++) {
-                fx.property(P_WPOS + k).setValue(c.pos[k]);
-                fx.property(P_WROT + k).setValue(c.rot[k]);
-                fx.property(P_WSCALE + k).setValue(c.scale);
+                fx.property(dx(P_WPOS + k)).setValue(c.pos[k]);
+                fx.property(dx(P_WROT + k)).setValue(c.rot[k]);
+                fx.property(dx(P_WSCALE + k)).setValue(c.scale);
             }
         } else {
             // the World Transform position is in layer px, so the layer's 30% scale applies to it

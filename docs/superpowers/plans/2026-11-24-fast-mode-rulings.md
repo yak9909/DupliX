@@ -3,8 +3,8 @@
 実行中の台帳（英語）をそのまま残したもの。`Ruling:` は計画からの逸脱や計画が決めていなかった点の判断、`minor (deferred)` は最終レビューの軽微な指摘で今回は直していないもの。
 
 ```
-# SDD ledger — plan: /a/MyProjects/After Effects/Plugin Project/randamu/docs/superpowers/plans/2026-11-24-fast-mode.md
-Spec: docs/superpowers/specs/2026-11-24-randamu-sublayer-design.md (12.10-12.12)
+# SDD ledger — plan: /a/MyProjects/After Effects/Plugin Project/DupliX/docs/superpowers/plans/2026-11-24-fast-mode.md
+Spec: docs/superpowers/specs/2026-11-24-duplix-sublayer-design.md (12.10-12.12)
 Pre-flight: Task1->Task2: CopyHomography screenToSrc[9] (row-vector, homogeneous) consumed by RasterCopy.screenToSrc — consistent. Task1 needs the source rect for the behind-camera check; Interfaces omit it -> Ruling below.
 Pre-flight: Task2 RasterizeCopies(ds) vs AE: in AE the input world is downsampled too -> Ruling below.
 Ruling: CopyHomography/CopyDepth take the source rect (layer px, left/top/right/bottom) — the "any corner z<=1 -> false" check needs the corners — cost if wrong: signature churn only.
@@ -25,14 +25,14 @@ Task 3: complete (commits 2f39e56..95cd36b, tests: build/unit/unit_tests.exe →
 Task 4: Ruling: fast_identity criterion changed from raw max<=8 to raw mean<=0.5 and 3x3-averaged max<=24 — AE's resampling of fine detail differs from bilinear (raw max 58 on checker edges, correct placement); averaged max 15.7 correct vs >=72 for a 1 px shift — cost if wrong: a sub-pixel placement error under ~0.3 px could pass.
 Task 4: Ruling (plan defect, found by fast_nocam/fast_scatter): AE effect worlds are STRAIGHT alpha, the plan/Task 2 assumed premultiplied -> transparent corners' colours leaked. Raster now premultiplies each tap, composites premultiplied, un-premultiplies on store; tests raster_opacity_half/raster_downsample_half updated to straight semantics, raster_straight_alpha_edge added (RED->GREEN) — cost if wrong: none (AE SDK: PF_Pixel is straight alpha).
 Task 4: note: run_fast_mode.ps1 FAST ALL PASS with MFR OFF and ON (after the straight-alpha fix); plane lookups: no other-time/none fallbacks logged.
-Task 4: note: timing runs were served from AE's disk cache (same build + same content -> no render); added RANDAMU_CACHE_SALT (mixed into the GUID, set per run by run_user.ps1).
+Task 4: note: timing runs were served from AE's disk cache (same build + same content -> no render); added DUPLIX_CACHE_SALT (mixed into the GUID, set per run by run_user.ps1).
 Task 4: note: user scene, plugin span per frame (CPU ~60% busy with other user processes): v_asis ~110 ms, v_fast10 ~47 ms (raster ~31), v_fast100 ~200 ms (raster ~180).
 Task 4: Ruling: plan's speed expectation "v_fast1000 <= 3x v_fast10" is not met on CPU — the raster cost grows with the pixels the copies cover (the user's copies are large on screen), the plan assumed the plane cost dominates; v_fast10 <= half of v_asis is met by span. Not optimised further here: GPU (CUDA) is the spec's next step (12.11 step 3) — cost if wrong: 1000 large copies stay ~1-2 s/frame on CPU.
 Task 4: note: user scene aerender totals, 120 frames MFR OFF (CPU busy with other user processes): v_asis 150 ms/frame, v_fast10 117, v_fast100 267, v_fast1000 2.2 s (normal mode ~14 ms per copy -> ~1.4 s for 100, ~14 s for 1000). Plan target v_fast10 <= half of v_asis NOT met by aerender totals (met only by the plugin span 47 vs 110 ms: AE's own work on the full-screen plane and output is outside the span).
 Final review: fresh reviewer (opus), verdict "With fixes", no Critical.
 Final: fixed plane ring 8 -> 64 and nearest-time fallback (MFR on many cores, motion-blur sub-frames) — fast_registry_keeps_recent_64, fast_registry_fallback_nearest RED->GREEN, unit suite 42/42
 Final: fixed fast render not cancellable — raster abort callback polled on the render thread, SmartRender returns PF_Interrupt_CANCEL — raster_abort_stops RED (compile) -> GREEN, unit suite 42/42
-Final: coverage added: fast_grow (Drop Shadow before randamu, negative input origin) and fast_remove (remove the effect in-session while fast is on) in run_fast_mode.ps1 (new coverage, not reproductions)
+Final: coverage added: fast_grow (Drop Shadow before DupliX, negative input origin) and fast_remove (remove the effect in-session while fast is on) in run_fast_mode.ps1 (new coverage, not reproductions)
 Final: Ruling: multi-view (two viewers, different cameras, same frame) can overwrite the (layer, time) plane — the hook does not know which view it serves; documented in quickstart as a limitation — cost if wrong: one viewer shows the copies misplaced in 2/4-view layouts (render output is unaffected).
 Final: Ruling: declined-to-judge items (non-square pixels, collapsed/continuously rasterized layers, time stretch/remap on the fast layer) are left as open questions for the user's trial — cost if wrong: misplaced drawing in those setups.
 Final: minor (deferred): an exception in the raster's calling-thread worker unwinds joinable threads -> std::terminate (bad_alloc only)

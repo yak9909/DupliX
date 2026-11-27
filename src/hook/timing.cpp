@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <mutex>
 
-#include "effect/randamu.h"
+#include "effect/duplix.h"
 
 namespace rnd {
 
@@ -65,7 +65,7 @@ bool TimingEnabled()
 {
     static const bool on = [] {
         char v[8] = {0};
-        return GetEnvironmentVariableA("RANDAMU_TIMING", v, sizeof(v)) > 0 && v[0] == '1';
+        return GetEnvironmentVariableA("DUPLIX_TIMING", v, sizeof(v)) > 0 && v[0] == '1';
     }();
     return on;
 }

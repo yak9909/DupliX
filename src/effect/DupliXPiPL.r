@@ -8,8 +8,8 @@
 resource 'PiPL' (16000) {
 	{
 		Kind { AEEffect },
-		Name { "randamu" },
-		Category { "randamu" },
+		Name { "DupliX" },
+		Category { "DupliX" },
 #ifdef AE_OS_WIN
 	#if defined(AE_PROC_INTELx64)
 		CodeWin64X86 {"EffectMain"},
@@ -30,8 +30,8 @@ resource 'PiPL' (16000) {
 		/* SUPPORTS_SMART_RENDER | FLOAT_COLOR_AWARE | I_MIX_GUID_DEPENDENCIES | SUPPORTS_THREADED_RENDERING
 		   | SUPPORTS_GPU_RENDER_F32 | SUPPORTS_DIRECTX_RENDERING */
 		AE_Effect_Global_OutFlags_2 { 0x2A201400 },
-		AE_Effect_Match_Name { "RANDAMU Scatter" },
+		AE_Effect_Match_Name { "DupliX" },
 		AE_Reserved_Info { 0 },
-		AE_Effect_Support_URL { "https://github.com/yak9909/randamu" }
+		AE_Effect_Support_URL { "https://github.com/yak9909/DupliX" }
 	}
 };

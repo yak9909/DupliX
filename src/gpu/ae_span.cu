@@ -1,4 +1,4 @@
-// randamu: AE's classic 3D span drawing on the GPU (core/ae_span_impl.h, the same arithmetic as the CPU). Built
+// DupliX: AE's classic 3D span drawing on the GPU (core/ae_span_impl.h, the same arithmetic as the CPU). Built
 // into PTX by tools/build_ptx.ps1 with --fmad=false (no contraction: every float operation rounds like AE's SSE
 // code) and loaded with the CUDA driver API (src/gpu/gpu_raster.cpp).
 // One block = one row span of one surface. Thread 0 walks the span once, keeping (U, V, W) at every chunk start
