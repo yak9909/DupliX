@@ -5,6 +5,7 @@ The placement matters, not the edge resampling (Fast's bilinear differs from AE'
 within 1%, and the mean difference must be <= 0.5. The 3x3-averaged max difference is printed for reference
 (check_fast_mode.py's fast_identity uses <= 24 on AV layers).
 Also prints the white pixel count of the 10-copy pictures (fm_ / nm_; 10 copies cover more).
+Cases without plain_<case>.png (shape_rot) compare nm1 with fm1.
 usage: python check_vector.py <out dir> [fm|nm|both]   (exit 0 = pass)"""
 import sys
 from pathlib import Path
@@ -39,11 +40,15 @@ def main() -> int:
     which = sys.argv[2] if len(sys.argv) > 2 else "both"
     modes = ["fm1", "nm1"] if which == "both" else [which + "1"]
     ok = True
-    for ref in sorted(out.glob("plain_*.png")):
-        case = ref.stem[len("plain_"):]
-        r = load(ref)
-        line = f"  {case:13} white {white(r):6}"
+    for fm1 in sorted(out.glob("fm1_*.png")):
+        case = fm1.stem[len("fm1_"):]
+        ref = out / f"plain_{case}.png"
+        # without a plain reference (shape_rot), 3D Layers is compared with Fast
+        r = load(ref) if ref.exists() else load(fm1)
+        line = f"  {case:13} white {white(r):6}{'' if ref.exists() else ' (vs fm1)'}"
         for m in modes:
+            if m == "fm1" and not ref.exists():
+                continue
             p = out / f"{m}_{case}.png"
             if not p.exists():
                 line += f"  {m} MISSING"

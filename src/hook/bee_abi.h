@@ -9,6 +9,30 @@ namespace rnd::bee {
 // Shared vtable of every AV layer.
 constexpr const char* kAVLayerVtable = "??_7BEE_AVLayer@@6B@";
 constexpr int kVtableScanSlots = 283;  // slots to scan when matching exported functions
+// Shape and text layers: their own vtables (shorter than the AV one: only the slots found in the AV vtable are
+// touched). The hooked slots are the same as the AV ones (bee_hooks.cpp InstallClassHooks).
+constexpr const char* kVectorLayerVtable = "??_7BEE_VectorLayer@@6B@";
+constexpr const char* kTextLayerVtable = "??_7BEE_TextLayer@@6B@";
+// The text layer's own sub-layer virtuals (its characters as sub-layers): for a text layer with DupliX (and no
+// per-character 3D) they are redirected to BEE_AVLayer's, so that the copies come from the AV machinery (the
+// SubLayerRenderCount / GetSubLayerRects hooks) like a shape layer's. "%s" is the class name. 11/27.
+constexpr const char* kTextRedirect[] = {
+    "?SharedXformTimeCacheFactory@%s@@UEBA?AV?$shared_ptr@VBEE_XformTimeCache@@@std@@XZ",
+    "?GetSubLayerLocalMatrix3D@%s@@UEBAXHAEBV?$shared_ptr@VBEE_XformTimeCache@@@std@@AEBUT_Time@@PEBVTDB_ParamBag@@"
+    "PEAVM_Matrix4@@@Z",
+    "?GetSubLayerRenderBounds@%s@@UEBA?AUM_FloatRect@@HAEBVM_Matrix3@@AEBV?$shared_ptr@VBEE_XformCache@@@std@@PEBV3@"
+    "PEAU2@PEAV?$M_Vector2T@N@@@Z",
+    "?GetSubLayerXform2D@%s@@UEBAXHAEBV?$shared_ptr@VBEE_XformCache@@@std@@PEAVM_Matrix3@@11@Z",
+    "?GetSubLayerXform2D@%s@@UEBAXHAEBV?$shared_ptr@VBEE_XformCache@@@std@@PEAVM_Matrix3@@1@Z",
+    "?GetSubLayerXform2D@%s@@UEBAXHAEBV?$shared_ptr@VBEE_XformCache@@@std@@PEAVM_Matrix3@@@Z",
+    "?GetSubLayerBlur@%s@@UEBA?AV?$M_Vector2T@N@@HAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z",
+    "?HasSubLayerXform@%s@@UEBA_NXZ",
+    "?NewXformCache2D@%s@@UEBA?AV?$shared_ptr@VBEE_XformCache@@@std@@AEBUT_Time@@PEBVTDB_ParamBag@@@Z",
+    "?GetBoundsFromCache@%s@@UEBA?AUM_FloatRect@@HAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z",
+};
+constexpr int kTextRedirectCount = sizeof(kTextRedirect) / sizeof(kTextRedirect[0]);
+// GetSubLayerOpacity returns a double (xmm0): its own hook
+constexpr const char* kTextRedirectOpacity = "?GetSubLayerOpacity@%s@@UEBANHAEBV?$shared_ptr@VBEE_XformCache@@@std@@@Z";
 
 // Virtuals we replace (their exported names give the slot numbers).
 constexpr const char* kIsLayerType = "?IsLayerType@BEE_AVLayer@@UEBAEH@Z";
@@ -56,6 +80,8 @@ constexpr ptrdiff_t kEffectTypeKey = 618;  // unsigned short: the effect's type 
 // BEE_AVLayer::SubLayersRenderSeparately starts with `call [rax+disp]` to the layer's switch getter;
 // for AV layers the 3D switch is bit 0x400 of its result.
 constexpr unsigned kSwitch3D = 0x400;
+// Text layers: per-character 3D (the characters are AE's own sub-layers); SubLayersRenderSeparately tests it too.
+constexpr unsigned long long kSwitchPerChar3D = 0x80000;
 // The comp's 3D renderer (bool (const BEE_CompItem*)). Copies are only made with Classic 3D: the
 // Advanced 3D renderer (Calder) crashed when asked for sub-layers; Cinema 4D (Ernst) is untested.
 constexpr const char* kCompIsCalder = "?ArtisanIsCalder@BEE_CompItem@@QEBA_NXZ";

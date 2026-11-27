@@ -1,5 +1,6 @@
 #include "core/fast_plane.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -118,6 +119,25 @@ bool CopyHomography(const CameraView& cam, const double layerToWorld[16], const 
         H[i * 3 + 2] = r[2];
     }
     return Invert3(H, screenToSrc);
+}
+
+bool CopyScreenBounds(const CameraView& cam, const double layerToWorld[16], const double copyM4[16],
+                      const double srcRect[4], double out[4])
+{
+    double S[9], H[9];
+    if (!CopyHomography(cam, layerToWorld, copyM4, srcRect, S) || !Invert3(S, H)) return false;
+    out[0] = out[1] = 1e300;
+    out[2] = out[3] = -1e300;
+    const double xs[2] = {srcRect[0], srcRect[2]}, ys[2] = {srcRect[1], srcRect[3]};
+    for (double u : xs)
+        for (double v : ys) {
+            // [u v 1] * H = w * [sx sy 1]
+            const double X = u * H[0] + v * H[3] + H[6], Y = u * H[1] + v * H[4] + H[7], W = u * H[2] + v * H[5] + H[8];
+            if (!(W > 0)) return false;
+            out[0] = std::min(out[0], X / W), out[1] = std::min(out[1], Y / W);
+            out[2] = std::max(out[2], X / W), out[3] = std::max(out[3], Y / W);
+        }
+    return true;
 }
 
 double CopyDepth(const CameraView& cam, const double layerToWorld[16], const double copyM4[16], double cx, double cy)

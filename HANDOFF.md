@@ -1,4 +1,16 @@
-# 引き継ぎメモ（最新: 2026-11-27 20 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-27 22 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-27 22 時台、シェイプ対応・Fast の原点・Canvas が済み。テキストの 3D Layers は未解決。利用者への報告待ち）
+
+- **済み（この節の commit、詳細は開発記録 14 節）:** Fast (2D) でシェイプ・テキストの位置と範囲を直した。3D Layers でシェイプを複製できる
+  （vtable ごとの元の関数）。Rendering に Canvas（Comp Size / Fit Copies、Disk ID 39）。使い方の文書に「Canvas」「シェイプレイヤーとテキストレイヤー」。
+- **未解決:** 3D Layers のテキスト。サブレイヤーの関数を AV に回すと配置までは通るがフレームが描かれない（既定でオフ、`DUPLIX_TEXT_HOOKS=1`）。
+  次に調べるなら、コピー 1 枚ずつの絵を作る経路（`BEE_RenderTextureForArtisan` → テキストの文字の描画）で何がテキスト用キャッシュを読むか。
+- **試験:** vector_probe（`check_vector.py`・`check_canvas.py`）PASS、FAST ALL PASS、smoke、MERGE ALL PASS、`run_user_merge.ps1` Test〜D 差 0。
+- **次の 1 手:** 利用者に報告し、テキストの 3D Layers を続けるか、設計書 v4 の P0 に戻るかを聞く。
+- **気を付けること:** Fast (2D) のシェイプ・テキストでは、レイヤー自身の 2D の変形はエフェクトより先に掛かる（連続ラスタライズ）。
+  `vector_probe.jsx` の `DUPLIX_VP_ONLY` で場合を絞れる。デバッグ用のログ（`dbg: Count class`・`dbg: text redirect`）が入っている（回数に上限あり）。
+
 
 ## 再開の手順（2026-11-27 20 時台、今の DupliX のシェイプ・テキスト対応と Fast の範囲に着手）
 

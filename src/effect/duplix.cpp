@@ -425,6 +425,14 @@ PF_Err UpdateParamsUi(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* par
             else m.ui_flags &= ~PF_PUI_DISABLED;
             pu->PF_UpdateParamUI(in_data->effect_ref, RP_MERGE, &m);
         }
+        // Canvas: the other way round (Fast (2D) only)
+        PF_ParamDef cv = *params[RP_CANVAS];
+        const bool cvOff = (cv.ui_flags & PF_PUI_DISABLED) != 0;
+        if (fast == cvOff) {
+            if (fast) cv.ui_flags &= ~PF_PUI_DISABLED;
+            else cv.ui_flags |= PF_PUI_DISABLED;
+            pu->PF_UpdateParamUI(in_data->effect_ref, RP_CANVAS, &cv);
+        }
         in_data->pica_basicP->ReleaseSuite(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
     }
     return PF_Err_NONE;
@@ -569,6 +577,10 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     // 3D Layers only (greyed out in Fast (2D))
     AEFX_CLR_STRUCT(def);
     PF_ADD_CHECKBOX("Optimize", "", FALSE, PF_ParamFlag_CANNOT_TIME_VARY, RD_MERGE);
+    // Fast (2D) only (greyed out in 3D Layers): Comp Size draws within the comp-sized frame, Fit Copies grows the
+    // drawing to hold every copy (seen after the layer's own 2D transform, a precomp or a later effect)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUPX("Canvas", 2, CV_COMP, "Comp Size|Fit Copies", PF_ParamFlag_CANNOT_TIME_VARY, RD_CANVAS);
     DX_END_TOPIC(RD_RENDER_TOPIC_END);
 
 #undef DX_RANGE
@@ -605,6 +617,7 @@ struct FastPre {
     rnd::WorldXform world;
     double anchorX, anchorY;  // layer px (the effect's px: for shape / text layers, shifted by half the comp)
     bool vectorOrigin = false;  // a shape / text layer (anchor shifted)
+    int canvas = CV_COMP;       // Canvas
     double dsX, dsY;
     PF_LRect inRect;          // the input's result rect (downsampled layer px)
 };
@@ -691,6 +704,43 @@ bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
     return true;
 }
 
+// Canvas = Fit Copies: the comp-sized frame grown to hold every copy (their screen bounds, a margin of 2 px for
+// the edges' filtering), in (downsampled) layer px. The area is capped (kFitMaxPixels at full resolution): past it
+// the extent is cut around the comp-sized frame's centre.
+constexpr double kFitMaxPixels = 32.0 * 1024 * 1024;
+PF_LRect FitCopiesRect(const FastPre& f, const PF_LRect& full)
+{
+    const double srcRect[4] = {f.inRect.left / f.dsX, f.inRect.top / f.dsY, f.inRect.right / f.dsX,
+                               f.inRect.bottom / f.dsY};
+    if (!(srcRect[2] > srcRect[0]) || !(srcRect[3] > srcRect[1])) return full;
+    // screen px of the copies' bounds (full resolution)
+    double l = 1e300, t = 1e300, r = -1e300, b = -1e300;
+    for (int i = 0; i < f.p.count; i++) {
+        rnd::CopyXform x;
+        rnd::ComputeCopy(f.p, i, f.anchorX, f.anchorY, &x);
+        double bb[4];
+        if (x.opacity <= 0 || !rnd::CopyScreenBounds(f.cam, f.W, x.m4, srcRect, bb)) continue;
+        l = std::min(l, bb[0]), t = std::min(t, bb[1]), r = std::max(r, bb[2]), b = std::max(b, bb[3]);
+    }
+    if (!(r > l) || !(b > t)) return full;
+    // screen px -> layer px (screen = layer - anchor + comp centre), with the margin
+    const double sx = f.cam.compW / 2 - f.anchorX, sy = f.cam.compH / 2 - f.anchorY, m = 2;
+    double L = l - sx - m, T = t - sy - m, R = r - sx + m, B = b - sy + m;
+    // never smaller than the comp-sized frame
+    L = std::min(L, full.left / f.dsX), T = std::min(T, full.top / f.dsY);
+    R = std::max(R, full.right / f.dsX), B = std::max(B, full.bottom / f.dsY);
+    // the cap: shrink each side towards the frame's centre in the same ratio
+    const double area = (R - L) * (B - T);
+    if (area > kFitMaxPixels) {
+        const double cx = (full.left + full.right) / 2.0 / f.dsX, cy = (full.top + full.bottom) / 2.0 / f.dsY;
+        const double k = std::sqrt(kFitMaxPixels / area);
+        L = cx + (L - cx) * k, R = cx + (R - cx) * k, T = cy + (T - cy) * k, B = cy + (B - cy) * k;
+    }
+    auto clampL = [](double v) { return (A_long)std::max(-30000.0, std::min(30000.0, v)); };
+    return {clampL(std::floor(L * f.dsX)), clampL(std::floor(T * f.dsY)), clampL(std::ceil(R * f.dsX)),
+            clampL(std::ceil(B * f.dsY))};
+}
+
 PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra)
 {
     RegisterSelf(in_data, out_data, ParamSource::Aegp, nullptr, false);  // keeps the hooks off this layer
@@ -708,6 +758,14 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
     PF_Err err = extra->cb->checkout_layer(in_data->effect_ref, RP_INPUT, RP_INPUT, &req, in_data->current_time,
                                            in_data->time_step, in_data->time_scale, &in_result);
     f->inRect = in_result.result_rect;
+    if (ok) {
+        PF_ParamDef cd;
+        AEFX_CLR_STRUCT(cd);
+        if (!PF_CHECKOUT_PARAM(in_data, RP_CANVAS, in_data->current_time, in_data->time_step, in_data->time_scale, &cd)) {
+            f->canvas = cd.u.pd.value;
+            PF_CHECKIN_PARAM(in_data, &cd);
+        }
+    }
     // The output depends on the camera (AE does not know a 2D layer does), the world transform, the comp
     // size, the time and the downsample: mix them all into the cache key (required with
     // I_MIX_GUID_DEPENDENCIES in any case).
@@ -716,7 +774,7 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
     for (int i = 0; i < 16; i++) key[n++] = f->cam.camToWorld[i];
     for (int i = 0; i < 16; i++) key[n++] = f->W[i];
     const double more[] = {f->cam.dist, f->cam.compW, f->cam.compH, f->dsX, f->dsY, (double)in_data->current_time,
-                           (double)in_data->time_scale, f->anchorX, f->anchorY, ok ? 1.0 : 0.0};
+                           (double)in_data->time_scale, f->anchorX, f->anchorY, ok ? 1.0 : 0.0, (double)f->canvas};
     for (double v : more) key[n++] = v;
     if (extra->cb->GuidMixInPtr) {
         MixBuildId(in_data, extra);
@@ -732,6 +790,7 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
                          (A_long)std::floor((f->anchorY - ch / 2.0) * f->dsY),
                          (A_long)std::ceil((f->anchorX + cw / 2.0) * f->dsX),
                          (A_long)std::ceil((f->anchorY + ch / 2.0) * f->dsY)};  // l, t, r, b
+        if (f->canvas == CV_FIT) full = FitCopiesRect(*f, full);
         const PF_LRect& q = extra->input->output_request.rect;
         PF_LRect x = {std::max(q.left, full.left), std::max(q.top, full.top), std::min(q.right, full.right),
                       std::min(q.bottom, full.bottom)};

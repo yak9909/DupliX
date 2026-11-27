@@ -6,7 +6,8 @@
 //   fm_<case> / nm_<case>   10 copies scattered 120 px (for the eye; fm and nm should place them alike)
 // Cases: shape, text (400x300); shape_odd (401x301); shape_anchor (anchor moved by (17, -11)); shape_half (the
 // comp at half resolution); shape_edge (the shape 230 px right of the layer origin, outside the comp; World
-// Position X -230 brings the copy back); shape_pre (in a 300x200 precomp, rendered on its own).
+// Position X -230 brings the copy back); shape_pre (in a 300x200 precomp, rendered on its own); shape_rot (random
+// rotation about a moved anchor: nm1 must match fm1).
 // Env: DUPLIX_VP_ONLY (comma list of cases, optional). Writes jsx.log ("done") to $DUPLIX_TEST_DIR.
 (function () {
     var outDir = $.getenv("DUPLIX_TEST_DIR");
@@ -51,10 +52,15 @@
         var comp = app.project.items.addComp(name, W, H, 1, 1, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
         comp.layers.addCamera("Cam", [W / 2, H / 2]);
-        var T = c.kind === "text" ? addText(comp) : addShape(comp, c.size || [60, 60], c.offset || [0, 0]);
+        // (if / else: ExtendScript misread a multi-line ?: here and made the text case a solid)
+        var T;
+        if (c.kind === "text") T = addText(comp);
+        else if (c.kind === "solid") T = comp.layers.addSolid([1, 1, 1], "Target", 60, 60, 1);
+        else T = addShape(comp, c.size || [60, 60], c.offset || [0, 0]);
         // plain and nm: a 3D layer; fm: a 2D layer (Fast draws the copies on a virtual 3D layer in the initial state)
         var fast = mode === "fm";
         T.threeDLayer = !fast;
+        if (c.perChar && !fast) T.threeDPerChar = true;
         if (c.anchor) tg(T).property("ADBE Anchor Point").setValue(fast ? c.anchor : [c.anchor[0], c.anchor[1], 0]);
         tg(T).property("ADBE Position").setValue(fast ? [W / 2, H / 2] : [W / 2, H / 2, 0]);
         if (mode !== "plain") {
@@ -63,7 +69,12 @@
             e.property(dx(2)).setValue(many ? 10 : 1);
             e.property(dx(3)).setValue(3);
             for (var k = 0; k < 3; k++) e.property(dx(4 + k)).setValue(many ? 120 : 0);
-            if (c.wpos && fast) for (var j = 0; j < 3; j++) e.property(dx(WPOS + j)).setValue(c.wpos[j]);
+            if (c.wpos) for (var j = 0; j < 3; j++) e.property(dx(WPOS + j)).setValue(c.wpos[j]);
+            if (c.rot) for (var r = 0; r < 3; r++) e.property(dx(7 + r)).setValue(c.rot[r]);
+            if (c.range) for (var q = 0; q < 2; q++) e.property(dx(4 + q)).setValue(c.range);
+            if (c.canvas && fast) e.property(dx(39)).setValue(c.canvas);
+            // after the switch to Fast (2D): the layer's own 2D scale shrinks the whole drawing
+            if (c.layerScale && fast) tg(T).property("ADBE Scale").setValue([c.layerScale, c.layerScale]);
         }
         // the reference for shape_edge: the plain layer moved by the World Position instead
         if (mode === "plain" && c.wpos) tg(T).property("ADBE Position").setValue([W / 2 + c.wpos[0], H / 2 + c.wpos[1], 0]);
@@ -82,7 +93,17 @@
         shape_anchor: {kind: "shape", anchor: [17, -11]},
         shape_half: {kind: "shape", half: true},
         shape_edge: {kind: "shape", offset: [230, 0], wpos: [-230, 0, 0]},
-        shape_pre: {kind: "shape", pre: true}
+        shape_pre: {kind: "shape", pre: true},
+        // rotation about the anchor (no plain reference: nm1 is compared with fm1)
+        shape_rot: {kind: "shape", anchor: [17, -11], rot: [40, 30, 180], noPlain: true},
+        // per-character 3D text: AE's own sub-layers (the characters); DupliX leaves it alone in 3D Layers (nm_ ==
+        // plain, no copies, no crash)
+        text_perchar: {kind: "text", perChar: true},
+        // Canvas: copies spread past the comp, the layer at 50%: Fit Copies shows the outer copies, Comp Size cuts them
+        // (fm_ only; tests/ae/check_canvas.py). A solid: a shape / text layer's own 2D transform is applied before
+        // its effects (continuously rasterized), so it does not shrink the drawing.
+        canvas_comp: {kind: "solid", range: 400, layerScale: 50, canvas: 1, fastOnly: true},
+        canvas_fit: {kind: "solid", range: 400, layerScale: 50, canvas: 2, fastOnly: true}
     };
     try {
         app.beginSuppressDialogs();
@@ -93,7 +114,11 @@
             if (only[0] && ("," + only.join(",") + ",").indexOf("," + name + ",") < 0) continue;
             var c = cases[name];
             if (c.pre) { c.W = 300; c.H = 200; }
-            png(build("plain_" + name, c, "plain"), "plain_" + name);
+            if (c.fastOnly) {
+                png(build("fm_" + name, c, "fm", true), "fm_" + name);
+                continue;
+            }
+            if (!c.noPlain) png(build("plain_" + name, c, "plain"), "plain_" + name);
             png(build("fm1_" + name, c, "fm"), "fm1_" + name);
             png(build("nm1_" + name, c, "nm"), "nm1_" + name);
             png(build("fm_" + name, c, "fm", true), "fm_" + name);

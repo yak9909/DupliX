@@ -45,12 +45,15 @@ enum DupliXParam {
                        // the effect on a 2D layer)
     RP_MERGE,          // "Optimize" (3D Layers only): copies merged into groups
                        // (docs/superpowers/specs/2026-11-25-merge-optimization-design.md)
+    RP_CANVAS,         // "Canvas" (Fast (2D) only): Comp Size / Fit Copies (the drawing grows to hold every copy)
     RP_RENDER_TOPIC_END,
     RP_NUM_PARAMS
 };
 
 // Render Mode's choices (popup values, 1-based)
 enum DupliXRenderMode { RM_3D_LAYERS = 1, RM_FAST_2D = 2 };
+// Canvas's choices: the drawing's extent in Fast (2D)
+enum DupliXCanvas { CV_COMP = 1, CV_FIT = 2 };
 inline bool IsFastMode(int popupValue) { return popupValue == RM_FAST_2D; }
 
 // Disk IDs (persisted in projects). Never reuse or renumber. 1 (a status line) and 15 (Fast Mode, a checkbox
@@ -94,6 +97,7 @@ enum DupliXDiskId {
     RD_RENDER_TOPIC,
     RD_RENDER_MODE,
     RD_RENDER_TOPIC_END,
+    RD_CANVAS,
 };
 
 #define DUPLIX_MATCH_NAME "DupliX"

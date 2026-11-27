@@ -8,6 +8,8 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <cstdio>
+#include <utility>
 #include <vector>
 #include <algorithm>
 #include <chrono>
@@ -52,7 +54,34 @@ DWORD g_mainThread = 0;
 SPBasicSuite* g_pica = nullptr;
 AEGP_PluginID g_pluginId = 0;
 
-Fwd8 g_origIsLayerType = nullptr, g_origSeparately = nullptr, g_origCount = nullptr, g_origRects = nullptr;
+// The hooked virtuals' originals, per layer class. AV layers (solids, footage, precomps), shape layers
+// (BEE_VectorLayer) and text layers (BEE_TextLayer) have their own vtables; the hooks are written into each, and a
+// hook calls the original of the class of the layer it was called for (the vector layer has its own IsLayerType,
+// the text layer its own IsLayerType and SubLayerRenderCount: per-character 3D). 11/27.
+enum LayerClassId { LC_AV = 0, LC_VECTOR, LC_TEXT, LC_COUNT };
+struct LayerClass {
+    void** vt = nullptr;
+    Fwd8 isType = nullptr, sep = nullptr, cnt = nullptr, rects = nullptr;
+};
+LayerClass g_cls[LC_COUNT];
+
+inline LayerClassId ClassIdOf(uintptr_t a)
+{
+    void** vt = *(void***)a;
+    if (vt == g_cls[LC_VECTOR].vt) return LC_VECTOR;
+    if (vt == g_cls[LC_TEXT].vt) return LC_TEXT;
+    return LC_AV;
+}
+inline const LayerClass& ClassOf(uintptr_t a) { return g_cls[ClassIdOf(a)]; }
+// A text layer whose characters AE draws as separate 3D planes (per-character 3D): AE's own sub-layers, left alone.
+// Its switches have bit 0x80000 (vector_probe 11/27: plain text 0x10487, per-character 3D 0x90487).
+int g_slotSwitches = -1;  // vtable slot of the switch getter (from SubLayersRenderSeparately's code)
+inline bool TextPerChar(uintptr_t a)
+{
+    if (ClassIdOf(a) != LC_TEXT || g_slotSwitches < 0) return false;
+    void** vt = *(void***)a;
+    return (((unsigned long long (*)(const void*))vt[g_slotSwitches])((const void*)a) & bee::kSwitchPerChar3D) != 0;
+}
 ArtOpacityFn g_origArtOpacity = nullptr;
 LayerGetIdFn g_layerGetId = nullptr;
 LayerGetCompFn g_layerGetComp = nullptr;
@@ -60,7 +89,6 @@ ItemGetIdFn g_itemGetId = nullptr;
 M3IdentityFn g_m3Identity = nullptr;
 HasEffectAppliedFn g_hasEffectApplied = nullptr;
 int g_slotParade = -1;           // vtable slot of GetFilterParade (const)
-int g_slotSwitches = -1;         // vtable slot of the switch getter (from SubLayersRenderSeparately's code)
 ParadeNumSeqsFn g_paradeNum = nullptr;
 ParadeGetEffectFn g_paradeGet = nullptr;
 EffectIsActiveFn g_effectActive = nullptr;
@@ -517,9 +545,9 @@ uintptr_t HookSeparately(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uin
             RLog("dbg: Separately mine comp %d layer %d main=%d", k.compItemId, k.layerId,
                  (int)(GetCurrentThreadId() == g_mainThread));
         }
-        return 1;
+        if (!TextPerChar(a)) return 1;
     }
-    return g_origSeparately(a, b, c, d, e, f, g, h);
+    return ClassOf(a).sep(a, b, c, d, e, f, g, h);
 }
 
 // (this, const T_Time&, const shared_ptr<BEE_XformTimeCache>&, const TDB_ParamBag*)
@@ -532,7 +560,18 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     Prof pf(PF_CNT);
     bool emptyCache = c && *(void**)c == nullptr;
     long long t0 = TimingNow();
-    if (!emptyCache && IsMine((const void*)a)) {
+    if (ClassIdOf(a) != LC_AV && IsMine((const void*)a)) {
+        static LogLimit cl;  // dbg: shape / text layers (11/27)
+        if (cl.Take(20)) {
+            void** lvt = *(void***)a;
+            const unsigned long long sw = ((VirtGetU64Fn)lvt[g_slotSwitches])((const void*)a);
+            LayerKey k{};
+            KeyOf((const void*)a, &k);
+            RLog("dbg: Count class %d layer %d emptyCache %d perChar %d switches %llx", (int)ClassIdOf(a), k.layerId,
+                 (int)emptyCache, (int)TextPerChar(a), sw);
+        }
+    }
+    if (!emptyCache && IsMine((const void*)a) && !TextPerChar(a)) {
         ParamSnapshot s;
         if (ParamsFor((const void*)a, (const void*)b, &s)) {
             MarkTiming((const void*)a, (const void*)b, TK_HOOK, t0);
@@ -544,12 +583,12 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
             if (lp) return (uintptr_t)lp->subs.size();
             return (uintptr_t)(unsigned)s.p.count;
         }
-        uintptr_t o = g_origCount(a, b, c, d, e, f, g, h);
+        uintptr_t o = ClassOf(a).cnt(a, b, c, d, e, f, g, h);
         static std::atomic<int> dbgN{0};
         if (++dbgN <= 50) RLog("dbg: Count mine but params invalid -> orig %d", (int)o);
         return o;
     }
-    return g_origCount(a, b, c, d, e, f, g, h);
+    return ClassOf(a).cnt(a, b, c, d, e, f, g, h);
 }
 
 // (this, M_FloatRect* ret, const T_Time&, const M_FloatRect& rect, vector<M_FloatRect>&, vector<M_Matrix3>&,
@@ -571,8 +610,8 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         }
     } mark{(const void*)a, (const void*)c, t0};
     ParamSnapshot s;
-    if (!IsMine((const void*)a) || !ParamsFor((const void*)a, (const void*)c, &s))
-        return g_origRects(a, b, c, d, e, f, g, h);
+    if (!IsMine((const void*)a) || TextPerChar(a) || !ParamsFor((const void*)a, (const void*)c, &s))
+        return ClassOf(a).rects(a, b, c, d, e, f, g, h);
     mark.on = true;
     double* ret = (double*)b;
     const double* rect = (const double*)d;
@@ -668,9 +707,9 @@ uintptr_t HookIsLayerType(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, ui
 {
     if ((int)b == 0 && IsFlattenSite((uintptr_t)_ReturnAddress())) {
         Prof pf(PF_ISTYPE);
-        if (IsMine((const void*)a)) return 0;
+        if (IsMine((const void*)a) && !TextPerChar(a)) return 0;
     }
-    return g_origIsLayerType(a, b, c, d, e, f, g, h);
+    return ClassOf(a).isType(a, b, c, d, e, f, g, h);
 }
 
 thread_local double t_lastBaseOpacity = 1.0;
@@ -4076,6 +4115,143 @@ bool WritePtr(void** where, void* value)
 
 }  // namespace
 
+// A text layer with DupliX (no per-character 3D): its own sub-layer virtuals are replaced by BEE_AVLayer's
+// (bee_abi.h kTextRedirect), so the copies come from the AV machinery. Every other text layer: its own.
+struct TextRedirect {
+    Fwd8 av = nullptr, text = nullptr;
+};
+TextRedirect g_textRedir[bee::kTextRedirectCount];
+typedef double (*OpacityFn)(uintptr_t, int, uintptr_t);
+OpacityFn g_textOpAv = nullptr, g_textOpText = nullptr;
+
+inline bool TextAsAv(uintptr_t a) { return IsMine((const void*)a) && !TextPerChar(a); }
+
+template <int K>
+uintptr_t HookTextRedirect(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
+                           uintptr_t h)
+{
+    const TextRedirect& r = g_textRedir[K];
+    const bool asAv = TextAsAv(a);
+    static LogLimit lg;  // dbg (11/27): which of the text layer's sub-layer virtuals are asked
+    if (lg.Take(10)) RLog("dbg: text redirect %d asAv %d mine %d", K, (int)asAv, (int)IsMine((const void*)a));
+    return (asAv ? r.av : r.text)(a, b, c, d, e, f, g, h);
+}
+double HookTextOpacity(uintptr_t a, int i, uintptr_t cache)
+{
+    return (TextAsAv(a) ? g_textOpAv : g_textOpText)(a, i, cache);
+}
+template <int... K>
+void* TextRedirectHookAt(int k, std::integer_sequence<int, K...>)
+{
+    void* fns[] = {(void*)&HookTextRedirect<K>...};
+    return fns[k];
+}
+
+// The text layer's sub-layer virtuals redirected (see above): each slot found by name in both vtables and checked
+// (the AV vtable's slot holds AV's function, the text vtable's the text one) before it is written.
+bool InstallTextRedirect(HMODULE bee, void** avVt, void** textVt)
+{
+    struct Slot {
+        int slot;
+        void* av;
+        void* text;
+        void* hook;
+    };
+    std::vector<Slot> slots;
+    auto find = [&](const char* fmt, void* hook) {
+        char an[512], tn[512];
+        snprintf(an, sizeof(an), fmt, "BEE_AVLayer");
+        snprintf(tn, sizeof(tn), fmt, "BEE_TextLayer");
+        void* av = (void*)GetProcAddress(bee, an);
+        void* tx = (void*)GetProcAddress(bee, tn);
+        int slot = -1;
+        for (int i = 0; av && i < bee::kVtableScanSlots && slot < 0; i++)
+            if (avVt[i] == av) slot = i;
+        if (slot < 0 || !tx || textVt[slot] != tx) {
+            RLog("hooks: text redirect %s not found (slot %d av %p text %p)", fmt, slot, av, tx);
+            return false;
+        }
+        slots.push_back({slot, av, tx, hook});
+        return true;
+    };
+    for (int k = 0; k < bee::kTextRedirectCount; k++)
+        if (!find(bee::kTextRedirect[k], TextRedirectHookAt(k, std::make_integer_sequence<int, bee::kTextRedirectCount>{})))
+            return false;
+    if (!find(bee::kTextRedirectOpacity, (void*)&HookTextOpacity)) return false;
+    for (int k = 0; k < bee::kTextRedirectCount; k++) g_textRedir[k] = {(Fwd8)slots[k].av, (Fwd8)slots[k].text};
+    g_textOpAv = (OpacityFn)slots.back().av;
+    g_textOpText = (OpacityFn)slots.back().text;
+    for (const Slot& s : slots)
+        if (!WritePtr(&textVt[s.slot], s.hook)) {
+            RLog("hooks: text redirect slot %d: VirtualProtect failed", s.slot);
+            return false;  // (the slots written so far still forward to the text originals for other layers)
+        }
+    RLog("hooks: text sub-layer virtuals redirected (%zu slots)", slots.size());
+    return true;
+}
+
+// The same hooks in the shape and text layers' vtables (the slots of BEE_AVLayer's, checked first: the shared
+// virtuals must be AV's very functions, the overridden ones anything but a hook). A class that does not check out
+// is left alone (its layers are not copied in 3D Layers). DUPLIX_VECTOR_HOOKS=0 turns the shape layers' off
+// (diagnostics). Text layers: off unless DUPLIX_TEXT_HOOKS=1 (11/27: with the sub-layer virtuals redirected the copies
+// are counted and placed, but the frame is not drawn: a character's texture is made by text code that expects the
+// text layer's own cache; not solved yet).
+void InstallClassHooks(HMODULE bee, int sIs, int sSep, int sCnt, int sRc, unsigned mask)
+{
+    struct Want {
+        LayerClassId id;
+        const char* vtName;
+        const char* env;
+        bool ownCount;  // the class overrides SubLayerRenderCount
+        bool defaultOn;
+    } wants[] = {{LC_VECTOR, bee::kVectorLayerVtable, "DUPLIX_VECTOR_HOOKS", false, true},
+                 {LC_TEXT, bee::kTextLayerVtable, "DUPLIX_TEXT_HOOKS", true, false}};
+    const LayerClass& av = g_cls[LC_AV];
+    for (const Want& w : wants) {
+        char v[8] = {0};
+        const bool set = GetEnvironmentVariableA(w.env, v, sizeof(v)) > 0;
+        if (set ? v[0] == '0' : !w.defaultOn) {
+            RLog("hooks: %s off (%s%s)", w.vtName, w.env, set ? "=0" : " not set");
+            continue;
+        }
+        void** vt = (void**)GetProcAddress(bee, w.vtName);
+        if (!vt) {
+            RLog("hooks: %s not found", w.vtName);
+            continue;
+        }
+        auto own = [&](int slot) {
+            void* f = vt[slot];
+            return f && f != (void*)&HookIsLayerType && f != (void*)&HookSeparately && f != (void*)&HookCount &&
+                   f != (void*)&HookRects;
+        };
+        const bool okSep = vt[sSep] == (void*)av.sep, okRc = vt[sRc] == (void*)av.rects;
+        const bool okCnt = w.ownCount ? own(sCnt) && vt[sCnt] != (void*)av.cnt : vt[sCnt] == (void*)av.cnt;
+        const bool okIs = own(sIs);
+        if (!okSep || !okRc || !okCnt || !okIs) {
+            RLog("hooks: %s slots do not check out (sep %d rects %d count %d type %d): not hooked", w.vtName,
+                 (int)okSep, (int)okRc, (int)okCnt, (int)okIs);
+            continue;
+        }
+        // text: its own sub-layer machinery redirected first (without it the copies would not come from our hooks)
+        if (w.id == LC_TEXT && !InstallTextRedirect(bee, av.vt, vt)) {
+            RLog("hooks: %s: the sub-layer redirect failed: not hooked", w.vtName);
+            continue;
+        }
+        LayerClass c;
+        c.vt = vt;
+        c.isType = (Fwd8)vt[sIs];
+        c.sep = (Fwd8)vt[sSep];
+        c.cnt = (Fwd8)vt[sCnt];
+        c.rects = (Fwd8)vt[sRc];
+        g_cls[w.id] = c;  // the originals first: a hook may run as soon as the first slot is written
+        const bool ok = (!(mask & 1) || WritePtr(&vt[sSep], (void*)&HookSeparately)) &&
+                        (!(mask & 2) || WritePtr(&vt[sCnt], (void*)&HookCount)) &&
+                        (!(mask & 4) || WritePtr(&vt[sRc], (void*)&HookRects)) &&
+                        (!(mask & 8) || WritePtr(&vt[sIs], (void*)&HookIsLayerType));
+        RLog("hooks: %s %s", w.vtName, ok ? "hooked" : "VirtualProtect failed");
+    }
+}
+
 HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
 {
     if (g_status != HookStatus::NotInstalled) return g_status;
@@ -4131,10 +4307,11 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
         RLog("hooks: something is missing -> not installing");
         return g_status;
     }
-    g_origIsLayerType = (Fwd8)vt[sIs];
-    g_origSeparately = (Fwd8)vt[sSep];
-    g_origCount = (Fwd8)vt[sCnt];
-    g_origRects = (Fwd8)vt[sRc];
+    g_cls[LC_AV].vt = vt;
+    g_cls[LC_AV].isType = (Fwd8)vt[sIs];
+    g_cls[LC_AV].sep = (Fwd8)vt[sSep];
+    g_cls[LC_AV].cnt = (Fwd8)vt[sCnt];
+    g_cls[LC_AV].rects = (Fwd8)vt[sRc];
     g_origArtOpacity = (ArtOpacityFn)*iat;
     // dbg: DUPLIX_HOOKMASK (diagnosis only): 1 Separately, 2 Count, 4 Rects, 8 IsLayerType, 16 opacity
     unsigned mask = 31;
@@ -4146,6 +4323,7 @@ HookStatus InstallHooks(SPBasicSuite* pica, AEGP_PluginID pluginId)
               (!(mask & 4) || WritePtr(&vt[sRc], (void*)&HookRects)) &&
               (!(mask & 8) || WritePtr(&vt[sIs], (void*)&HookIsLayerType)) &&
               (!(mask & 16) || WritePtr(iat, (void*)&HookArtOpacity));
+    if (ok) InstallClassHooks(bee, sIs, sSep, sCnt, sRc, mask);
     if (ok) {
         // merge: both texture entry points, or none (then nothing merges)
         void** t1 = FindImportSlot(drv, "BEE.dll", bee::kRenderTextureForArtisan);

@@ -29,6 +29,11 @@ double AnchorDepth(const CameraView& cam, const double layerToWorld[16], double 
 bool CopyHomography(const CameraView& cam, const double layerToWorld[16], const double copyM4[16],
                     const double srcRect[4], double screenToSrc[9]);
 
+// The screen bounds {left, top, right, bottom} (full-resolution comp px) of the copy's srcRect. False when a corner
+// is at camera-space z <= 1 (the copy is not drawn, as for CopyHomography).
+bool CopyScreenBounds(const CameraView& cam, const double layerToWorld[16], const double copyM4[16],
+                      const double srcRect[4], double out[4]);
+
 // Camera-space z of the copy's point (cx, cy) (layer px), e.g. its centre: the drawing order.
 double CopyDepth(const CameraView& cam, const double layerToWorld[16], const double copyM4[16], double cx, double cy);
 
