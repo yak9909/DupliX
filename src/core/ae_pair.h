@@ -19,6 +19,17 @@ struct AePairSample {
 // has more vertices than the test keeps on the stack (the caller asks AE instead).
 bool AePairSamples(const AePairSample& A, const AePairSample& B, unsigned char* f1, unsigned char* f2);
 
+// The same test with each sample prepared once (11/27, many pairs of the same surfaces): its vertices copied next to
+// each other and the plane's quotients a / c, b / c, d / c (the very divisions AePairSamples makes for every pair, so
+// the answers are the same bit for bit). No path counts (AePairCoverage) on this one.
+struct AePairPrep {
+    const double* v = nullptr;  // AE's vertex records (32 bytes each), or a copy of them
+    int n = 0;
+    double qa = 0, qb = 0, qd = 0;
+};
+AePairPrep AePairPrepare(const AePairSample& s);
+bool AePairPrepared(const AePairPrep& A, const AePairPrep& B, unsigned char* f1, unsigned char* f2);
+
 // Diagnostics (tests): this thread's counts of the paths taken: 0 collinear edges, 1 / 2 a's start / end on b's line,
 // 3 / 4 b's start / end on a's line, 5 a crossing, 6 / 7 a vertex of a / b inside the other
 #define AE_PAIR_COV_N 8

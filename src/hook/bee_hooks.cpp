@@ -1753,7 +1753,7 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
         }
     };
     auto inGroup = std::make_unique<InGroup>();
-    int drawn = 0, clusters = 0;
+    int drawn = 0, clusters = 0, inClusters = 0;
     for (uintptr_t* j = (uintptr_t*)comps.head[0]; j != comps.head; j = (uintptr_t*)j[0]) {
         if (j[3] == 1) {
             struct {
@@ -1825,7 +1825,7 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
                 (*(void (**)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)mb + 24))(
                     mb, *(const uintptr_t*)(ctx + 208), *(const uintptr_t*)(*(const uintptr_t*)ctx + 480), target);
             }
-            drawn += (int)j[3], clusters++;
+            drawn += (int)j[3], clusters++, inClusters += (int)j[3];
         }
     }
     FlushGroupJobs();
@@ -1861,8 +1861,8 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
     static LogLimit tl;
     if (s_time && tl.Take(200))
         RLog("group time: %d copies: build %.2f graph %.2f draw %.2f all %.2f ms (draws: params %.2f, AE before the rows %.2f, "
-             "rows %.2f, AE after %.2f; %d row loops)",
-             n, tBuild, tGraph, tDraw, gms(tg0), t_gAcc[0], t_gAcc[1], t_gAcc[2], t_gAcc[3], t_gIters);
+             "rows %.2f, AE after %.2f; %d row loops; %d clusters of %d surfaces)",
+             n, tBuild, tGraph, tDraw, gms(tg0), t_gAcc[0], t_gAcc[1], t_gAcc[2], t_gAcc[3], t_gIters, clusters, inClusters);
     int nn = 0;
     if (g_groupLog.Take(8, true, &nn))
         RLog("group: drew %d of %d copies (%zu surfaces, %d clusters) at copy %d", drawn, n, built.size(), clusters, rep);
@@ -2097,7 +2097,9 @@ constexpr uintptr_t kBuildEdgesCallRva = 0x2AAD1, kBuildEdgesRva = 0x2AB40, kCle
 typedef void (*ClearNodesFn)(uintptr_t* list, uintptr_t first);
 std::atomic<long long> g_edgeChecks{0}, g_edgeMismatch{0};
 thread_local double t_edgePairMs = 0;  // diagnostics: the last build's pair tests
-thread_local size_t t_edgeCand = 0;
+thread_local size_t t_edgeCand = 0, t_edgeCount = 0;
+thread_local double t_edgeSortMs = 0;  // the partner lists
+thread_local double t_edgeVerts = 0, t_edgeSamples = 0;
 LogLimit g_edgeLog;
 // sub_18002B040 with core/ae_pair (the same answers: tests/unit ae_pair_matches_advanced3d calls AE's own on millions of
 // cases). Samples it does not take (no samples, more than 64 vertices): AE's own test.
@@ -2169,57 +2171,162 @@ void BuildEdgesFast(uintptr_t** surfaces, uintptr_t* a2)
         bs[k] = {b[0], b[1], b[2], b[3], k};
     }
     std::sort(bs.begin(), bs.end(), [](const B& a, const B& b) { return a.x0 < b.x0; });
-    // the pairs whose boxes overlap (earlier, later in the list)
-    std::vector<std::pair<int, int>> cand;
-    for (int a = 0; a < n; a++) {
-        const B& A = bs[a];
-        for (int b = a + 1; b < n && bs[b].x0 < A.x1; b++) {
-            const B& Bb = bs[b];
-            if (!(std::min(A.y1, Bb.y1) > std::max(A.y0, Bb.y0))) continue;
-            cand.push_back({std::min(A.i, Bb.i), std::max(A.i, Bb.i)});
+    // each surface prepared once for its many pairs (one sample of 1..64 vertices, the usual case): its box, its
+    // vertices copied next to each other and its plane's quotients (core/ae_pair AePairPrepared: the same answers as
+    // PairOurs, without reading AE's surface and dividing for every pair). Others: PairOurs.
+    struct Prep {
+        double box[4];
+        rnd::AePairPrep s;
+        bool ok = false;
+    };
+    std::vector<Prep> prep((size_t)n);
+    std::vector<double> verts;
+    {
+        size_t total = 0;
+        for (int k = 0; k < n; k++) {
+            const uintptr_t S = nodes[k][2];
+            if (*(const int*)(S + 0xD0) != 1) continue;
+            const unsigned char* r = *(const unsigned char* const*)(S + 0xC8);
+            const long long nv = (*(const double* const*)(r + 8) - *(const double* const*)r) / 4;
+            if (nv >= 1 && nv <= 64) total += (size_t)nv * 4;
+        }
+        verts.resize(total);
+        size_t at = 0;
+        for (int k = 0; k < n; k++) {
+            const uintptr_t S = nodes[k][2];
+            std::memcpy(prep[k].box, (const double*)(S + 8), sizeof(prep[k].box));
+            if (*(const int*)(S + 0xD0) != 1) continue;
+            const unsigned char* r = *(const unsigned char* const*)(S + 0xC8);
+            const double* b = *(const double* const*)r;
+            const long long nv = (*(const double* const*)(r + 8) - b) / 4;
+            if (nv < 1 || nv > 64) continue;
+            rnd::AePairSample smp;
+            smp.v = b, smp.n = (int)nv;
+            std::memcpy(&smp.a, r + 0x18, 32);
+            std::memcpy(&verts[at], b, (size_t)nv * 32);
+            prep[k].s = rnd::AePairPrepare(smp);
+            prep[k].s.v = &verts[at];
+            prep[k].ok = true;
+            at += (size_t)nv * 4;
         }
     }
-    // the pair tests. Ours (core/ae_pair) only reads the two surfaces: many at once on several threads. AE's own was
-    // no faster on several threads (11/26: its work memory allocations take turns), so it runs on this thread.
-    std::vector<unsigned char> flags(cand.size() * 2, 0);
+    auto pairOf = [&](int i, int j, unsigned char* f1, unsigned char* f2) {
+        if (!s_aePair && prep[i].ok && prep[j].ok) {
+            *f1 = *f2 = 0;
+            if (rnd::AePairBoxes(prep[i].box, prep[j].box)) rnd::AePairPrepared(prep[i].s, prep[j].s, f1, f2);
+            return;
+        }
+        pair(nodes[i][2], nodes[j][2], f1, f2);
+    };
+    // the pairs whose boxes overlap (earlier, later in the list), each tested where the sweep finds it: chunks of the
+    // sweep taken in turn by several threads (11/27: the pairs were gathered on this thread first, 2.7 million for
+    // 3271 copies of a large image). Ours (core/ae_pair) only reads the two surfaces. AE's own was no faster on
+    // several threads (11/26: its work memory allocations take turns), so it runs on this thread alone.
+    // A pair with an answer: (earlier, later, f1, f2)
+    struct Hit {
+        int a, b;
+        unsigned char f1, f2;
+    };
     const auto tp0 = std::chrono::steady_clock::now();
-    const int nt = s_aePair || cand.size() < 4096 ? 1 : std::max(1, std::min(8, (int)std::thread::hardware_concurrency()));
-    auto work = [&](size_t from, size_t to) {
-        for (size_t k = from; k < to; k++)
-            pair(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k], &flags[2 * k + 1]);
+    long long nCand = 0;
+    for (int a = 0; a < n; a++)
+        for (int b = a + 1; b < n && bs[b].x0 < bs[a].x1; b++) nCand++;  // (diagnostics: cheap next to the tests)
+    // RANDAMU_EDGE_THREADS (diagnostics): the number of threads
+    static const int s_threads = [] {
+        char v[8] = {0};
+        return GetEnvironmentVariableA("RANDAMU_EDGE_THREADS", v, sizeof(v)) > 0 ? std::max(1, atoi(v)) : 0;
+    }();
+    int nt = s_aePair || nCand < 4096 ? 1 : std::max(1, std::min(8, (int)std::thread::hardware_concurrency()));
+    if (s_threads && !s_aePair) nt = s_threads;
+    std::vector<std::vector<Hit>> hits((size_t)nt);
+    std::atomic<int> next{0};
+    constexpr int kChunk = 32;
+    auto work = [&](int t) {
+        std::vector<Hit>& out = hits[t];
+        for (;;) {
+            const int c0 = next.fetch_add(kChunk);
+            if (c0 >= n) return;
+            for (int a = c0; a < std::min(n, c0 + kChunk); a++) {
+                const B& A = bs[a];
+                for (int b = a + 1; b < n && bs[b].x0 < A.x1; b++) {
+                    const B& Bb = bs[b];
+                    if (!(std::min(A.y1, Bb.y1) > std::max(A.y0, Bb.y0))) continue;
+                    const int i = std::min(A.i, Bb.i), j = std::max(A.i, Bb.i);
+                    unsigned char f1 = 0, f2 = 0;
+                    pairOf(i, j, &f1, &f2);
+                    if (f1 || f2) out.push_back({i, j, f1, f2});
+                }
+            }
+        }
     };
     if (nt <= 1) {
-        work(0, cand.size());
+        work(0);
     } else {
         // ours falls back to AE's test for samples it does not take: rare; AE's errors would throw on a worker, so
         // those pairs are retried here (PairOurs on the workers never calls AE: see t_pairNoAe)
         std::vector<std::thread> ts;
-        const size_t per = (cand.size() + nt - 1) / nt;
         for (int t = 1; t < nt; t++)
             ts.emplace_back([&, t] {
                 t_pairNoAe = true;
-                work(std::min(cand.size(), per * t), std::min(cand.size(), per * (t + 1)));
+                work(t);
             });
-        work(0, std::min(cand.size(), per));
+        work(0);
         for (std::thread& t : ts) t.join();
-        for (size_t k = 0; k < cand.size(); k++)
-            if (flags[2 * k] == 2)  // a worker's pair left to AE
-                flags[2 * k] = flags[2 * k + 1] = 0,
-                ((PairTestFn)(g_a3dLo + a3d::kPairTestRva))(nodes[cand[k].first][2], nodes[cand[k].second][2], &flags[2 * k],
-                                                             &flags[2 * k + 1]);
+        for (auto& hv : hits)
+            for (Hit& h : hv)
+                if (h.f1 == 2)  // a worker's pair left to AE
+                    h.f1 = h.f2 = 0,
+                    ((PairTestFn)(g_a3dLo + a3d::kPairTestRva))(nodes[h.a][2], nodes[h.b][2], &h.f1, &h.f2);
     }
     t_edgePairMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp0).count();
-    t_edgeCand = cand.size();
-    std::vector<std::vector<int>> partners((size_t)n);
-    for (size_t k = 0; k < cand.size(); k++) {
-        if (flags[2 * k]) partners[cand[k].second].push_back(cand[k].first);
-        if (flags[2 * k + 1]) partners[cand[k].first].push_back(cand[k].second);
+    t_edgeCand = (size_t)nCand;
+    // each node's partners, ascending (a node's edge list is in its partners' list order): counted, filled, sorted
+    const auto tq0 = std::chrono::steady_clock::now();
+    std::vector<int> pStart((size_t)n + 1, 0);
+    for (const auto& hv : hits)
+        for (const Hit& h : hv) {
+            if (h.f1) pStart[(size_t)h.b + 1]++;
+            if (h.f2) pStart[(size_t)h.a + 1]++;
+        }
+    for (int k = 0; k < n; k++) pStart[(size_t)k + 1] += pStart[k];
+    std::vector<int> pAll((size_t)pStart[n]);
+    {
+        std::vector<int> fill(pStart.begin(), pStart.end() - 1);
+        for (const auto& hv : hits)
+            for (const Hit& h : hv) {
+                if (h.f1) pAll[(size_t)fill[h.b]++] = h.a;
+                if (h.f2) pAll[(size_t)fill[h.a]++] = h.b;
+            }
+    }
+    auto sortRange = [&](int k0, int k1) {
+        for (int k = k0; k < k1; k++) std::sort(pAll.begin() + pStart[k], pAll.begin() + pStart[(size_t)k + 1]);
+    };
+    if (nt <= 1) {
+        sortRange(0, n);
+    } else {
+        std::vector<std::thread> ts;
+        for (int t = 1; t < nt; t++) ts.emplace_back(sortRange, n * t / nt, n * (t + 1) / nt);
+        sortRange(0, n / nt);
+        for (std::thread& t : ts) t.join();
+    }
+    t_edgeSortMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tq0).count();
+    t_edgeCount = (size_t)pStart[n];
+    {  // (diagnostics) the surfaces' samples and vertices per sample, on average
+        long long ns = 0, nv = 0;
+        for (int k = 0; k < n; k++) {
+            const uintptr_t S = nodes[k][2];
+            const int c = *(const int*)(S + 0xD0);
+            for (int q = 0; q < c; q++) {
+                const unsigned char* r = *(const unsigned char* const*)(S + 0xC8) + 192 * (size_t)q;
+                nv += (*(const double* const*)(r + 8) - *(const double* const*)r) / 4, ns++;
+            }
+        }
+        t_edgeVerts = ns ? (double)nv / ns : 0, t_edgeSamples = n ? (double)ns / n : 0;
     }
     for (int k = 0; k < n; k++) {
-        std::vector<int>& p = partners[k];
-        std::sort(p.begin(), p.end());
         uintptr_t* adj = (uintptr_t*)nodes[k][3];
-        for (int q : p) {
+        for (int e0 = pStart[k]; e0 < pStart[(size_t)k + 1]; e0++) {
+            const int q = pAll[(size_t)e0];
             uintptr_t* e = (uintptr_t*)aeNew(0x18);
             uintptr_t* last = (uintptr_t*)adj[1];
             e[2] = (uintptr_t)(nodes[q] + 2);
@@ -2266,8 +2373,9 @@ void HookBuildEdges(uintptr_t** surfaces, uintptr_t* a2)
         static LogLimit el;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - te0).count();
         if (s_time && a2[1] > 500 && el.Take(50))
-            RLog("graph time: edges of %llu surfaces %.2f ms (pair tests %zu, %.2f ms)", (unsigned long long)a2[1], ms, t_edgeCand,
-                 t_edgePairMs);
+            RLog("graph time: edges of %llu surfaces %.2f ms (pair tests %zu, %.2f ms; partner lists %.2f ms; %zu edges; "
+                 "%.2f samples per surface, %.1f vertices per sample)",
+                 (unsigned long long)a2[1], ms, t_edgeCand, t_edgePairMs, t_edgeSortMs, t_edgeCount, t_edgeSamples, t_edgeVerts);
     }
     // RANDAMU_GRAPH_CHECK=1 (tests): AE's own edges too, into a list of our own, compared
     static const bool s_check = GetEnvironmentVariableA("RANDAMU_GRAPH_CHECK", nullptr, 0) > 0;

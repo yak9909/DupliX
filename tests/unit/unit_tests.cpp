@@ -1617,6 +1617,7 @@ void Make(Surf& S, const std::vector<std::vector<double>>& polys, const std::vec
     const int n = (int)polys.size();
     std::memcpy(S.s + 0xD0, &n, 4);
 }
+long long g_prepMismatch = 0;  // AePairPrepared answering unlike AePairSamples
 // ours: sub_18002B040 with core/ae_pair
 void Ours(const Surf& A, const Surf& B, unsigned char* f1, unsigned char* f2, bool* ok)
 {
@@ -1637,10 +1638,14 @@ void Ours(const Surf& A, const Surf& B, unsigned char* f1, unsigned char* f2, bo
         };
         rnd::AePairSample sa, sb;
         if (!sample(A, std::min(k, nA - 1), &sa) || !sample(B, std::min(k, nB - 1), &sb)) continue;
+        // the prepared form (AePairPrepared, the plugin's sweep) answers the same, from the same flags
+        unsigned char p1 = *f1, p2 = *f2;
+        const bool pOk = rnd::AePairPrepared(rnd::AePairPrepare(sa), rnd::AePairPrepare(sb), &p1, &p2);
         if (!rnd::AePairSamples(sa, sb, f1, f2)) {
             *ok = false;
             return;
         }
+        if (!pOk || p1 != *f1 || p2 != *f2) g_prepMismatch++;
         if (*f1 && *f2) return;
     }
 }
@@ -1764,6 +1769,8 @@ TEST(ae_pair_matches_advanced3d)
         else if (diff++ < 5) printf("  ae_pair: case %d differs: AE %d %d ours %d %d\n", c, a1, a2, o1, o2);
     }
     printf("  ae_pair: %d cases: %d same, %d differ, %d not ours (AE f1 %d f2 %d)\n", tested, same, diff, skipped, f1n, f2n);
+    printf("  ae_pair: the prepared form differs in %lld cases\n", g_prepMismatch);
+    CHECK(g_prepMismatch == 0);
     const long long* cov = rnd::AePairCoverage();
     printf("  ae_pair: paths: collinear %lld, on b's line %lld / %lld, on a's line %lld / %lld, crossing %lld, inside %lld / %lld\n",
            cov[0], cov[1], cov[2], cov[3], cov[4], cov[5], cov[6], cov[7]);
