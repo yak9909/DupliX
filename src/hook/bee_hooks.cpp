@@ -603,6 +603,12 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
 // P0 probe (DUPLIX_DBG_OTHER): the other layer's source rect (0, 0, width, height) for the odd copies of `layer`
 bool DbgOtherRect(const void* layer, double out[4]);
 namespace {
+// the probe is on (read once: without it the hooks do no probe work at all)
+inline bool DbgOtherOn()
+{
+    static const bool on = GetEnvironmentVariableA("DUPLIX_DBG_OTHER", nullptr, 0) > 0;
+    return on;
+}
 
 uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
                     uintptr_t h)
@@ -644,7 +650,7 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
     double G[16];  // World Transform: copies * G * layer-to-world
     WorldM4(s.world, s.anchorX, s.anchorY, G);
     double otherRect[4];
-    const bool hasOther = DbgOtherRect((const void*)a, otherRect);  // P0 probe (DUPLIX_DBG_OTHER)
+    const bool hasOther = DbgOtherOn() && DbgOtherRect((const void*)a, otherRect);  // P0 probe (DUPLIX_DBG_OTHER)
     for (size_t i = 0; i < n; i++) {
         std::memcpy(vR->last, hasOther && (i & 1) ? otherRect : rect, bee::kRectBytes);
         vR->last += bee::kRectBytes;
@@ -1116,7 +1122,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         if (!r && world && *world) DbgTintCopy(trace, (AEGP_WorldH)*world);
         return r;
     }
-    if (const void* other = DbgOtherLayer(trace)) {
+    if (const void* other = DbgOtherOn() ? DbgOtherLayer(trace) : nullptr) {
         char* tv = *(char**)((char*)trace + bee::kTraceArtLayer);
         double orc[4];
         double* rc = rect && DbgOtherRect(*(void**)(tv + bee::kArtLayerToLayer), orc) ? orc : rect;
@@ -1346,8 +1352,8 @@ A_Err HookGetBounds(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_T
     }();
     AEGP_LayerH L = nullptr;
     AEGP_SubLayerIndex sub = -1;
-    if (t && r && g_canvas8 && !g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) && L && sub >= 0 &&
-        (sub & 1)) {
+    if (DbgOtherOn() && t && r && g_canvas8 && !g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) &&
+        L && sub >= 0 && (sub & 1)) {
         double orc[4];  // P0 probe (DUPLIX_DBG_OTHER): the odd copies show another layer: its bounds
         if (DbgOtherRect(L, orc)) {
             const A_Err e = g_origGetBounds(rc, lc, t, r);

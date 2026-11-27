@@ -22,6 +22,7 @@
 #include "Param_Utils.h"
 #include "String_Utils.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -192,6 +193,7 @@ PF_Err HandleArb(PF_ArbParamsExtra* x)
 
 // ---- the editor window ----
 AEGP_EffectRefH g_effect = nullptr;  // the instance the editor edits (kept while the window is open)
+std::atomic<bool> g_effectGone{false};  // SEQUENCE_SETDOWN came: g_effect must not be used any more
 HWND g_wnd = nullptr;
 int g_autoStep = 0;
 A_u_long g_editorRev = 0;  // the revision the editor shows (design v4 section 7: synced with AE's undo by it)
@@ -200,7 +202,7 @@ A_u_long g_editorRev = 0;  // the revision the editor shows (design v4 section 7
 bool CurrentRevision(A_u_long* rev)
 {
     Suite<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
-    if (!ss || !g_effect) return false;
+    if (!ss || !g_effect || g_effectGone) return false;
     AEGP_StreamRefH st = nullptr;
     if (ss->AEGP_GetNewEffectStreamByIndex(g_pluginId, g_effect, P_GRAPH, &st) || !st) return false;
     AEGP_StreamValue2 v{};
@@ -219,7 +221,7 @@ bool CurrentRevision(A_u_long* rev)
 // The editor's write: one undo step that replaces the graph data.
 void WriteGraph(float r, float g, float b, const char* why)
 {
-    if (!g_effect) return;
+    if (!g_effect || g_effectGone) return;
     const auto t0 = std::chrono::steady_clock::now();
     Suite<AEGP_UtilitySuite6> util(kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
     Suite<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
@@ -341,6 +343,7 @@ LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (es) es->AEGP_DisposeEffect(g_effect);
             g_effect = nullptr;
         }
+        g_pending.on = false;
         g_wnd = nullptr;
         return 0;
     }
@@ -354,6 +357,7 @@ void OpenEditor(PF_InData* in_data)
         return;
     }
     Suite<AEGP_PFInterfaceSuite1> pfi(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    g_effectGone = false;
     A_Err e = pfi ? pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &g_effect) : -1;
     static bool registered = false;
     HINSTANCE inst = GetModuleHandleA("DupliXP0.aex");
@@ -534,8 +538,13 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
         // an instance goes away (deleted, its project closed): the editor must not keep its effect reference
         // (11/28: AE crashed when the idle hook read the reference after app.open replaced the project). The spike
         // closes the editor for any instance; the product compares the instance.
+        // it may come on a render thread (DestroyWindow works only on the window's own thread): mark the reference
+        // gone (the idle hook and the writes check it) and ask the window to close itself
         Log("sequence setdown (editor open %d)", (int)(g_wnd != nullptr));
-        if (g_wnd) DestroyWindow(g_wnd);
+        if (g_wnd) {
+            g_effectGone = true;
+            PostMessageA(g_wnd, WM_CLOSE, 0, 0);
+        }
         break;
     case PF_Cmd_UPDATE_PARAMS_UI:
         ApplyMacroNames(in_data, params);
