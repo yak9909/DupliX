@@ -25,6 +25,10 @@
   - 隠した行にはスクリプトから値を入れられない（AE の制限）。試験は `$.setenv("DUPLIX2_SHOW_ALL","1")` で全部の行を出してから値を入れる。
   - 32 bpc の `saveFrameToPng` は効果なしの赤い平面でも (25,0,0) になる。試験は基準の `ref_red.png` との比で判定する。
   - パラメータの番号＝Disk ID。出荷したら並べ替え・挿入は不可（後ろに足すだけ）。今はプロトタイプなので変えてよい。
+  - Custom UI の高さは PARAMS_SETUP で固定。いちばん狭い Effect Controls（ログで 240 px・12 pt）に合わせた（Overview 124、
+    Modifier List 88＝3 列 × 3 行、Source List 94＝2 列 × 4 行）。
+  - 「+ Add Modifier」とチップの × は、DO_CLICK で `params[]` の Type の値を変えて `change_flags` を立てる形（未確認）。
+    利用者から「押しても何も起きない」と言われたら、Remove Source と同じく表示してから `AEGP_SetStreamValue` を取り消しのまとまりの中で使う形に直す。
 
 ## 再開の手順（2026-11-27 15 時台、名前を DupliX に統一・パラメータを英語の定番の並びに。利用者への報告待ち）
 

@@ -224,31 +224,32 @@ struct Item {
     Rect remove;  // the "x" (RemoveModifier / RemoveSource)
 };
 
-constexpr float kPad = 6, kChipH = 20, kGap = 4;
+constexpr float kPad = 5, kChipH = 20, kGap = 3;
 float g_lastFontSize = 11;  // UI thread only
 
+// chips in equal columns (at least 3: 8 chips + the button fit in 3 rows); the button takes the rest of its row
 std::vector<Item> ModifierItems(const Rect& f, PF_ParamDef* params[], float fontSize)
 {
     std::vector<Item> items;
-    float x = f.x + kPad, y = f.y + kPad;
-    auto place = [&](float w) {
-        if (x + w > f.x + f.w - kPad && x > f.x + kPad) x = f.x + kPad, y += kChipH + kGap;
-        Rect r = {x, y, w, kChipH};
-        x += w + kGap;
-        return r;
+    const float inner = f.w - 2 * kPad;
+    const int cols = std::max(3, (int)((inner + kGap) / (fontSize * 7 + kGap)));
+    const float cw = (inner - (cols - 1) * kGap) / cols;
+    int n = 0;
+    auto cell = [&](int span) {
+        const int c = n % cols, r = n / cols;
+        n += span;
+        return Rect{f.x + kPad + c * (cw + kGap), f.y + kPad + r * (kChipH + kGap), span * cw + (span - 1) * kGap, kChipH};
     };
     bool free = false;
     for (int k = 0; k < kModifierSlots; k++) {
-        const int type = params[ModIndex(k, M_TYPE)]->u.pd.value;
-        if (type == MT_NONE) {
+        if (params[ModIndex(k, M_TYPE)]->u.pd.value == MT_NONE) {
             free = true;
             continue;
         }
-        const float w = fontSize * 0.6f * (2 + (float)wcslen(kTypeNames[std::clamp(type - 1, 0, 6)])) + 34;
-        Rect r = place(w);
-        items.push_back({r, Act::RemoveModifier, k, {r.x + r.w - 18, r.y, 18, r.h}});
+        const Rect r = cell(1);
+        items.push_back({r, Act::RemoveModifier, k, {r.x + r.w - 16, r.y, 16, r.h}});
     }
-    if (free) items.push_back({place(fontSize * 0.6f * 14 + 16), Act::AddModifier, -1, {}});
+    if (free) items.push_back({cell(cols - n % cols), Act::AddModifier, -1, {}});
     return items;
 }
 
@@ -258,7 +259,7 @@ std::vector<Item> SourceItems(const Rect& f, int rows, const SourceInfo src[kSou
     const float colW = (f.w - 2 * kPad - kGap) * 0.5f;
     int n = 0;
     auto place = [&]() {
-        Rect r = {f.x + kPad + (n % 2) * (colW + kGap), f.y + 2 + (n / 2) * (kChipH - 2 + kGap), colW, kChipH - 2};
+        Rect r = {f.x + kPad + (n % 2) * (colW + kGap), f.y + kPad + (n / 2) * (kChipH + 1), colW, kChipH - 2};
         n++;
         return r;
     };
@@ -298,8 +299,8 @@ void DrawOverview(Canvas& c, const Rect& f, PF_ParamDef* params[], const SourceI
         if (params[ModIndex(k, M_TYPE)]->u.pd.value != MT_NONE) mods++;
 
     // the picture: one dot per copy of the first C layer (at most 16 x 16 shown)
-    const float box = f.h - 2 * kPad;
-    const Rect pic = {f.x + kPad, f.y + kPad, box, box};
+    const float box = std::min(f.h - 2 * kPad, 96.0f);
+    const Rect pic = {f.x + kPad, f.y + (f.h - box) * 0.5f, box, box};
     c.FillRound(pic, 6, c.Shade(0.08f));
     const int sa = std::min(A, 16), sb = std::min(B, 16);
     const float cx = pic.x + box * 0.5f, cy = pic.y + box * 0.5f, R = box * 0.40f;
@@ -349,25 +350,32 @@ void DrawOverview(Canvas& c, const Rect& f, PF_ParamDef* params[], const SourceI
             c.Circle(x, y, dot, colorOf(i, a, b));
         }
 
-    // the summary
-    const float tx = pic.x + box + 12, tw = f.x + f.w - tx - kPad, fs = c.FontSize();
-    float y = f.y + kPad + fs * 1.6f;
-    c.Text(tx, y, L"DupliX", c.Text(), fs * 1.6f, tw);
-    c.Text(tx + fs * 1.6f * 3.9f, y, L"2  prototype", c.Dim(), fs * 0.95f);
-    y += fs * 1.75f;
+    // the summary, in short lines (the narrowest panel leaves about 120 px beside the picture):
+    //   DupliX 2 / Grid · 24 copies / A 6 Columns / B 4 Rows / C 1 Layers / Sources 3 · Random / Modifiers 2
+    const float tx = pic.x + box + 10, tw = f.x + f.w - tx - kPad, fs = c.FontSize(), lh = fs * 1.3f;
+    float y = f.y + kPad + fs * 1.3f;
+    c.Text(tx, y, L"DupliX 2", c.Text(), fs * 1.35f, tw);
+    y += lh + 3;
     wchar_t line[160];
     const long long total = (long long)A * B * C;
-    swprintf(line, 160, L"%ls   %d × %d × %d  =  %lld copies", kShapeNames[shape - 1], A, B, C, total);
+    swprintf(line, 160, L"%ls · %lld %ls", kShapeNames[shape - 1], total, total == 1 ? L"copy" : L"copies");
     c.Text(tx, y, line, c.Text(), 0, tw);
-    y += fs * 1.5f;
-    swprintf(line, 160, L"A %ls  ·  B %ls  ·  C %ls", kAxisNames[shape - 1][0], kAxisNames[shape - 1][1],
-             kAxisNames[shape - 1][2]);
-    c.Text(tx, y, line, c.Dim(), 0, tw);
-    y += fs * 1.5f;
+    const int counts[3] = {A, B, C};
+    const float numW = fs * 3.2f;  // the counts in a column, the meanings after them
+    for (int k = 0; k < 3; k++) {
+        y += lh;
+        c.Text(tx, y, std::wstring(1, (wchar_t)(L'A' + k)), c.Dim());
+        c.Text(tx + fs * 1.1f + numW, y, std::to_wstring(counts[k]), c.Text(), 0, 0, kDRAWBOT_TextAlignment_Right);
+        c.Text(tx + fs * 1.6f + numW, y, kAxisNames[shape - 1][k], c.Dim(), 0, tw - fs * 1.6f - numW);
+    }
+    y += lh;
     if (used.empty())
-        swprintf(line, 160, L"Sources: this layer   ·   Modifiers: %d", mods);
+        swprintf(line, 160, L"Sources: this layer");
     else
-        swprintf(line, 160, L"Sources: %d (%ls)   ·   Modifiers: %d", (int)used.size(), kAssignNames[assign - 1], mods);
+        swprintf(line, 160, L"Sources %d · %ls", (int)used.size(), kAssignNames[assign - 1]);
+    c.Text(tx, y, line, c.Dim(), 0, tw);
+    y += lh;
+    swprintf(line, 160, L"Modifiers %d", mods);
     c.Text(tx, y, line, c.Dim(), 0, tw);
 }
 
@@ -385,16 +393,19 @@ void DrawModifierList(Canvas& c, const Rect& f, PF_ParamDef* params[])
     bool any = false;
     for (const Item& it : items) {
         if (it.act == Act::AddModifier) {
-            DrawButton(c, it.r, L"+  Add Modifier");
+            DrawButton(c, it.r, it.r.w >= c.FontSize() * 8 ? L"+  Add Modifier" : L"+  Add");
             continue;
         }
         any = true;
         const int type = std::clamp((int)params[ModIndex(it.slot, M_TYPE)]->u.pd.value - 1, 0, 6);
+        // [n| Type   x]: the slot number on a tab in the Type's colour
         c.FillRound(it.r, 4, c.Shade(0.14f));
-        c.FillRound({it.r.x, it.r.y, 4, it.r.h}, 2, kTypeColors[type]);
-        wchar_t s[40];
-        swprintf(s, 40, L"%d  %ls", it.slot + 1, kTypeNames[type]);
-        c.Text(it.r.x + 10, it.r.y + it.r.h * 0.5f + base, s, c.Text(), 0, it.r.w - 30);
+        const float tab = 14;
+        c.FillRound({it.r.x, it.r.y, tab, it.r.h}, 4, kTypeColors[type]);
+        c.Text(it.r.x + tab * 0.5f, it.r.y + it.r.h * 0.5f + base, std::to_wstring(it.slot + 1), {0.1f, 0.1f, 0.1f, 1},
+               0, 0, kDRAWBOT_TextAlignment_Center);
+        c.Text(it.r.x + tab + 4, it.r.y + it.r.h * 0.5f + base, kTypeNames[type], c.Text(), 0,
+               it.r.w - tab - 4 - it.remove.w);
         c.Cross(it.remove.x + it.remove.w * 0.5f, it.remove.y + it.remove.h * 0.5f, 3, c.Dim());
     }
     if (!any) {

@@ -96,9 +96,10 @@ void SetHiddenRange(PF_InData* in_data, int first, int last, bool hidden);
 // ---- custom UI (dx2_ui.cpp) ----
 PF_Err HandleEvent(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output,
                    PF_EventExtra* extra);
-constexpr int kHeaderHeight = 104;
-constexpr int kModListHeight = 64;
-constexpr int kSrcListHeight = 84;
+// fixed at PARAMS_SETUP: sized for the narrowest Effect Controls (a 240 px control at a 12 pt font)
+constexpr int kHeaderHeight = 124;   // title + 6 lines beside a 96 px picture
+constexpr int kModListHeight = 88;   // 8 chips + the button in 3 rows of 3
+constexpr int kSrcListHeight = 94;   // 8 cards (or 7 + the button) in 4 rows of 2
 
 // ---- render (dx2_render.cpp) ----
 PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* extra);
