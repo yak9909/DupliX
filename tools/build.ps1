@@ -3,8 +3,9 @@
 #   pwsh tools/build.ps1 -Target unit    # tests\unit -> build\unit\unit_tests.exe
 #   pwsh tools/build.ps1 -Target dump    # tests\tools -> build\dump\duplix_dump.exe
 #   pwsh tools/build.ps1 -Target gpu     # tests\gpu -> build\gpu\gpu_test.exe (runs on an NVIDIA GPU)
+#   pwsh tools/build.ps1 -Target v2      # src\v2 -> dev_plugins\DupliX2.aex (DupliX 2, the prototype)
 #   pwsh tools/build.ps1 -Target all
-param([ValidateSet("effect", "unit", "dump", "gpu", "all")][string]$Target = "effect",
+param([ValidateSet("effect", "v2", "unit", "dump", "gpu", "all")][string]$Target = "effect",
       [string]$Configuration = "Release")  # the user's AE loads dev_plugins\DupliX.aex: Release unless debugging
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -18,7 +19,7 @@ function Invoke-Build([string]$proj, [string]$outDir) {
     if ($LASTEXITCODE -ne 0) { throw "msbuild failed: $proj ($LASTEXITCODE)" }
 }
 
-$targets = if ($Target -eq "all") { @("effect", "unit", "dump", "gpu") } else { @($Target) }
+$targets = if ($Target -eq "all") { @("effect", "v2", "unit", "dump", "gpu") } else { @($Target) }
 # The CUDA kernel as PTX embedded in a header (src/gpu/fast_raster_ptx.h), for the effect and the GPU test.
 if ($targets -contains "effect" -or $targets -contains "gpu") { & (Join-Path $PSScriptRoot "build_ptx.ps1") }
 foreach ($t in $targets) {
@@ -28,6 +29,12 @@ foreach ($t in $targets) {
             if (-not (Test-Path $dev)) { New-Item -ItemType Directory $dev | Out-Null }
             Invoke-Build (Join-Path $root "src\effect\duplix.vcxproj") $dev
             Get-Item (Join-Path $dev "DupliX.aex") | Select-Object FullName, Length, LastWriteTime
+        }
+        "v2" {
+            $dev = Join-Path $root "dev_plugins"
+            if (-not (Test-Path $dev)) { New-Item -ItemType Directory $dev | Out-Null }
+            Invoke-Build (Join-Path $root "src\v2\duplix2.vcxproj") $dev
+            Get-Item (Join-Path $dev "DupliX2.aex") | Select-Object FullName, Length, LastWriteTime
         }
         "unit" { Invoke-Build (Join-Path $root "tests\unit\unit_tests.vcxproj") (Join-Path $root "build\unit") }
         "dump" { Invoke-Build (Join-Path $root "tests\tools\duplix_dump.vcxproj") (Join-Path $root "build\dump") }

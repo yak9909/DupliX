@@ -1,4 +1,30 @@
-# 引き継ぎメモ（最新: 2026-11-27 15 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-27 17 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-27 17 時台、DupliX 2 のハリボテのエフェクトコントロールを作った。利用者の試用待ち）
+
+- **利用者の指示（11/27 16 時）:** 設計書（デスクトップの `duplixsekkei`）を取り込み、v2 を採用。入口はシンプルに、奥で細かく設定できる形。
+  Custom UI で分かりやすく。まず中身は作らずハリボテのエフェクトコントロールを作る。複数の画像の読み込みは実装する。
+  回答: 今の DupliX とは**別のエフェクト**として作る／画像は**コンプのレイヤー**を選ぶ／読み込んだ画像は**簡単な格子で実際に並べる**／複製元は**最大 8**。
+- **済み（この節の commit）:**
+  - 設計書 2 つを `docs/design/` に写した（v2 が採用、ChatGPT 案は下敷きとして保存）。
+  - 新しいエフェクト「DupliX 2 (Prototype)」（マッチ名 `DupliX2`、`src/v2/`、`pwsh tools/build.ps1 -Target v2` → `dev_plugins\DupliX2.aex`）。
+    パラメータ 408（Modifier 8 枠 × 39）。Custom UI 3 つ（Overview・Modifier List・Source List）。使わない行は隠す。
+    中身があるのは Sources（8 つのレイヤー、Assign）と仮の格子（Count A × B、Grid Size X/Y）だけ。
+    詳細・調べたもの・何が動くか: `docs/design/2026-11-27-v2-effect-controls.md`。
+- **試験（この commit のソース）:** `tests/ae/v2_sources.jsx`＋`check_v2_sources.py` を 8・16・32 bpc で PASS（Source なし＝自分のレイヤー、
+  Sequential、By A で逆順、Source 2 を None で詰まる）。既存 DupliX の smoke PASS（2 つのプラグインが並んで動く）。
+  表示の切り替えはログで確認（最初の 1 回 407 行 約 10〜18 ms、その後は変わる行だけ 0.4 ms、最後の状態が Shape と一致）。
+  **Custom UI の見た目とクリック（+ Add / ×）は未確認。** 隠したデスクトップの AE では PrintWindow で AE のパネルが写らない
+  （`tests/ae/run_v2_ui.ps1` は場面を作るだけ）。利用者の AE で見てもらう。
+- **次の 1 手:** 利用者に試用を頼み、Custom UI の見た目・クリック・パラメータの並びの感想を聞く。直したら、中身（設計 v2 の P1〜）へ進むか利用者に聞く。
+- **気を付けること:**
+  - プラグインのジャンクション `MediaCore\DupliX_dev` は 11/27 16:35 に利用者が作った（管理者の PowerShell で `New-Item -ItemType Junction`）。
+    利用者の管理者 PowerShell では `cmd` が devkitPro の `C:\devkitPro\msys2\usr\bin\cmd` を指すので、`cmd /c mklink` は動かない。PowerShell の命令で案内する。
+  - AE の `effect_ref` はコマンドごとに変わる。インスタンスの見分けはシーケンスデータの番号（`dx2_aegp.cpp` の `SeqData`）。
+  - SmartRender では入力（`checkout_layer_pixels`）を出力（`checkout_output`）より先に取る。逆にすると 516 で失敗した。
+  - 隠した行にはスクリプトから値を入れられない（AE の制限）。試験は `$.setenv("DUPLIX2_SHOW_ALL","1")` で全部の行を出してから値を入れる。
+  - 32 bpc の `saveFrameToPng` は効果なしの赤い平面でも (25,0,0) になる。試験は基準の `ref_red.png` との比で判定する。
+  - パラメータの番号＝Disk ID。出荷したら並べ替え・挿入は不可（後ろに足すだけ）。今はプロトタイプなので変えてよい。
 
 ## 再開の手順（2026-11-27 15 時台、名前を DupliX に統一・パラメータを英語の定番の並びに。利用者への報告待ち）
 
