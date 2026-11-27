@@ -5,7 +5,8 @@
 #   pwsh tools/build.ps1 -Target gpu     # tests\gpu -> build\gpu\gpu_test.exe (runs on an NVIDIA GPU)
 #   pwsh tools/build.ps1 -Target v2      # src\v2 -> dev_plugins\DupliX2.aex (DupliX 2, the prototype)
 #   pwsh tools/build.ps1 -Target all
-param([ValidateSet("effect", "v2", "unit", "dump", "gpu", "all")][string]$Target = "effect",
+#   pwsh tools/build.ps1 -Target p0      # spike\P0Graph -> dev_plugins\DupliXP0.aex (design v4 P0 spike)
+param([ValidateSet("effect", "v2", "p0", "unit", "dump", "gpu", "all")][string]$Target = "effect",
       [string]$Configuration = "Release")  # the user's AE loads dev_plugins\DupliX.aex: Release unless debugging
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -35,6 +36,11 @@ foreach ($t in $targets) {
             if (-not (Test-Path $dev)) { New-Item -ItemType Directory $dev | Out-Null }
             Invoke-Build (Join-Path $root "src\v2\duplix2.vcxproj") $dev
             Get-Item (Join-Path $dev "DupliX2.aex") | Select-Object FullName, Length, LastWriteTime
+        }
+        "p0" {
+            $dev = Join-Path $root "dev_plugins"
+            Invoke-Build (Join-Path $root "spike\P0Graph\p0graph.vcxproj") $dev
+            Get-Item (Join-Path $dev "DupliXP0.aex") | Select-Object FullName, Length, LastWriteTime
         }
         "unit" { Invoke-Build (Join-Path $root "tests\unit\unit_tests.vcxproj") (Join-Path $root "build\unit") }
         "dump" { Invoke-Build (Join-Path $root "tests\tools\duplix_dump.vcxproj") (Join-Path $root "build\dump") }
