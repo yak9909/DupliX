@@ -6,8 +6,8 @@
   パラメータは英語、補足の文言なし、状態の欄なし。詳細は `docs/experiments/2026-11-27-dev-log.md` の 13 節。
 - **今の状態:** この節の commit まで push 済み。`dev_plugins\DupliX.aex` はこの commit のソースのビルド（Release）。GitHub のリポジトリ名は
   DupliX に変更済み（remote も更新）。プラグインのジャンクションは `MediaCore\DupliX_dev`（新しいフォルダーを指す）を作成済み。
-- **利用者の作業（待ち）:** Claude Code を閉じて、フォルダー `A:\MyProjects\After Effects\Plugin Project\randamu` を `DupliX` に名前を変える。
-  その後、古いジャンクション `MediaCore\randamu_dev`（旧フォルダーを指す）を消す。メモリーは新しいフォルダー用の場所にも写してある。
+- **利用者の作業（待ち）:** Claude Code を閉じて、このリポジトリのフォルダー（`A:\MyProjects\After Effects\Plugin Project\` の下の旧名のもの）を
+  `DupliX` に名前を変える。その後、`MediaCore` の下の旧名のジャンクション（旧フォルダーを指す）を消す。メモリーは新しいフォルダー用の場所にも写してある。
 - **試験（この commit のソース）:** 単体 81・GPU、smoke、TRANSFER、FAST、REF、UI、EDIT、MERGE、AS-IS、ORBIT ALL PASS、Test〜D 各 8 フレーム差 0。
 - **次の 1 手:** 利用者の反応を聞き、機能を詰める作業に入る（何を詰めるかは利用者の指示を待つ）。
 - **気を付けること:** パラメータの Disk ID は変えない（`duplix_params.h`。1 と 15 は欠番）。試験のスクリプトはパラメータを内部名 "DupliX-00NN"
