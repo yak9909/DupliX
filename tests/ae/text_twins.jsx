@@ -14,12 +14,22 @@
     function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }
     function png(comp, name) {
         var f = new File(outDir + "/" + name + ".png");
+        app.purge(PurgeTarget.ALL_CACHES);  // a hidden layer the copies show is not a dependency AE knows of
         comp.saveFrameToPng(0, f);
         for (var k = 0; k < 100 && !f.exists; k++) $.sleep(100);
         log("png " + name + " exists=" + f.exists);
         return f.exists;
     }
     var W = 400, H = 300, POS = [W / 2, H / 2, 0];
+    // the other layer the odd copies show (DUPLIX_DBG_OTHER=2: created before the target, so it is layer 2)
+    function addOther(comp, c, on) {
+        var b = comp.layers.addSolid([0.9, 0.25, 0.1], "Other", c.other[0], c.other[1], 1);
+        b.threeDLayer = true;
+        tg(b).property("ADBE Anchor Point").setValue([0, 0, 0]);
+        tg(b).property("ADBE Position").setValue(POS);
+        b.enabled = on;
+        return b;
+    }
     function addText(comp, c) {
         if (c.solid) {  // the control: a solid (its copies are known to match AE)
             var so = comp.layers.addSolid([1, 1, 1], "Target", 60, 40, 1);
@@ -89,6 +99,8 @@
         big: {n: 6, size: 120, pos: [160, 120, 600], scale: [100, 300]},
         solid_scale: {n: 10, solid: true, pos: [240, 160, 400], scale: [40, 260]},
         solid_rotz: {n: 10, solid: true, pos: [240, 160, 300], rotz: 180, scale: [60, 180]},
+        other_same: {n: 10, solid: true, other: [60, 40], pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
+        other_size: {n: 10, solid: true, other: [100, 24], pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
         solid_fill: {n: 10, solid: true, fill: true, pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
         text_fill: {n: 8, fill: true, text: "WAVE", pos: [240, 160, 300], rotz: 90, scale: [60, 180]},
         shape_pos: {n: 10, shape: true, pos: [240, 160, 400]},
@@ -103,6 +115,7 @@
             if (only[0] && ("," + only.join(",") + ",").indexOf("," + name + ",") < 0) continue;
             var c = cases[name];
             var d = base("dx_" + name);
+            if (c.other) addOther(d, c, false);  // eye off: seen only through the copies
             var T = addText(d, c);
             var e = T.property("ADBE Effect Parade").addProperty("DupliX");
             e.property(dx(37)).setValue(1);  // 3D Layers
@@ -120,7 +133,7 @@
             for (var i = rows.length - 1; i >= 0; i--) {
                 var m = rows[i];
                 if (!m) continue;
-                var L = addText(tw, c);
+                var L = c.other && (i & 1) ? addOther(tw, c, true) : addText(tw, c);
                 L.name = "twin " + i;
                 var sx = Math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
                 var sy = Math.sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);

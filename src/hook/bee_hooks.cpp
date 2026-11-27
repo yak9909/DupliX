@@ -599,6 +599,11 @@ uintptr_t HookCount(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
 
 // (this, M_FloatRect* ret, const T_Time&, const M_FloatRect& rect, vector<M_FloatRect>&, vector<M_Matrix3>&,
 //  vector<M_Matrix4>&, const TDB_ParamBag*) -> ret
+}  // namespace
+// P0 probe (DUPLIX_DBG_OTHER): the other layer's source rect (0, 0, width, height) for the odd copies of `layer`
+bool DbgOtherRect(const void* layer, double out[4]);
+namespace {
+
 uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
                     uintptr_t h)
 {
@@ -638,8 +643,10 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         return b;
     double G[16];  // World Transform: copies * G * layer-to-world
     WorldM4(s.world, s.anchorX, s.anchorY, G);
+    double otherRect[4];
+    const bool hasOther = DbgOtherRect((const void*)a, otherRect);  // P0 probe (DUPLIX_DBG_OTHER)
     for (size_t i = 0; i < n; i++) {
-        std::memcpy(vR->last, rect, bee::kRectBytes);
+        std::memcpy(vR->last, hasOther && (i & 1) ? otherRect : rect, bee::kRectBytes);
         vR->last += bee::kRectBytes;
         g_m3Identity(v3->last);
         v3->last += bee::kM3Bytes;
@@ -1032,6 +1039,8 @@ bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned
 // A copy of a text layer with DupliX: its texture is the whole text drawn by the text's own machinery (below).
 const void* WholeTextLayer(void* trace);
 int DrawWholeText(const void* layer, void* trace, const std::function<int()>& fn);
+const void* DbgOtherLayer(void* trace);
+int DrawOtherLayer(const void* other, void* trace, const std::function<int()>& fn);
 namespace {
 
 // dbg (11/28, text 3D Layers; DUPLIX_DBG_TEX=1): every texture request with its layer, sub-layer index and arguments
@@ -1105,6 +1114,15 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         g_texGen++;
         DbgTexArgs("tex out (whole text)", trace, u, v2, rect, m3);
         if (!r && world && *world) DbgTintCopy(trace, (AEGP_WorldH)*world);
+        return r;
+    }
+    if (const void* other = DbgOtherLayer(trace)) {
+        char* tv = *(char**)((char*)trace + bee::kTraceArtLayer);
+        double orc[4];
+        double* rc = rect && DbgOtherRect(*(void**)(tv + bee::kArtLayerToLayer), orc) ? orc : rect;
+        const int r = DrawOtherLayer(other, trace, [&] { return g_origTex(ctx, trace, u, v2, rc, world, m3); });
+        g_texGen++;
+        DbgTexArgs("tex out (other layer)", trace, u, v2, rect, m3);
         return r;
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -1328,6 +1346,18 @@ A_Err HookGetBounds(PR_RenderContextH rc, AEGP_RenderLayerContextH lc, const A_T
     }();
     AEGP_LayerH L = nullptr;
     AEGP_SubLayerIndex sub = -1;
+    if (t && r && g_canvas8 && !g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) && L && sub >= 0 &&
+        (sub & 1)) {
+        double orc[4];  // P0 probe (DUPLIX_DBG_OTHER): the odd copies show another layer: its bounds
+        if (DbgOtherRect(L, orc)) {
+            const A_Err e = g_origGetBounds(rc, lc, t, r);
+            static LogLimit lg;
+            if (lg.Take(4))
+                RLog("dbg: bounds of copy %d: AE %d %d %d %d -> the other layer's", (int)sub, r->top, r->left, r->bottom, r->right);
+            r->top = (A_long)orc[1], r->left = (A_long)orc[0], r->bottom = (A_long)orc[3], r->right = (A_long)orc[2];
+            return e;
+        }
+    }
     if (!t || !r || !g_canvas8 || g_canvas8->AEGP_GetLayerAndSubLayerFromLayerContext(rc, lc, &L, &sub) || !L || !MergeOnFor(L))
         return g_origGetBounds(rc, lc, t, r);
     for (const SharedBounds& s : t_bounds)
@@ -4328,6 +4358,96 @@ int DrawWholeText(const void* layer, void* trace, const std::function<int()>& fn
     }
     static LogLimit lg;
     if (lg.Take(5)) RLog("text: a copy's texture as the whole text -> %d", r);
+    return r;
+}
+
+// P0 (design v4: a copy showing another layer; DUPLIX_DBG_OTHER=<layer index in the comp, 1-based>, merge off): the
+// odd copies' textures are that layer's own (the request's layer swapped, index -1, a cache of the other layer's
+// own), the way DrawWholeText draws a text copy. Returns the layer used (null: not swapped).
+const void* OtherOf(const void* layer);
+const void* DbgOtherLayer(void* trace)
+{
+    if (!trace || !g_textRedir[0].av) return nullptr;
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
+    const int idx = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -1;
+    if (!layer || idx < 0 || (idx & 1) == 0 || !IsMine(layer)) return nullptr;
+    return OtherOf(layer);
+}
+
+// the layer DUPLIX_DBG_OTHER names, in `layer`'s comp
+const void* OtherOf(const void* layer)
+{
+    static char buf[16] = {0};
+    static const bool on = GetEnvironmentVariableA("DUPLIX_DBG_OTHER", buf, sizeof(buf)) > 0;
+    if (!on || !layer) return nullptr;
+    SPBasicSuite* sp = HookPica();
+    AEGP_LayerSuite9* ls = nullptr;
+    if (!sp || sp->AcquireSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion9, (const void**)&ls) || !ls) return nullptr;
+    AEGP_CompH c = nullptr;
+    AEGP_LayerH other = nullptr;
+    if (ls->AEGP_GetLayerParentComp((AEGP_LayerH)layer, &c) || !c ||
+        ls->AEGP_GetCompLayerByIndex(c, atoi(buf) - 1, &other))
+        other = nullptr;
+    sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    return other;
+}
+
+bool DbgOtherRect(const void* layer, double out[4])
+{
+    if (!IsMine(layer)) return false;
+    const void* other = OtherOf(layer);
+    SPBasicSuite* sp = HookPica();
+    AEGP_LayerSuite9* ls = nullptr;
+    AEGP_ItemSuite9* is = nullptr;
+    if (!other || !sp || sp->AcquireSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion9, (const void**)&ls) || !ls) return false;
+    bool ok = false;
+    if (!sp->AcquireSuite(kAEGPItemSuite, kAEGPItemSuiteVersion9, (const void**)&is) && is) {
+        AEGP_ItemH item = nullptr;
+        A_long w = 0, h = 0;
+        ok = !ls->AEGP_GetLayerSourceItem((AEGP_LayerH)other, &item) && item && !is->AEGP_GetItemDimensions(item, &w, &h);
+        out[0] = 0, out[1] = 0, out[2] = w, out[3] = h;
+        sp->ReleaseSuite(kAEGPItemSuite, kAEGPItemSuiteVersion9);
+    }
+    sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion9);
+    return ok;
+}
+
+int DrawOtherLayer(const void* other, void* trace, const std::function<int()>& fn)
+{
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    void* sp[2] = {nullptr, nullptr};
+    g_textRedir[0].av((uintptr_t)other, (uintptr_t)sp, 0, 0, 0, 0, 0, 0);  // the other layer's own cache (AV)
+    if (!sp[0]) {
+        ReleaseSharedCtrl(sp[1]);
+        return fn();
+    }
+    void** lay = (void**)(v + bee::kArtLayerToLayer);
+    int* idx = (int*)(v + bee::kArtLayerToSubIndex);
+    void** cache = (void**)(v - 32);
+    void* ol = *lay;
+    const int oi = *idx;
+    void *oc = cache[0], *octl = cache[1];
+    *lay = (void*)other, *idx = -1, cache[0] = sp[0], cache[1] = sp[1];
+    int r;
+    {
+        struct Restore {
+            void** lay;
+            int* idx;
+            void** cache;
+            void *ol, *oc, *octl;
+            int oi;
+            void* ctl;
+            ~Restore()
+            {
+                *lay = ol, *idx = oi, cache[0] = oc, cache[1] = octl;
+                ReleaseSharedCtrl(ctl);
+            }
+        } rs{lay, idx, cache, ol, oc, octl, oi, sp[1]};
+        r = fn();
+    }
+    static LogLimit lg;
+    if (lg.Take(5)) RLog("dbg: copy %d drawn from another layer %p -> %d", oi, other, r);
     return r;
 }
 
