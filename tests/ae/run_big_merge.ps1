@@ -5,7 +5,10 @@
 # gives the viewer time for each frame (a frame not drawn in time is missing and reported).
 param([string]$Variants = "pv_bigS380,pv_bigL380,pv_bigS3271", [string]$Counts = "380,3271",
       [string]$Image = "build/test/big/big1920.png", [string]$Aep = "tests/ae/user/DupliX Test C.aep",
-      [string]$Layer = "flower_blue.png", [int]$Frames = 4, [int]$IntervalMs = 15000)
+      [string]$Layer = "flower_blue.png", [int]$Frames = 4, [int]$IntervalMs = 15000, [switch]$Nest)
+# -Nest: the pv_nest<n> variants too (the copied layer a precomp with classic 3D layers inside: a frame drawn inside a
+# frame), e.g. -Nest -Variants pv_nest380 -Counts 380
+$env:RANDAMU_PV_NEST = if ($Nest) { "1" } else { "" }
 # (11/27: at 8000 ms the merge off of pv_bigS3271 drew only 2 of 4 frames; cmp_dirs.py counts a missing frame as differing)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")

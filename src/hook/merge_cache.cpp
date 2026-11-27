@@ -146,6 +146,7 @@ std::shared_ptr<const MergePlan> MergePlanFor(const void* layer, const A_Time& l
             else s_over.erase(comp);
         }
         static LogLimit fbl;
+        if (p.fb[13]) RLog("group: isolated plan: %d overlapping pairs of grouped copies meet in 3D (RANDAMU_PLAN_MEETS)", p.fb[13]);
         if (fb && p.fb[12] && fbl.Take(40)) RLog("group: front/back plan over budget: isolated groups only");
         else if (fb && fbl.Take(40))
             RLog("group: front/back plan: %d copies may group, %d front, %d back; not grouped: %d unsure, %d between, %d alone; "

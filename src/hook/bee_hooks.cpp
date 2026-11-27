@@ -1763,7 +1763,8 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
             const uintptr_t sf = ((uintptr_t*)((uintptr_t*)j[2])[0])[2];
             GTRACE("group trace: draw one %p", (void*)sf);
             if (!DrawSurfaceDirect(ctx, sf, &kt) && g_groupLog.Take(10)) RLog("group: a copy on the motion path was not drawn");
-            if (*(const unsigned char*)(sf + 0x81)) ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(sf, target);
+            // its lines go into the target: the copies drawn before it first (11/27: they were drawn after them)
+            if (*(const unsigned char*)(sf + 0x81)) FlushGroupJobs(), ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(sf, target);
             drawn++;
         } else {
             // a cluster (surfaces whose order AE's graph cannot decide): AE's cluster drawing, sub_180013470, step by
@@ -1819,7 +1820,7 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
                         uintptr_t buf;
                     } kt{2, mb};
                     DrawSurfaceDirect(ctx, q[2], &kt);
-                    if (*(const unsigned char*)(q[2] + 129)) ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(q[2], target);
+                    if (*(const unsigned char*)(q[2] + 129)) FlushGroupJobs(), ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(q[2], target);
                 }
                 FlushGroupJobs();  // (a cluster's draws go into the M buffer through AE's own row callback)
                 (*(void (**)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)mb + 24))(
@@ -2408,6 +2409,7 @@ void InstallBuildEdgesHook(uintptr_t lo)
     RLog("graph edges hook: %s", RedirectCall(lo, site, (void*)&HookBuildEdges, &why) ? "installed" : why);
 }
 
+void InstallFrameBatchHooks(uintptr_t lo);
 void InstallGraphHook(HMODULE a3d)
 {
     const uintptr_t lo = (uintptr_t)a3d;
@@ -2435,6 +2437,7 @@ void InstallGraphHook(HMODULE a3d)
     RLog("group: reorder hook installed");
     if (GetEnvironmentVariableA("RANDAMU_GRAPH_PROF", nullptr, 0) > 0) InstallPairTestProf(lo);
     InstallBuildEdgesHook(lo);
+    InstallFrameBatchHooks(lo);
 }
 
 // ---- DupliX draws a copy's pixels with AE's own arithmetic (core/ae_span): AE's draw runs (its raster state and
@@ -2544,6 +2547,8 @@ struct GroupJob {
     AEGP_WorldH texMaster = nullptr;  // the shared master the texture is a copy of (null: unknown)
 };
 thread_local std::vector<GroupJob> t_groupJobs;
+// (diagnostics, RANDAMU_A3D_TIME) this frame's flushes, copies drawn by them, texture bytes kept by KeepTexture
+thread_local long long t_bFlushes = 0, t_bCopies = 0, t_bTexBytes = 0;
 // the last kept texture (the group's copies share one: kept once). *master: t's shared master, if known
 std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AEGP_WorldH* master)
 {
@@ -2559,6 +2564,7 @@ std::shared_ptr<std::vector<unsigned char>> KeepTexture(const rnd::AeTex8& t, AE
             same = !std::memcmp(k.data + (size_t)y * t.rowbytes, t.data + (size_t)y * t.rowbytes, (size_t)t.width * 4);
         if (same) return last.texKeep;
     }
+    t_bTexBytes += (long long)bytes;
     return std::make_shared<std::vector<unsigned char>>(t.data, t.data + bytes);
 }
 LogLimit g_flushLog;
@@ -2567,6 +2573,7 @@ void DropGroupJobs() { t_groupJobs.clear(); }
 void FlushGroupJobs()
 {
     if (t_groupJobs.empty()) return;
+    t_bFlushes++, t_bCopies += (long long)t_groupJobs.size();
     std::vector<rnd::GpuAeSpanJob> js;
     js.reserve(t_groupJobs.size());
     for (GroupJob& g : t_groupJobs) {
@@ -2592,6 +2599,98 @@ void FlushGroupJobs()
     t_groupJobs.clear();
 }
 
+// ---- single copies (not in a group) kept like a group's and drawn together (11/27: one GPU round trip each was
+// ~0.46 ms, 380 copies of a large image 175 ms). Kept within one frame's drawing (sub_180014470) only, and drawn
+// before anything else writes or reads the target: AE's own draw of a surface (HookA3dDraw, OurIterate), a cluster
+// (sub_180013470, its M buffer resolved into the target), a surface's lines (sub_1800151F0: PF_DrawLine into the
+// target), the end of the frame (sub_180010E00, the draw context's end), a change of target or texture (OurIterate).
+// A frame drawn inside another (a nested comp's texture) keeps its own; an exception drops the frame's.
+namespace a3d {
+constexpr uintptr_t kFrameDrawCallerRva = 0x2990, kFrameDrawCallerSize = 0x573, kFrameDrawRva = 0x14470,
+                    kAfterDrawCallRva = 0x146AD, kClusterCallRva = 0x146BE, kCtxEndCallRva = 0x14789, kCtxEndRva = 0x10E00;
+}  // namespace a3d
+typedef uintptr_t (*FrameDrawFn)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+typedef uintptr_t (*CtxEndFn)(uintptr_t);
+FrameDrawFn g_origFrameDraw = nullptr;
+CtxEndFn g_origCtxEnd = nullptr;
+bool g_batchHooks = false;     // every hook below installed: single copies may be kept
+thread_local int t_frameDepth = 0;  // inside sub_180014470 (HookFrameDraw) on this thread
+uintptr_t HookFrameDraw(uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7,
+                        uintptr_t a8, uintptr_t a9)
+{
+    std::vector<GroupJob> outer;
+    outer.swap(t_groupJobs);  // (empty unless a frame is drawn inside another's copy)
+    ++t_frameDepth;
+    {
+        static LogLimit nl;
+        if (t_frameDepth > 1 && nl.Take(10))
+            RLog("batch: a frame inside a frame (depth %d, %zu copies of the outer one kept)", t_frameDepth, outer.size());
+    }
+    struct Out {
+        std::vector<GroupJob>* outer;
+        ~Out()
+        {
+            --t_frameDepth;
+            t_groupJobs.clear();  // drawn at sub_180010E00; left only when AE threw: dropped
+            t_groupJobs.swap(*outer);
+        }
+    } out{&outer};
+    return g_origFrameDraw(a1, a2, a3, a4, a5, a6, a7, a8, a9);
+}
+uintptr_t HookCtxEnd(uintptr_t ctx)
+{
+    FlushGroupJobs();
+    static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
+    static LogLimit bl;
+    if (s_time && t_bCopies && bl.Take(200))
+        RLog("batch: frame drawn with %lld flushes of %lld copies, %.1f MB of textures kept", t_bFlushes, t_bCopies,
+             t_bTexBytes / 1048576.0);
+    t_bFlushes = t_bCopies = t_bTexBytes = 0;
+    return g_origCtxEnd(ctx);
+}
+uintptr_t HookClusterCall(uintptr_t ctx, uintptr_t comp, uintptr_t target)
+{
+    FlushGroupJobs();
+    return ((uintptr_t(*)(uintptr_t, uintptr_t, uintptr_t))(g_a3dLo + a3d::kDrawClusterRva))(ctx, comp, target);
+}
+uintptr_t HookAfterDrawCall(uintptr_t sf, uintptr_t target)
+{
+    FlushGroupJobs();
+    return ((uintptr_t(*)(uintptr_t, uintptr_t))(g_a3dLo + a3d::kAfterDrawRva))(sf, target);
+}
+// true: the call at site goes to target (an E8 rel32)
+bool CallsTo(const unsigned char* site, uintptr_t target)
+{
+    return site[0] == 0xE8 && (uintptr_t)(site + 5 + *(const int*)(site + 1)) == target;
+}
+void InstallFrameBatchHooks(uintptr_t lo)
+{
+    // sub_180002990's one call of sub_180014470 (found in its code: the site is not in the dumps)
+    const unsigned char* frameSite = nullptr;
+    int found = 0;
+    for (uintptr_t p = lo + a3d::kFrameDrawCallerRva; p + 5 <= lo + a3d::kFrameDrawCallerRva + a3d::kFrameDrawCallerSize; p++)
+        if (CallsTo((const unsigned char*)p, lo + a3d::kFrameDrawRva)) frameSite = (const unsigned char*)p, found++;
+    const unsigned char* after = (const unsigned char*)(lo + a3d::kAfterDrawCallRva);
+    const unsigned char* cluster = (const unsigned char*)(lo + a3d::kClusterCallRva);
+    const unsigned char* ctxEnd = (const unsigned char*)(lo + a3d::kCtxEndCallRva);
+    if (found != 1 || !CallsTo(after, lo + a3d::kAfterDrawRva) || !CallsTo(cluster, lo + a3d::kDrawClusterRva) ||
+        !CallsTo(ctxEnd, lo + a3d::kCtxEndRva)) {
+        RLog("batch hooks: not installed (the call sites do not match: frame calls %d)", found);
+        return;
+    }
+    g_origFrameDraw = (FrameDrawFn)(lo + a3d::kFrameDrawRva);
+    g_origCtxEnd = (CtxEndFn)(lo + a3d::kCtxEndRva);
+    const char* why = nullptr;
+    // the flushes first: a frame's single copies are kept only once all of them are in place
+    if (!RedirectCall(lo, ctxEnd, (void*)&HookCtxEnd, &why) || !RedirectCall(lo, cluster, (void*)&HookClusterCall, &why) ||
+        !RedirectCall(lo, after, (void*)&HookAfterDrawCall, &why) || !RedirectCall(lo, frameSite, (void*)&HookFrameDraw, &why)) {
+        RLog("batch hooks: not installed (%s)", why ? why : "?");
+        return;
+    }
+    g_batchHooks = true;
+    RLog("batch hooks: installed (frame call at +%llx)", (unsigned long long)((uintptr_t)frameSite - lo));
+}
+
 int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
     static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
@@ -2606,7 +2705,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
     if (cb != g_a3dLo + a3d::kRowPolygonRva || !SpanJobFor(d, &job, &why)) {
         if (g_oursSkip.Take(20)) RLog("a3d ours: AE draws this copy (%s)", why);
         g_aeDraws++;
-        if (t_inGroup) FlushGroupJobs();  // the group's kept copies first: AE draws this one into the target now
+        FlushGroupJobs();  // the kept copies first: AE draws this one into the target now
         return t_origIter(n, d, cb);
     }
     // RANDAMU_GROUP_NOGPU=1 (diagnostics): a group's copies are not drawn (the cost of AE's draw setup alone)
@@ -2634,7 +2733,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         }();
         if (px < s_minPx) {
             g_aeDraws++;
-            if (t_inGroup) FlushGroupJobs();
+            FlushGroupJobs();
             return t_origIter(n, d, cb);
         }
         rnd::GpuAeSpanJob gj;
@@ -2655,12 +2754,25 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
             char v[4] = {0};
             return !(GetEnvironmentVariableA("RANDAMU_GROUP_BATCH", v, sizeof(v)) > 0 && v[0] == '0');
         }();
-        if (t_inGroup && gj.nRows > 0 && s_batch) {
+        // single copies too, within a frame (HookFrameDraw) once its flushes are in place (RANDAMU_BATCH_SINGLES=0:
+        // each at once, diagnostics)
+        static const bool s_singles = [] {
+            char v[4] = {0};
+            return !(GetEnvironmentVariableA("RANDAMU_BATCH_SINGLES", v, sizeof(v)) > 0 && v[0] == '0');
+        }();
+        if ((t_inGroup || (s_singles && g_batchHooks && t_frameDepth > 0)) && gj.nRows > 0 && s_batch) {
             GroupJob pj;
             pj.gj = gj;
             pj.rows = std::move(tri);
             pj.p = job.p;
             pj.texKeep = KeepTexture(job.tex, &pj.texMaster);
+            // the kept jobs share one target and one texture (KeepTexture gives the last job's for the same pixels):
+            // another one draws them first
+            if (!t_groupJobs.empty()) {
+                const GroupJob& b = t_groupJobs.back();
+                if (b.gj.target != gj.target || b.gj.targetRowbytes != gj.targetRowbytes || b.texKeep != pj.texKeep)
+                    FlushGroupJobs();
+            }
             pj.tex = job.tex;
             pj.tex.data = pj.texKeep->data();
             pj.gj.tex = pj.tex;
@@ -2690,7 +2802,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         // the GPU could not draw it: AE draws it (its own arithmetic is faster than ours on the CPU)
         if (g_gpuLog.Take(10)) RLog("a3d ours: GPU failed, AE draws this copy");
         g_aeDraws++;
-        if (t_inGroup) FlushGroupJobs();
+        FlushGroupJobs();
         return t_origIter(n, d, cb);
     }
     int slot = -1;
@@ -2699,7 +2811,7 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         for (int i = 0; i < 32 && slot < 0; i++)
             if (!g_jobs[i].d) g_jobs[i] = job, slot = i;
     }
-    if (t_inGroup) FlushGroupJobs();
+    FlushGroupJobs();
     if (slot < 0) return t_origIter(n, d, cb);
     g_oursDraws++;
     const int e = t_origIter(n, d, (uintptr_t)&OurRow);
@@ -2731,7 +2843,7 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
     char ev[8] = {0};
     static EnvCache s_drawMode("RANDAMU_A3D_DRAW");
     const int mode = s_drawMode.Get(ev, sizeof(ev)) > 0 ? atoi(ev) : -1;
-    if (!mode) return g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
+    if (!mode) return FlushGroupJobs(), g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
     if (mode < 0) {
         static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", ev, sizeof(ev)) > 0 && ev[0] == '1';
         static const bool s_prof = GetEnvironmentVariableA("RANDAMU_A3D_PROF", ev, sizeof(ev)) > 0 && ev[0] >= '1';
@@ -2844,10 +2956,12 @@ uintptr_t HookA3dDraw(uintptr_t self, uintptr_t ctx, uintptr_t a3, uintptr_t a4,
             return r;
         }
         const auto tB = std::chrono::steady_clock::now();
+        FlushGroupJobs();  // AE draws this surface into the target: the kept copies first
         const uintptr_t r = g_origA3dDraw(self, ctx, a3, a4, a5, a6, a7);
         if (s_time) RLog("a3d time: ae sub %d kind %d look %.3f draw %.3f", sb, *(int*)a7, lookMs, since(tB));
         return r;
     }
+    FlushGroupJobs();  // (the diagnostic modes below: nothing kept across them)
     const int index = *(int*)(self + a3d::kSurfLayerIndex);
     void* refcon = nullptr;
     void* trace = nullptr;

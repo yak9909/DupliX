@@ -253,6 +253,21 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
         else if (compLayer[r] != cs[i].layer) compOk[r] = 0;
     }
     size_t at = 0;
+    // (diagnostics, RANDAMU_PLAN_MEETS=1: every overlapping pair of copies in ok components tested for meeting in 3D,
+    // counted in fb[13]; tests that groups with crossing copies are drawn as AE draws them)
+    {
+        const char* ev = std::getenv("RANDAMU_PLAN_MEETS");
+        if (ev && ev[0] == '1')
+            for (size_t a = 0; a < byX.size(); a++) {
+                const C& A = cs[byX[a]];
+                if (!A.q.valid || !compOk[root(byX[a])]) continue;
+                for (size_t b = a + 1; b < byX.size() && boxes[b].x0 <= boxes[a].x1 + g; b++) {
+                    const C& B = cs[byX[b]];
+                    if (boxes[b].y0 > boxes[a].y1 + g || boxes[a].y0 > boxes[b].y1 + g || !QuadsOverlap(A.q, B.q, marginPx)) continue;
+                    if (A.q.zMax >= B.q.zMin && B.q.zMax >= A.q.zMin && QuadsIntersect3D(A.corners, B.corners)) plan.fb[13]++;
+                }
+            }
+    }
     for (int li = 0; li < (int)in.layers.size(); li++) {
         const MergeLayerInput& l = in.layers[li];
         const int n = std::max(l.p.count, 0);

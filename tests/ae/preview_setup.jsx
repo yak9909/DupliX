@@ -111,6 +111,46 @@
             })(bigCounts[bc]);
             write("big.txt", bigInfo.join("\n") + "\n");
         }
+        // RANDAMU_PV_CROSS=1: copies that cross each other in 3D (small position ranges, rotation ranges 180): AE draws
+        // them as clusters (its M buffer). pv_cross<n> merge on, pv_crossoff<n> merge off, for each count of
+        // RANDAMU_PV_COUNTS (else 200). Properties 4..6: position ranges, 7..9: rotation ranges
+        if ($.getenv("RANDAMU_PV_CROSS") === "1") {
+            var crossCounts = [];
+            for (var ci2 = 0; ci2 < more.length; ci2++) if (parseInt(more[ci2], 10) > 0) crossCounts.push(parseInt(more[ci2], 10));
+            if (!crossCounts.length) crossCounts.push(200);
+            for (var cc = 0; cc < crossCounts.length; cc++) (function (n) {
+                function cross(c, T, f, merge) {
+                    f.property(2).setValue(n);
+                    for (var q = 4; q <= 6; q++) f.property(q).setValue(q === 6 ? 40 : 120);
+                    for (var r = 7; r <= 9; r++) f.property(r).setValue(180);
+                    f.property(MERGE).setValue(merge);
+                }
+                variant("pv_cross" + n, function (c, T, f) { cross(c, T, f, 1); });
+                variant("pv_crossoff" + n, function (c, T, f) { cross(c, T, f, 0); });
+            })(crossCounts[cc]);
+        }
+        // RANDAMU_PV_NEST=1: the copied layer is a precomp with classic 3D layers inside (rotated solids): its texture is
+        // drawn by AE's 3D renderer while the outer frame is being drawn (a frame inside a frame). pv_nest<n> for each
+        // count of RANDAMU_PV_COUNTS (else 380), merge as RANDAMU_PV_BIG_MERGE (0: off)
+        if ($.getenv("RANDAMU_PV_NEST") === "1") {
+            var nest = P.items.addComp("nest_src", 300, 200, 1, src.duration, 1 / src.frameDuration);
+            var s1 = nest.layers.addSolid([0.9, 0.3, 0.2], "nest_a", 220, 140, 1);
+            s1.threeDLayer = true;
+            tg(s1).property("ADBE Rotate Y").setValue(35);
+            var s2 = nest.layers.addSolid([0.2, 0.5, 0.9], "nest_b", 180, 120, 1);
+            s2.threeDLayer = true;
+            tg(s2).property("ADBE Rotate X").expression = "time * 60";
+            tg(s2).property("ADBE Position").setValue([170, 110, -20]);
+            var nestCounts = [];
+            for (var ni = 0; ni < more.length; ni++) if (parseInt(more[ni], 10) > 0) nestCounts.push(parseInt(more[ni], 10));
+            if (!nestCounts.length) nestCounts.push(380);
+            for (var nc = 0; nc < nestCounts.length; nc++) (function (n) {
+                variant("pv_nest" + n, function (c, T, f) {
+                    T.replaceSource(nest, false);
+                    f.property(2).setValue(n); f.property(MERGE).setValue($.getenv("RANDAMU_PV_BIG_MERGE") === "0" ? 0 : 1);
+                });
+            })(nestCounts[nc]);
+        }
         // the layer's pixels change every frame (a Fill before DupliX whose color follows the time): a texture kept
         // from another frame would show
         function animFill(T) {

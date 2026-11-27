@@ -115,8 +115,9 @@ struct MergePlan {
     // others: with an unsure pair (margin band, sliver, crossing, level), between surfaces (something in front and
     // something behind), alone in their group (a group of one is drawn one by one); then the unsure pairs of two
     // copies and of a copy and another surface, each by its reason: a sliver, no depth there, level or crossing;
-    // [12] 1 when the budget ran out (the plan is BuildIsolatedGroupPlan's)
-    int fb[13] = {};
+    // [12] 1 when the budget ran out (the plan is BuildIsolatedGroupPlan's); [13] (diagnostics, RANDAMU_PLAN_MEETS=1)
+    // BuildIsolatedGroupPlan's overlapping pairs of grouped copies that meet in 3D
+    int fb[14] = {};
     CameraView cam;
     std::map<long long, MergeLayerPlan> layers;  // MergeLayerKey(comp, layer)
     // diagnostics (RANDAMU_MERGE_DUMP): every copy's screen quad, its world corners and its group (-1: one by one)
