@@ -89,6 +89,8 @@
         big: {n: 6, size: 120, pos: [160, 120, 600], scale: [100, 300]},
         solid_scale: {n: 10, solid: true, pos: [240, 160, 400], scale: [40, 260]},
         solid_rotz: {n: 10, solid: true, pos: [240, 160, 300], rotz: 180, scale: [60, 180]},
+        solid_fill: {n: 10, solid: true, fill: true, pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
+        text_fill: {n: 8, fill: true, text: "WAVE", pos: [240, 160, 300], rotz: 90, scale: [60, 180]},
         shape_pos: {n: 10, shape: true, pos: [240, 160, 400]},
         shape_scale: {n: 10, shape: true, pos: [240, 160, 400], scale: [40, 260]}
     };
@@ -126,6 +128,11 @@
                 tg(L).property("ADBE Scale").setValue([sx * 100, sy * 100, sz * 100]);
                 tg(L).property("ADBE Rotate Z").setValue(Math.atan2(m[1], m[0]) * 180 / Math.PI);
                 tg(L).property("ADBE Position").setValue([POS[0] + m[12], POS[1] + m[13], POS[2] + m[14]]);
+                if (c.fill) {  // the copy's color (DUPLIX_DBG_TINT on the DupliX side): AE's Fill on the real layer
+                    var PAL = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]];
+                    var fe = L.property("ADBE Effect Parade").addProperty("ADBE Fill");
+                    fe.property("ADBE Fill-0002").setValue(PAL[i % 6]);
+                }
                 log("twin " + i + " pos " + (POS[0] + m[12]).toFixed(3) + "," + (POS[1] + m[13]).toFixed(3) + "," +
                     (POS[2] + m[14]).toFixed(3) + " scale " + (sx * 100).toFixed(3) + " rz " +
                     (Math.atan2(m[1], m[0]) * 180 / Math.PI).toFixed(3) + " m2 " + m[2] + " m6 " + m[6]);

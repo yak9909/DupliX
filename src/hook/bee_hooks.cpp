@@ -1054,6 +1054,47 @@ void DbgTexArgs(const char* which, void* trace, unsigned u, const double* v2, co
          m3 ? m3[6] : 0.0, m3 ? m3[7] : 0.0, m3 ? m3[8] : 0.0);
 }
 
+// P0 (design v4 6: a color per copy in 3D Layers; DUPLIX_DBG_TINT=1, merge off): each copy's texture filled with a
+// color of its own, like AE's Fill effect on a real layer (color times the pixel's alpha: 8 bpc premultiplied).
+// DUPLIX_DBG_TINT=2: straight (the color as it is, alpha kept).
+void DbgTintCopy(void* trace, AEGP_WorldH w)
+{
+    static char mode[8] = {0};
+    static const bool on = GetEnvironmentVariableA("DUPLIX_DBG_TINT", mode, sizeof(mode)) > 0;
+    if (!on || !trace) return;
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
+    const int idx = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -1;
+    if (!layer || idx < 0 || !IsMine(layer)) return;
+    static const unsigned char pal[6][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {0, 255, 255}, {255, 0, 255}};
+    const unsigned char* c = pal[idx % 6];
+    AEGP_WorldSuite3* ws = WorldSuite();
+    AEGP_WorldType type = AEGP_WorldType_NONE;
+    A_long ww = 0, hh = 0;
+    A_u_long rb = 0;
+    PF_Pixel8* p = nullptr;
+    if (!ws || ws->AEGP_GetType(w, &type) || type != AEGP_WorldType_8 || ws->AEGP_GetSize(w, &ww, &hh) ||
+        ws->AEGP_GetRowBytes(w, &rb) || ws->AEGP_GetBaseAddr8(w, &p) || !p)
+        return;
+    const bool straight = mode[0] == '2';
+    for (A_long y = 0; y < hh; y++) {
+        PF_Pixel8* row = (PF_Pixel8*)((char*)p + (size_t)y * rb);
+        for (A_long x = 0; x < ww; x++) {
+            const unsigned a = row[x].alpha;
+            if (straight) {
+                row[x].red = c[0], row[x].green = c[1], row[x].blue = c[2];
+            } else {
+                row[x].red = (A_u_char)((c[0] * a + 127) / 255);
+                row[x].green = (A_u_char)((c[1] * a + 127) / 255);
+                row[x].blue = (A_u_char)((c[2] * a + 127) / 255);
+            }
+        }
+    }
+    static LogLimit lg;
+    if (lg.Take(3)) RLog("dbg: copy %d tinted (%d,%d,%d) %s %dx%d", idx, c[0], c[1], c[2], straight ? "straight" : "premultiplied",
+                         (int)ww, (int)hh);
+}
+
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
     static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
@@ -1063,6 +1104,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         const int r = DrawWholeText(wt, trace, [&] { return g_origTex(ctx, trace, u, v2, rect, world, m3); });
         g_texGen++;
         DbgTexArgs("tex out (whole text)", trace, u, v2, rect, m3);
+        if (!r && world && *world) DbgTintCopy(trace, (AEGP_WorldH)*world);
         return r;
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -1091,6 +1133,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
     }
     int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
     DbgTexArgs("tex out", trace, u, v2, rect, m3);
+    if (!r && world && *world) DbgTintCopy(trace, (AEGP_WorldH)*world);
     if (shareLayer && !r && *world && t_shared.size() < 16) {
         SharedTex s = {};
         s.rc = ctx, s.layer = shareLayer, s.u = u, s.hasV2 = v2 != nullptr, s.hasRect = rect != nullptr;
