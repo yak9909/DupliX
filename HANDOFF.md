@@ -1,5 +1,35 @@
 # 引き継ぎメモ（最新: 2026-11-27 22 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
 
+## 再開の手順（2026-11-27 22 時半、次は 3D Layers のテキストの解析。利用者がセッションをクリア）
+
+- **利用者の指示（22 時半）:** 次の作業は「1. 3D Layers のテキストを続けて解析する」。設計書 v4 の P0 はその後。
+- **今の状態:** 最後の commit まで push 済み。`dev_plugins\DupliX.aex` は最新のソース（テキストのフックは既定でオフ）。
+- **分かっていること（開発記録 14 節）:**
+  - テキストは `BEE_TextLayer` の vtable。AV と違う関数: IsLayerType(79)・SubLayerRenderCount(219、文字の数＝TextGrid の数)・
+    SharedXformTimeCacheFactory(218)・GetSubLayerRenderBounds(220)・GetSubLayerXform2D(221〜223)・GetSubLayerOpacity(226)・
+    GetSubLayerBlur(227)・GetBoundsFromCache(229)・HasSubLayerXform(234)・Rasterize2DGraph(235)・NewXformCache2D(237)・
+    GetSubLayerLocalMatrix3D(168) ほか（番号は AE 25.6）。
+  - `DUPLIX_TEXT_HOOKS=1` で、DupliX を掛けた（文字単位 3D でない）テキストに限り上の関数を AV の関数へ回す（`InstallTextRedirect`、
+    `bee_abi.h` の `kTextRedirect`）。すると Count・Rects のフックが呼ばれ、配置まで DupliX の答えになる（ログ `hook: rects ... n=1`）が、
+    その直後に何も起きずフレームが描かれない（`saveFrameToPng` が 10 秒で諦め、png ができない。AE は落ちない）。
+  - 文字単位 3D の見分けはスイッチのビット 0x80000（`kSwitchPerChar3D`。普通 0x10487、文字単位 3D 0x90487）。
+- **次の 1 手（解析の入口）:**
+  1. `DUPLIX_TEXT_HOOKS=1` で `vector_probe` の text だけを回し（下のコマンド）、Rects の後に呼ばれる関数を突き止める。
+     手がかり: シェイプ・平面では Rects の後に `HookArtOpacity`（IAT）とテクスチャ（`HookTex`／`BEE_RenderTextureForArtisan`）が呼ばれる。
+     テキストでそれらが呼ばれているか、`DUPLIX_CMDLOG=1` や一時的なログで確かめる。
+  2. IDA（idalib の MCP、データベース `spike/ida/BEE.dll.i64`、イメージベース 0x180000000）で `BEE_RenderTextureForArtisan` から
+     テキストの文字の描画（`TXT_` の関数、`BEE_TextLayer::GetTextGrid`、`sub_1805AB430`＝キャッシュから文字の並び）への経路を読み、
+     テキスト用キャッシュ（`SharedXformTimeCacheFactory` の text 版が作るもの）を前提にする箇所を探す。
+     テキストの Rasterize2DGraph（0x1805AE150）は、形の行列の行列式が小さいとき `sub_1805B0250` で文字ごとのノードを作る。
+  3. 直せないときの代案: テキストの 3D Layers はコピーを AE に描かせず、Fast (2D) を案内する（今の挙動のまま、文書は記載済み）。
+- **試験のコマンド:** `$env:DUPLIX_TEXT_HOOKS='1'; $env:DUPLIX_VP_ONLY='text,text_perchar,shape'; pwsh tests/ae/run_jsx.ps1 -Jsx tests/ae/vector_probe.jsx -Name vector_text -TimeoutSec 400 -Expect "^done"`
+  → `spike/.venv/Scripts/python.exe -I tests/ae/check_vector.py build/test/vector_text`（nm1_text が MISSING なら描かれていない）。
+  直したら、全部の場合・`check_canvas.py`・`run_fast_mode.ps1`・smoke・`run_merge.ps1 -Mfrs OFF,ON`・`run_user_merge.ps1`（Test〜D）で確かめる。
+  AE を動かす試験は 1 つずつ。長いもの（merge・user_merge）は 10 分を超えるので裏で回す。
+- **気を付けること:** テキストのフックを既定でオンにするのは、描けることと、DupliX を掛けていないテキスト・文字単位 3D のテキストが
+  変わらないこと（`text_perchar` の nm＝plain）を確かめてから。利用者の管理者 PowerShell では `cmd` が devkitPro のものを指すので、
+  案内するコマンドは PowerShell の命令で書く。
+
 ## 再開の手順（2026-11-27 22 時台、シェイプ対応・Fast の原点・Canvas が済み。テキストの 3D Layers は未解決。利用者への報告待ち）
 
 - **済み（この節の commit、詳細は開発記録 14 節）:** Fast (2D) でシェイプ・テキストの位置と範囲を直した。3D Layers でシェイプを複製できる
