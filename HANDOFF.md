@@ -11,9 +11,16 @@
   実験エフェクト `spike/P0Graph`（`pwsh tools/build.ps1 -Target p0` → `dev_plugins\DupliXP0.aex`、マッチ名 DupliXP0）、
   試験 `pwsh tests/ae/run_p0_graph.ps1 [-Path idle|direct] [-Payload <bytes>]`（AE を開いたまま、jsx を 2 回送る。`-r` の AE はスクリプトの終わりに閉じるので
   `scheduleTask` は使えない）。idle は PASS（100 KB でも 7 ms）、direct は `AEGP_SetStreamValue` から戻らない。
-- **次の 1 手（P0 の残り、設計書 v4 の 8 節）:** AE 側の取り消しとの同期（版の番号を Idle Hook で比べる）→ マクロの名前とスライダーの範囲の付け替え
-  （`PF_UpdateParamUI`。Effect Controls・タイムライン・ピックウィップ）→ グラフの評価の速さ（要素 1 万・ノード 20）→ Layer Alpha の読み取りとキャッシュ →
-  3D Layers のコピーごとの色・他のレイヤーの Source・フレームごとの数の変化 → Canvas Auto の上限 → .ffx にグラフデータが入るか。
+- **P0 の 2・3 つ目（済み、`adc8347`）:** AE 側の取り消しとの同期（Idle Hook で版の番号を比べる）は動く。マクロの名前は付け替えない
+  （付け替えた名前で書いたエクスプレッションが開き直しで壊れる）。エディターは `SEQUENCE_SETDOWN` で閉じる（閉じたプロジェクトの参照で AE が落ちた）。
+- **次の 1 手（P0 の残り、助言役と決めた順）:** (1) フレームごとの数の変化（Copies にキー、3D Layers、Optimize と MFR のオン・オフ、各フレームを
+  単独で描いたものと比べる）→ (2) コピーごとの色（`HookTex` で絵を染める。正解は本物の複製に Fill / Tint を掛けたもの、双子の試験で）→
+  (3) 別のレイヤーを写すコピー（`DrawWholeText` と同じ要求の差し替えで、隠した平面 B を写す。範囲・時間・目のスイッチ）→
+  (4) グラフデータを書いた後に Overview を描き直させる方法（`UPDATE_PARAMS_UI` がすぐ来ない）→ (5) 評価の速さのベンチ（要素 1 万）→
+  (6) Layer Alpha のキャッシュの作り直し → Canvas Auto の上限は既存の Fit Copies（3,200 万画素）を引用。
+  **.ffx とスライダーの範囲の付け替えは画面でしか確かめられない**ので、最後の報告で利用者に目視を頼む。
+- **Test・B・C の止まり:** 今日の変更による後退ではないが、GPU の取り合いのときの止まり（`DUPLIX_GPU_FAIL=1` でも `gpu ae span` を通っており、
+  GPU なしの実行はできていない）で、環境だけの問題とも言い切れない。GPU が空いたら回し直す。
 - **気を付けること:** 実験エフェクトは `dev_plugins` に入るので利用者の AE にも「DupliX P0 (Spike)」として出る。
 
 ## 再開の手順（2026-11-28 1 時台、3D Layers のテキストを複製できるようにした。試験の残りを実行中）
