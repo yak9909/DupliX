@@ -13,6 +13,8 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <set>
 
 #include "core/ae_pair.h"
 #include "core/ae_span.h"
@@ -76,8 +78,12 @@ inline const LayerClass& ClassOf(uintptr_t a) { return g_cls[ClassIdOf(a)]; }
 // A text layer whose characters AE draws as separate 3D planes (per-character 3D): AE's own sub-layers, left alone.
 // Its switches have bit 0x80000 (vector_probe 11/27: plain text 0x10487, per-character 3D 0x90487).
 int g_slotSwitches = -1;  // vtable slot of the switch getter (from SubLayersRenderSeparately's code)
+// A text layer with DupliX whose copy's texture is being drawn (HookTex): for the drawing it is an ordinary text
+// layer (the text's own functions, as if per-character 3D were on, i.e. "not ours" in every hook).
+thread_local const void* t_nativeText = nullptr;
 inline bool TextPerChar(uintptr_t a)
 {
+    if (t_nativeText && (const void*)a == t_nativeText) return true;
     if (ClassIdOf(a) != LC_TEXT || g_slotSwitches < 0) return false;
     void** vt = *(void***)a;
     return (((unsigned long long (*)(const void*))vt[g_slotSwitches])((const void*)a) & bee::kSwitchPerChar3D) != 0;
@@ -658,6 +664,28 @@ uintptr_t HookRects(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_
         std::memcpy(v4->last, m, bee::kM4Bytes);
         v4->last += bee::kM4Bytes;
     }
+    {  // tests (DUPLIX_DBG_COPIES=<file>): every copy's M4 (16 numbers, row vectors), appended once per comp and layer
+        static char path[MAX_PATH] = {0};
+        static const bool on = GetEnvironmentVariableA("DUPLIX_DBG_COPIES", path, sizeof(path)) > 0;
+        static std::mutex mu;
+        static std::set<std::pair<int, int>> done;
+        LayerKey k;
+        if (on && KeyOf((const void*)a, &k)) {
+            std::lock_guard<std::mutex> lk(mu);
+            if (done.insert({k.compItemId, k.layerId}).second) {
+                FILE* fp = nullptr;
+                if (!fopen_s(&fp, path, "a") && fp) {
+                    const double* p = (const double*)(v4->last - n * bee::kM4Bytes);
+                    for (size_t i = 0; i < n; i++, p += 16) {
+                        fprintf(fp, "%d %d %zu", k.compItemId, k.layerId, i);
+                        for (int q = 0; q < 16; q++) fprintf(fp, " %.17g", p[q]);
+                        fprintf(fp, "\n");
+                    }
+                    fclose(fp);
+                }
+            }
+        }
+    }
     static std::atomic<int> logged{0};
     if (++logged <= 3) {
         LayerKey k;
@@ -1000,10 +1028,43 @@ bool SameRequest(const SharedTex& s, const void* rc, const void* layer, unsigned
     return true;
 }
 
+}  // namespace
+// A copy of a text layer with DupliX: its texture is the whole text drawn by the text's own machinery (below).
+const void* WholeTextLayer(void* trace);
+int DrawWholeText(const void* layer, void* trace, const std::function<int()>& fn);
+namespace {
+
+// dbg (11/28, text 3D Layers; DUPLIX_DBG_TEX=1): every texture request with its layer, sub-layer index and arguments
+// (no count limit: which layers come here at all, and with what)
+void DbgTexArgs(const char* which, void* trace, unsigned u, const double* v2, const double* rect, const double* m3)
+{
+    static const bool on = GetEnvironmentVariableA("DUPLIX_DBG_TEX", nullptr, 0) > 0;
+    if (!on || !trace) return;
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    const void* layer = v ? *(void**)(v + bee::kArtLayerToLayer) : nullptr;
+    const int idx = v ? *(int*)(v + bee::kArtLayerToSubIndex) : -9;
+    const void* cache = v ? *(void**)(v - 32) : nullptr;
+    LayerKey k = {};
+    if (layer) KeyOf(layer, &k);
+    RLog("dbg: %s layer %d/%d mine %d idx %d cache %p u %u v2 (%.17g,%.17g) rect (%g,%g,%g,%g) m3 [%.17g %.17g %.17g | "
+         "%.17g %.17g %.17g | %.17g %.17g %.17g]",
+         which, k.compItemId, k.layerId, (int)(layer && IsMine(layer)), idx, cache, u, v2 ? v2[0] : -1.0,
+         v2 ? v2[1] : -1.0, rect ? rect[0] : 0.0, rect ? rect[1] : 0.0, rect ? rect[2] : 0.0, rect ? rect[3] : 0.0,
+         m3 ? m3[0] : 0.0, m3 ? m3[1] : 0.0, m3 ? m3[2] : 0.0, m3 ? m3[3] : 0.0, m3 ? m3[4] : 0.0, m3 ? m3[5] : 0.0,
+         m3 ? m3[6] : 0.0, m3 ? m3[7] : 0.0, m3 ? m3[8] : 0.0);
+}
+
 int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void** world, double* m3)
 {
     static const bool s_gtr = GetEnvironmentVariableA("DUPLIX_GROUP_TRACE", nullptr, 0) > 0;
     if (s_gtr && t_inGroupIter) RLog("group trace: texture request (shared %zu)", t_shared.size());
+    DbgTexArgs("tex", trace, u, v2, rect, m3);
+    if (const void* wt = WholeTextLayer(trace)) {
+        const int r = DrawWholeText(wt, trace, [&] { return g_origTex(ctx, trace, u, v2, rect, world, m3); });
+        g_texGen++;
+        DbgTexArgs("tex out (whole text)", trace, u, v2, rect, m3);
+        return r;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     const void* shareLayer = nullptr;
     if (t_inA3dDraw && t_shareOn && trace && world && m3) {
@@ -1029,6 +1090,7 @@ int HookTex(void* ctx, void* trace, unsigned u, double* v2, double* rect, void**
         }
     }
     int r = g_origTex(ctx, trace, u, v2, rect, world, m3);
+    DbgTexArgs("tex out", trace, u, v2, rect, m3);
     if (shareLayer && !r && *world && t_shared.size() < 16) {
         SharedTex s = {};
         s.rc = ctx, s.layer = shareLayer, s.u = u, s.hasV2 = v2 != nullptr, s.hasRect = rect != nullptr;
@@ -1051,6 +1113,12 @@ int HookTexRc(void* ctx, void* trace, unsigned u, short sh, double* v2, double* 
               double* m3)
 {
     const auto t0 = std::chrono::steady_clock::now();
+    DbgTexArgs("texrc", trace, u, v2, rect, m3);
+    if (const void* wt = WholeTextLayer(trace)) {
+        const int r = DrawWholeText(wt, trace, [&] { return g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3); });
+        g_texGen++;
+        return r;
+    }
     int r = g_origTexRc(ctx, trace, u, sh, v2, rect, opts, mrect, world, m3);
     g_texGen++;
     LogTexTime(trace, "texrc", t0);
@@ -4125,6 +4193,8 @@ typedef double (*OpacityFn)(uintptr_t, int, uintptr_t);
 OpacityFn g_textOpAv = nullptr, g_textOpText = nullptr;
 
 inline bool TextAsAv(uintptr_t a) { return IsMine((const void*)a) && !TextPerChar(a); }
+void ReleaseSharedCtrl(void* ctrl);
+constexpr int kTextSourceRectK = 10;  // kTextRedirect's GetSourceFloatRect (checked in InstallTextRedirect)
 
 template <int K>
 uintptr_t HookTextRedirect(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e, uintptr_t f, uintptr_t g,
@@ -4134,6 +4204,14 @@ uintptr_t HookTextRedirect(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, u
     const bool asAv = TextAsAv(a);
     static LogLimit lg;  // dbg (11/27): which of the text layer's sub-layer virtuals are asked
     if (lg.Take(10)) RLog("dbg: text redirect %d asAv %d mine %d", K, (int)asAv, (int)IsMine((const void*)a));
+    if (K == kTextSourceRectK && asAv) {
+        // GetSourceFloatRect(this, ret, time, bool, index, shared_ptr cache (by value: the callee releases it), bag):
+        // a copy's source is the whole text, as a plain text layer answers (index -1, no cache: the text's bounds)
+        void* empty[2] = {nullptr, nullptr};
+        const uintptr_t ret = r.text(a, b, c, d, (uintptr_t)(unsigned)-1, (uintptr_t)empty, g, h);
+        ReleaseSharedCtrl(((void**)f)[1]);
+        return ret;
+    }
     return (asAv ? r.av : r.text)(a, b, c, d, e, f, g, h);
 }
 double HookTextOpacity(uintptr_t a, int i, uintptr_t cache)
@@ -4146,6 +4224,70 @@ double HookTextDepth(uintptr_t a, int i, uintptr_t cache, uintptr_t t, bool b)
 {
     return (TextAsAv(a) ? g_textDepthAv : g_textDepthText)(a, i, cache, t, b);
 }
+// The copy's texture request on a text layer with DupliX (index k >= 0, the AV cache): the trace's last element
+// (BEE_SubLayerRenderNode reads layer -48, index -40, cache -32/-24) is given index -1 and a cache of the text's own
+// (its SharedXformTimeCacheFactory) for the call, and every hook answers as for an ordinary text layer
+// (t_nativeText). The node then draws all the characters into one texture, as for a real text layer (11/28).
+const void* WholeTextLayer(void* trace)
+{
+    if (!trace || !g_textRedir[0].text) return nullptr;
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    if (!v) return nullptr;
+    const void* layer = *(void**)(v + bee::kArtLayerToLayer);
+    if (!layer || *(int*)(v + bee::kArtLayerToSubIndex) < 0 || ClassIdOf((uintptr_t)layer) != LC_TEXT) return nullptr;
+    return TextAsAv((uintptr_t)layer) ? layer : nullptr;
+}
+
+void ReleaseSharedCtrl(void* ctrl)
+{
+    if (!ctrl) return;
+    auto* c = (volatile long*)ctrl;
+    void** vt = *(void***)ctrl;
+    if (_InterlockedExchangeAdd(c + 2, -1) == 1) {
+        ((void (*)(void*))vt[0])(ctrl);
+        if (_InterlockedExchangeAdd(c + 3, -1) == 1) ((void (*)(void*))vt[1])(ctrl);
+    }
+}
+
+int DrawWholeText(const void* layer, void* trace, const std::function<int()>& fn)
+{
+    char* v = *(char**)((char*)trace + bee::kTraceArtLayer);
+    void* sp[2] = {nullptr, nullptr};
+    g_textRedir[0].text((uintptr_t)layer, (uintptr_t)sp, 0, 0, 0, 0, 0, 0);  // the text's own cache
+    if (!sp[0]) {
+        static LogLimit lg;
+        if (lg.Take(5)) RLog("text: no text cache for a copy's texture");
+        ReleaseSharedCtrl(sp[1]);
+        return fn();
+    }
+    struct Swap {
+        int* idx;
+        void** cache;
+        int oi;
+        void *oc, *octl;
+        const void* prevNative;
+        ~Swap()
+        {
+            *idx = oi, cache[0] = oc, cache[1] = octl;
+            t_nativeText = prevNative;
+        }
+    } s{(int*)(v + bee::kArtLayerToSubIndex), (void**)(v - 32), 0, nullptr, nullptr, t_nativeText};
+    s.oi = *s.idx, s.oc = s.cache[0], s.octl = s.cache[1];
+    *s.idx = -1, s.cache[0] = sp[0], s.cache[1] = sp[1];
+    t_nativeText = layer;
+    int r;
+    {
+        struct Rel {
+            void* c;
+            ~Rel() { ReleaseSharedCtrl(c); }
+        } rel{sp[1]};
+        r = fn();
+    }
+    static LogLimit lg;
+    if (lg.Take(5)) RLog("text: a copy's texture as the whole text -> %d", r);
+    return r;
+}
+
 template <int... K>
 void* TextRedirectHookAt(int k, std::integer_sequence<int, K...>)
 {
@@ -4180,6 +4322,11 @@ bool InstallTextRedirect(HMODULE bee, void** avVt, void** textVt)
         slots.push_back({slot, av, tx, hook});
         return true;
     };
+    if (bee::kTextRedirectCount <= kTextSourceRectK || !strstr(bee::kTextRedirect[kTextSourceRectK], "GetSourceFloatRect") ||
+        !strstr(bee::kTextRedirect[0], "SharedXformTimeCacheFactory")) {
+        RLog("hooks: text redirect table out of order");
+        return false;
+    }
     for (int k = 0; k < bee::kTextRedirectCount; k++)
         if (!find(bee::kTextRedirect[k], TextRedirectHookAt(k, std::make_integer_sequence<int, bee::kTextRedirectCount>{})))
             return false;
@@ -4212,9 +4359,8 @@ bool InstallTextRedirect(HMODULE bee, void** avVt, void** textVt)
 // The same hooks in the shape and text layers' vtables (the slots of BEE_AVLayer's, checked first: the shared
 // virtuals must be AV's very functions, the overridden ones anything but a hook). A class that does not check out
 // is left alone (its layers are not copied in 3D Layers). DUPLIX_VECTOR_HOOKS=0 turns the shape layers' off
-// (diagnostics). Text layers: off unless DUPLIX_TEXT_HOOKS=1 (11/27: with the sub-layer virtuals redirected the copies
-// are counted and placed, but the frame is not drawn: a character's texture is made by text code that expects the
-// text layer's own cache; not solved yet).
+// (diagnostics). Text layers (DUPLIX_TEXT_HOOKS=0 turns them off): the sub-layer virtuals redirected to the AV ones
+// place the copies, and each copy's texture is the whole text drawn by the text's own machinery (DrawWholeText, 11/28).
 void InstallClassHooks(HMODULE bee, int sIs, int sSep, int sCnt, int sRc, unsigned mask)
 {
     struct Want {
@@ -4224,7 +4370,7 @@ void InstallClassHooks(HMODULE bee, int sIs, int sSep, int sCnt, int sRc, unsign
         bool ownCount;  // the class overrides SubLayerRenderCount
         bool defaultOn;
     } wants[] = {{LC_VECTOR, bee::kVectorLayerVtable, "DUPLIX_VECTOR_HOOKS", false, true},
-                 {LC_TEXT, bee::kTextLayerVtable, "DUPLIX_TEXT_HOOKS", true, false}};
+                 {LC_TEXT, bee::kTextLayerVtable, "DUPLIX_TEXT_HOOKS", true, true}};
     const LayerClass& av = g_cls[LC_AV];
     for (const Want& w : wants) {
         char v[8] = {0};
