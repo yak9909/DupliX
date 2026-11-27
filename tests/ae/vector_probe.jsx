@@ -1,12 +1,13 @@
-// Vector layers (shape, text) with DupliX: how they are drawn today, in both render modes.
-// A 400x300 comp with a camera; the target is a white 60x60 shape (or a text "Ab"), 10 copies scattered 120 px.
-//   nm_<kind>        3D Layers (the target is a 3D layer)
-//   fm_<kind>        Fast (2D) (the target is a 2D layer in its initial state)
-//   plain_<kind>     the target alone, no effect (reference for one copy)
-//   fm_shape_edge    Fast (2D): the shape sits 230 px right of the layer origin (outside the comp, x = 430);
-//                    World Position X -230 brings the copies back: a clipped buffer shows half squares or none
-//   fm_shape_big     Fast (2D): a 700x500 shape (larger than the comp), World Scale 40%
-// Saves <comp>.png at 0 s. Writes jsx.log ("done") to $DUPLIX_TEST_DIR.
+// Vector layers (shape, text) with DupliX, in both render modes. Each case builds a comp with a camera and a
+// white target (a 60x60 shape or the text "Ab"), and saves <comp>.png at 0 s:
+//   plain_<case>   the target alone, no effect (the reference for one copy)
+//   fm1_<case>     Fast (2D), one copy, no ranges: must match plain_<case> (tests/ae/check_vector.py)
+//   nm1_<case>     3D Layers, one copy, no ranges: must match plain_<case>
+//   fm_<case> / nm_<case>   10 copies scattered 120 px (for the eye; fm and nm should place them alike)
+// Cases: shape, text (400x300); shape_odd (401x301); shape_anchor (anchor moved by (17, -11)); shape_half (the
+// comp at half resolution); shape_edge (the shape 230 px right of the layer origin, outside the comp; World
+// Position X -230 brings the copy back); shape_pre (in a 300x200 precomp, rendered on its own).
+// Env: DUPLIX_VP_ONLY (comma list of cases, optional). Writes jsx.log ("done") to $DUPLIX_TEST_DIR.
 (function () {
     var outDir = $.getenv("DUPLIX_TEST_DIR");
     var logFile = new File(outDir + "/jsx.log");
@@ -14,7 +15,7 @@
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
     function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }
-    var W = 400, H = 300, FAST = dx(37), WPOS = 17, WSCALE = 23;
+    var FAST = dx(37), WPOS = 17;
     function png(comp, name) {
         var f = new File(outDir + "/" + name + ".png");
         comp.saveFrameToPng(0, f);
@@ -44,44 +45,69 @@
         sp.setValue(td);
         return t;
     }
-    function build(name, kind, fast, fx, opt) {
-        opt = opt || {};
+    // mode: "plain" | "fm" | "nm"
+    function build(name, c, mode, many) {
+        var W = c.W || 400, H = c.H || 300;
         var comp = app.project.items.addComp(name, W, H, 1, 1, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
         comp.layers.addCamera("Cam", [W / 2, H / 2]);
-        var T = kind === "text" ? addText(comp) : addShape(comp, opt.size || [60, 60], opt.offset || [0, 0]);
+        var T = c.kind === "text" ? addText(comp) : addShape(comp, c.size || [60, 60], c.offset || [0, 0]);
+        // plain and nm: a 3D layer; fm: a 2D layer (Fast draws the copies on a virtual 3D layer in the initial state)
+        var fast = mode === "fm";
         T.threeDLayer = !fast;
+        if (c.anchor) tg(T).property("ADBE Anchor Point").setValue(fast ? c.anchor : [c.anchor[0], c.anchor[1], 0]);
         tg(T).property("ADBE Position").setValue(fast ? [W / 2, H / 2] : [W / 2, H / 2, 0]);
-        log(name + ": layer " + T.name + " matchName " + T.matchName + " 3D " + T.threeDLayer +
-            " sourceRect " + T.sourceRectAtTime(0, false).toSource());
-        if (fx) {
+        if (mode !== "plain") {
             var e = T.property("ADBE Effect Parade").addProperty("DupliX");
             e.property(FAST).setValue(fast ? 2 : 1);
-            e.property(dx(2)).setValue(opt.count || 10);
+            e.property(dx(2)).setValue(many ? 10 : 1);
             e.property(dx(3)).setValue(3);
-            for (var k = 0; k < 3; k++) e.property(dx(4 + k)).setValue(opt.range === undefined ? 120 : opt.range);
-            if (opt.wpos) for (var j = 0; j < 3; j++) e.property(dx(WPOS + j)).setValue(opt.wpos[j]);
-            if (opt.wscale) for (var q = 0; q < 3; q++) e.property(dx(WSCALE + q)).setValue(opt.wscale);
+            for (var k = 0; k < 3; k++) e.property(dx(4 + k)).setValue(many ? 120 : 0);
+            if (c.wpos && fast) for (var j = 0; j < 3; j++) e.property(dx(WPOS + j)).setValue(c.wpos[j]);
         }
-        png(comp, name);
+        // the reference for shape_edge: the plain layer moved by the World Position instead
+        if (mode === "plain" && c.wpos) tg(T).property("ADBE Position").setValue([W / 2 + c.wpos[0], H / 2 + c.wpos[1], 0]);
+        if (c.half) comp.resolutionFactor = [2, 2];
+        var wp = "";
+        if (mode !== "plain") wp = " world pos " + String(e.property(dx(WPOS)).value) + "," + String(e.property(dx(WPOS + 1)).value);
+        var an = tg(T).property("ADBE Anchor Point").value, ps = tg(T).property("ADBE Position").value;
+        log(name + ": " + T.matchName + " 3D " + String(T.threeDLayer) + " anchor " + an.join(",") + " pos " +
+            ps.join(",") + wp);
         return comp;
     }
+    var cases = {
+        shape: {kind: "shape"},
+        text: {kind: "text"},
+        shape_odd: {kind: "shape", W: 401, H: 301},
+        shape_anchor: {kind: "shape", anchor: [17, -11]},
+        shape_half: {kind: "shape", half: true},
+        shape_edge: {kind: "shape", offset: [230, 0], wpos: [-230, 0, 0]},
+        shape_pre: {kind: "shape", pre: true}
+    };
     try {
         app.beginSuppressDialogs();
         app.newProject();
         app.project.bitsPerChannel = 8;
-        var kinds = ["shape", "text"];
-        for (var i = 0; i < kinds.length; i++) {
-            var k = kinds[i];
-            build("plain_" + k, k, false, false);
-            build("nm_" + k, k, false, true);
-            build("nm1_" + k, k, false, true, {count: 1, range: 0});
-            build("fm_" + k, k, true, true);
-            build("fm1_" + k, k, true, true, {count: 1, range: 0});
+        var only = ($.getenv("DUPLIX_VP_ONLY") || "").split(",");
+        for (var name in cases) {
+            if (only[0] && ("," + only.join(",") + ",").indexOf("," + name + ",") < 0) continue;
+            var c = cases[name];
+            if (c.pre) { c.W = 300; c.H = 200; }
+            png(build("plain_" + name, c, "plain"), "plain_" + name);
+            png(build("fm1_" + name, c, "fm"), "fm1_" + name);
+            png(build("nm1_" + name, c, "nm"), "nm1_" + name);
+            png(build("fm_" + name, c, "fm", true), "fm_" + name);
+            png(build("nm_" + name, c, "nm", true), "nm_" + name);
+            if (c.pre) {
+                // the precomp (fm1_shape_pre) inside a 400x300 main comp: the precomp is drawn as is
+                var main = app.project.items.addComp("main_shape_pre", 400, 300, 1, 1, 30);
+                for (var i = 1; i <= app.project.numItems; i++) {
+                    var it = app.project.item(i);
+                    if (it.name === "fm1_shape_pre") { main.layers.add(it); break; }
+                }
+                png(main, "main_shape_pre");
+            }
         }
-        build("plain_shape_edge", "shape", true, false, {offset: [230, 0]});
-        build("fm_shape_edge", "shape", true, true, {offset: [230, 0], count: 1, range: 0, wpos: [-230, 0, 0]});
-        build("fm_shape_big", "shape", true, true, {size: [700, 500], count: 1, range: 0, wscale: 40});
         log("done");
     } catch (e) {
         var msg = "?";

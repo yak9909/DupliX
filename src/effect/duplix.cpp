@@ -603,7 +603,8 @@ struct FastPre {
     double W[16];             // copy layer px -> world: G(world) * V (virtual 3D layer in its initial state)
     rnd::ScatterParams p;
     rnd::WorldXform world;
-    double anchorX, anchorY;  // layer px
+    double anchorX, anchorY;  // layer px (the effect's px: for shape / text layers, shifted by half the comp)
+    bool vectorOrigin = false;  // a shape / text layer (anchor shifted)
     double dsX, dsY;
     PF_LRect inRect;          // the input's result rect (downsampled layer px)
 };
@@ -667,6 +668,15 @@ bool FastSetup(PF_InData* in_data, FastPre* f, int* compW, int* compH)
         return false;
     A_Time lt = {in_data->current_time, (A_u_long)(in_data->time_scale ? in_data->time_scale : 1)};
     if (!rnd::ReadLayerAnchor(L, lt, &f->anchorX, &f->anchorY)) return false;
+    // Shape and text layers: the effect's px are the layer's coordinates - anchor + half the comp (a comp-sized
+    // frame centred on the anchor; vector_probe, 11/27: moving the anchor moves the input rect the other way).
+    // So the anchor is always at half the comp in the effect's px. Plain AV layers start at their corner.
+    AEGP_ObjectType ot = AEGP_ObjectType_NONE;
+    if (!ls->AEGP_GetLayerObjectType(L, &ot) && (ot == AEGP_ObjectType_VECTOR || ot == AEGP_ObjectType_TEXT)) {
+        f->anchorX = w / 2.0;
+        f->anchorY = h / 2.0;
+        f->vectorOrigin = true;
+    }
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++) f->cam.camToWorld[r * 4 + c] = cam.mat[r][c];
     f->cam.dist = dist;
@@ -742,11 +752,16 @@ PF_Err FastPreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra
     }
     static LogLimit logged;
     if (logged.Take(6))
-        RLog("fast: prerender ok=%d comp %dx%d in=(%d,%d,%d,%d) out=(%d,%d,%d,%d) t=%d/%d", (int)ok, cw, ch,
-             (int)in_result.result_rect.left, (int)in_result.result_rect.top, (int)in_result.result_rect.right,
-             (int)in_result.result_rect.bottom, (int)extra->output->result_rect.left,
-             (int)extra->output->result_rect.top, (int)extra->output->result_rect.right,
-             (int)extra->output->result_rect.bottom, (int)in_data->current_time, (int)in_data->time_scale);
+        RLog("fast: prerender ok=%d comp %dx%d in=(%d,%d,%d,%d) max=(%d,%d,%d,%d) anchor (%.2f,%.2f)%s ds %.3f "
+             "out=(%d,%d,%d,%d) t=%d/%d",
+             (int)ok, cw, ch, (int)in_result.result_rect.left, (int)in_result.result_rect.top,
+             (int)in_result.result_rect.right, (int)in_result.result_rect.bottom,
+             (int)in_result.max_result_rect.left, (int)in_result.max_result_rect.top,
+             (int)in_result.max_result_rect.right, (int)in_result.max_result_rect.bottom, ok ? f->anchorX : 0.0,
+             ok ? f->anchorY : 0.0, ok && f->vectorOrigin ? " vector" : "", ok ? f->dsX : 0.0,
+             (int)extra->output->result_rect.left, (int)extra->output->result_rect.top,
+             (int)extra->output->result_rect.right, (int)extra->output->result_rect.bottom,
+             (int)in_data->current_time, (int)in_data->time_scale);
     return PF_Err_NONE;
 }
 
