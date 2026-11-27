@@ -16,6 +16,7 @@
 #include "AE_Macros.h"
 #include "AE_EffectCBSuites.h"
 #include "AE_GeneralPlug.h"
+#include "AE_EffectSuites.h"
 #include "Param_Utils.h"
 #include "String_Utils.h"
 
@@ -29,15 +30,17 @@ namespace {
 
 enum { P_INPUT = 0, P_OPEN, P_GRAPH, P_MACRO1, P_NUM };
 enum { D_OPEN = 1, D_GRAPH, D_MACRO1 };
-constexpr A_u_long kMagic = 0x30475844;  // "DXG0"
+constexpr A_u_long kMagic = 0x31475844;  // "DXG1"
 void* const kArbRefcon = (void*)0x50304758;
 
 #pragma pack(push, 4)
 struct GraphHeader {
     A_u_long magic;
-    A_u_long revision;  // +1 on every write from the editor
-    float r, g, b;      // the color the effect fills with
-    A_u_long payload;   // bytes after the header (a stand-in for a graph of that size)
+    A_u_long revision;    // +1 on every write from the editor
+    float r, g, b;        // the color the effect fills with
+    char macroName[32];   // the name Macro 1 is shown with (PF_UpdateParamUI)
+    float macroMax;       // Macro 1's slider maximum
+    A_u_long payload;     // bytes after the header (a stand-in for a graph of that size)
 };
 #pragma pack(pop)
 
@@ -80,7 +83,8 @@ struct Suite {
 };
 
 // ---- the graph data (Arbitrary Data) ----
-PF_Handle NewGraph(float r, float g, float b, A_u_long revision, A_u_long payload)
+PF_Handle NewGraph(float r, float g, float b, A_u_long revision, A_u_long payload, const char* macroName = "Macro 1",
+                   float macroMax = 100)
 {
     Suite<PF_HandleSuite1> hs(kPFHandleSuite, kPFHandleSuiteVersion1);
     if (!hs) return nullptr;
@@ -89,6 +93,8 @@ PF_Handle NewGraph(float r, float g, float b, A_u_long revision, A_u_long payloa
     auto* p = (GraphHeader*)hs->host_lock_handle(h);
     std::memset(p, 0, sizeof(GraphHeader) + payload);
     p->magic = kMagic, p->revision = revision, p->r = r, p->g = g, p->b = b, p->payload = payload;
+    strncpy_s(p->macroName, macroName, _TRUNCATE);
+    p->macroMax = macroMax;
     for (A_u_long i = 0; i < payload; i++) ((unsigned char*)(p + 1))[i] = (unsigned char)(i * 7 + revision);
     hs->host_unlock_handle(h);
     return h;
@@ -184,6 +190,27 @@ PF_Err HandleArb(PF_ArbParamsExtra* x)
 AEGP_EffectRefH g_effect = nullptr;  // the instance the editor edits (kept while the window is open)
 HWND g_wnd = nullptr;
 int g_autoStep = 0;
+A_u_long g_editorRev = 0;  // the revision the editor shows (design v4 section 7: synced with AE's undo by it)
+
+// The graph data's revision now (read through AEGP; the idle hook compares it with the editor's).
+bool CurrentRevision(A_u_long* rev)
+{
+    Suite<AEGP_StreamSuite6> ss(kAEGPStreamSuite, kAEGPStreamSuiteVersion6);
+    if (!ss || !g_effect) return false;
+    AEGP_StreamRefH st = nullptr;
+    if (ss->AEGP_GetNewEffectStreamByIndex(g_pluginId, g_effect, P_GRAPH, &st) || !st) return false;
+    AEGP_StreamValue2 v{};
+    A_Time t{0, 1};
+    bool ok = false;
+    if (!ss->AEGP_GetNewStreamValue(g_pluginId, st, AEGP_LTimeMode_LayerTime, &t, FALSE, &v)) {
+        GraphHeader g{};
+        ok = ReadGraph((PF_Handle)v.val.arbH, &g);
+        *rev = g.revision;
+        ss->AEGP_DisposeStreamValue(&v);
+    }
+    ss->AEGP_DisposeStream(st);
+    return ok;
+}
 
 // The editor's write: one undo step that replaces the graph data.
 void WriteGraph(float r, float g, float b, const char* why)
@@ -208,12 +235,14 @@ void WriteGraph(float r, float g, float b, const char* why)
     const bool ok = !e2 && ReadGraph((PF_Handle)v.val.arbH, &cur);
     char pay[32] = {0};
     const A_u_long payload = GetEnvironmentVariableA("DUPLIX_P0_PAYLOAD", pay, sizeof(pay)) ? strtoul(pay, nullptr, 10) : 0;
-    PF_Handle nh = NewGraph(r, g, b, cur.revision + 1, payload);
+    // the macro's name and range travel in the graph data (red: "Spread" 0..300, green: "Density" 0..500)
+    PF_Handle nh = NewGraph(r, g, b, cur.revision + 1, payload, g > 0.5f ? "Density" : "Spread", g > 0.5f ? 500.f : 300.f);
     A_Err e3 = -1;
     if (ok && nh) {
         AEGP_StreamValue2 nv = v;
         nv.val.arbH = (AEGP_ArbBlockVal)nh;
         e3 = ss->AEGP_SetStreamValue(g_pluginId, st, &nv);
+        if (!e3) g_editorRev = cur.revision + 1;
     }
     if (nh) {
         Suite<PF_HandleSuite1> hs(kPFHandleSuite, kPFHandleSuiteVersion1);
@@ -254,6 +283,16 @@ A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep)
         Pending p = g_pending;
         g_pending.on = false;
         WriteGraph(p.r, p.g, p.b, p.why);
+    } else if (g_wnd) {
+        // AE's own undo / redo (or a script) changed the graph data: the editor reloads it
+        A_u_long rev = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        if (CurrentRevision(&rev) && rev != g_editorRev) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            Log("sync: the graph data changed outside the editor: rev %u -> %u (reload; read %.3f ms)",
+                (unsigned)g_editorRev, (unsigned)rev, ms);
+            g_editorRev = rev;
+        }
     }
     if (g_wnd && max_sleep && *max_sleep > 6) *max_sleep = 6;  // the editor is open: come back soon
     return A_Err_NONE;
@@ -351,6 +390,22 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     return err;
 }
 
+// Macro 1 shown with the name and slider range in the graph data (design v4 1.1: PF_UpdateParamUI is not saved, so
+// it is applied again on every UPDATE_PARAMS_UI).
+void ApplyMacroNames(PF_InData* in_data, PF_ParamDef* params[])
+{
+    GraphHeader g{};
+    if (!ReadGraph(params[P_GRAPH]->u.arb_d.value, &g)) return;
+    Suite<PF_ParamUtilsSuite3> pu(kPFParamUtilsSuite, kPFParamUtilsSuiteVersion3);
+    if (!pu) return;
+    PF_ParamDef d = *params[P_MACRO1];
+    PF_STRNNCPY(d.PF_DEF_NAME, g.macroName, sizeof(d.PF_DEF_NAME));
+    d.u.fs_d.slider_max = (PF_FpShort)g.macroMax;
+    const PF_Err e = pu->PF_UpdateParamUI(in_data->effect_ref, P_MACRO1, &d);
+    Log("params ui: Macro 1 shown as \"%s\" 0..%g (rev %u, err %d)", g.macroName, g.macroMax, (unsigned)g.revision,
+        (int)e);
+}
+
 PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output)
 {
     GraphHeader g{};
@@ -395,6 +450,16 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
         }
         break;
     }
+    case PF_Cmd_SEQUENCE_SETDOWN:
+        // an instance goes away (deleted, its project closed): the editor must not keep its effect reference
+        // (11/28: AE crashed when the idle hook read the reference after app.open replaced the project). The spike
+        // closes the editor for any instance; the product compares the instance.
+        Log("sequence setdown (editor open %d)", (int)(g_wnd != nullptr));
+        if (g_wnd) DestroyWindow(g_wnd);
+        break;
+    case PF_Cmd_UPDATE_PARAMS_UI:
+        ApplyMacroNames(in_data, params);
+        break;
     case PF_Cmd_ARBITRARY_CALLBACK:
         err = HandleArb((PF_ArbParamsExtra*)extra);
         break;

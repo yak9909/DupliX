@@ -51,11 +51,15 @@ try {
     Send-Step "setup" 60
     Start-Sleep -Seconds $WaitSec  # the editor's timer writes meanwhile
     Send-Step "check" 60
+    Start-Sleep -Seconds 3  # the idle hook notices the undo meanwhile
+    Send-Step "check2" 60
+    Start-Sleep -Seconds 3
+    Send-Step "reopen" 90
 } finally {
     if (-not $ae.HasExited) { $null = Stop-AeHidden -Process $ae -TimeoutSec 20 }
     $null = Repair-AeCrashState
 }
 Get-Content (Join-Path $out "jsx.log")
-Select-String -Path (Join-Path $out "plugin.log") -Pattern "p0: (write|editor|user)" | ForEach-Object { $_.Line }
+Select-String -Path (Join-Path $out "plugin.log") -Pattern "p0: (write .*ms$|editor|user|sync|params ui)" | ForEach-Object { $_.Line }
 & (Join-Path $root "spike\.venv\Scripts\python.exe") -I (Join-Path $PSScriptRoot "check_p0_graph.py") $out
 exit $LASTEXITCODE
