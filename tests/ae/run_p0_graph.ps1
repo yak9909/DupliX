@@ -23,7 +23,7 @@ $env:DUPLIX_LOG = Join-Path $out "plugin.log"
 $env:DUPLIX_P0_AUTO = "1"
 $env:DUPLIX_P0_PAYLOAD = "$Payload"
 $env:DUPLIX_P0_PATH = $Path
-if ($Refresh) { $env:DUPLIX_P0_REFRESH = "1" } else { Remove-Item env:DUPLIX_P0_REFRESH -ErrorAction SilentlyContinue }
+$env:DUPLIX_P0_REFRESH = $(if ($Refresh) { "1" } else { "0" })
 $ae = Start-AeHidden -Exe $exe -Arguments ""
 Remove-Item env:DUPLIX_LOG, env:DUPLIX_P0_AUTO, env:DUPLIX_P0_PAYLOAD, env:DUPLIX_P0_PATH, env:DUPLIX_P0_REFRESH -ErrorAction SilentlyContinue
 

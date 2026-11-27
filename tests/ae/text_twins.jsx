@@ -12,10 +12,10 @@
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
     function tg(L) { return L.property("ADBE Transform Group"); }
     function dx(id) { return "DupliX-" + ("000" + id).slice(-4); }
-    function png(comp, name) {
+    function png(comp, name, time) {
         var f = new File(outDir + "/" + name + ".png");
         app.purge(PurgeTarget.ALL_CACHES);  // a hidden layer the copies show is not a dependency AE knows of
-        comp.saveFrameToPng(0, f);
+        comp.saveFrameToPng(time || 0, f);
         for (var k = 0; k < 100 && !f.exists; k++) $.sleep(100);
         log("png " + name + " exists=" + f.exists);
         return f.exists;
@@ -23,6 +23,21 @@
     var W = 400, H = 300, POS = [W / 2, H / 2, 0];
     // the other layer the odd copies show (DUPLIX_DBG_OTHER=2: created before the target, so it is layer 2)
     function addOther(comp, c, on) {
+        if (c.otherAnim) {  // a precomp whose content moves, the layer started 0.5 s early (its own time runs ahead)
+            if (!c.src) {
+                c.src = app.project.items.addComp("OtherSrc", c.other[0], c.other[1], 1, 4, 30);
+                var mv = c.src.layers.addSolid([0.9, 0.25, 0.1], "Mover", 20, c.other[1], 1);
+                tg(mv).property("ADBE Position").setValueAtTime(0, [10, c.other[1] / 2]);
+                tg(mv).property("ADBE Position").setValueAtTime(2, [c.other[0] - 10, c.other[1] / 2]);
+            }
+            var pl = comp.layers.add(c.src);
+            pl.startTime = -0.5;
+            pl.threeDLayer = true;
+            tg(pl).property("ADBE Anchor Point").setValue([0, 0, 0]);
+            tg(pl).property("ADBE Position").setValue(POS);
+            pl.enabled = on;
+            return pl;
+        }
         var b = comp.layers.addSolid([0.9, 0.25, 0.1], "Other", c.other[0], c.other[1], 1);
         b.threeDLayer = true;
         tg(b).property("ADBE Anchor Point").setValue([0, 0, 0]);
@@ -69,7 +84,7 @@
         return t;
     }
     function base(name) {
-        var comp = app.project.items.addComp(name, W, H, 1, 1, 30);
+        var comp = app.project.items.addComp(name, W, H, 1, 4, 30);
         comp.layers.addSolid([0.1, 0.1, 0.12], "BG", W, H, 1);
         comp.layers.addCamera("Cam", [W / 2, H / 2]);
         return comp;
@@ -99,6 +114,7 @@
         big: {n: 6, size: 120, pos: [160, 120, 600], scale: [100, 300]},
         solid_scale: {n: 10, solid: true, pos: [240, 160, 400], scale: [40, 260]},
         solid_rotz: {n: 10, solid: true, pos: [240, 160, 300], rotz: 180, scale: [60, 180]},
+        other_time: {n: 10, solid: true, other: [100, 24], otherAnim: true, time: 1, pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
         other_same: {n: 10, solid: true, other: [60, 40], pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
         other_size: {n: 10, solid: true, other: [100, 24], pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
         solid_fill: {n: 10, solid: true, fill: true, pos: [240, 160, 400], rotz: 180, scale: [60, 180]},
@@ -126,7 +142,7 @@
             for (var r = 0; r < 3; r++) e.property(dx(7 + r)).setValue(r === 2 && c.rotz ? c.rotz : 0);
             e.property(dx(10)).setValue(c.scale ? c.scale[0] : 100);
             e.property(dx(11)).setValue(c.scale ? c.scale[1] : 100);
-            png(d, "dx_" + name);
+            png(d, "dx_" + name, c.time);
             var rows = readCopies(d.id);
             log(name + ": comp id " + d.id + " copies read " + rows.length);
             var tw = base("twin_" + name);
@@ -150,7 +166,7 @@
                     (POS[2] + m[14]).toFixed(3) + " scale " + (sx * 100).toFixed(3) + " rz " +
                     (Math.atan2(m[1], m[0]) * 180 / Math.PI).toFixed(3) + " m2 " + m[2] + " m6 " + m[6]);
             }
-            png(tw, "twin_" + name);
+            png(tw, "twin_" + name, c.time);
         }
         log("done");
     } catch (ex) {

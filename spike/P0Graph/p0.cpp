@@ -261,7 +261,8 @@ void WriteGraph(float r, float g, float b, const char* why)
         (int)e2, (int)ok, (int)e3, (int)e4, ms);
 }
 
-// Path (b) of the design (DUPLIX_P0_PATH=idle): the window only queues the write; AE's idle hook does it.
+// Path (b) of the design (the default; DUPLIX_P0_PATH=direct for path (a), which never returns from
+// AEGP_SetStreamValue): the window only queues the write; AE's idle hook does it.
 struct Pending {
     bool on = false;
     float r = 0, g = 0, b = 0;
@@ -270,7 +271,7 @@ struct Pending {
 bool IdlePath()
 {
     char v[16] = {0};
-    return GetEnvironmentVariableA("DUPLIX_P0_PATH", v, sizeof(v)) > 0 && !strcmp(v, "idle");
+    return !(GetEnvironmentVariableA("DUPLIX_P0_PATH", v, sizeof(v)) > 0 && !strcmp(v, "direct"));
 }
 void RequestWrite(float r, float g, float b, const char* why)
 {
@@ -287,7 +288,8 @@ A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep)
         Pending p = g_pending;
         g_pending.on = false;
         WriteGraph(p.r, p.g, p.b, p.why);
-        if (GetEnvironmentVariableA("DUPLIX_P0_REFRESH", nullptr, 0) > 0) {
+        char rf[4] = {0};  // DUPLIX_P0_REFRESH=0: without (the test of what comes without it)
+        if (!(GetEnvironmentVariableA("DUPLIX_P0_REFRESH", rf, sizeof(rf)) > 0 && rf[0] == '0')) {
             // the Overview must show the edit at once (UPDATE_PARAMS_UI does not come after an AEGP write)
             Suite<PF_AdvAppSuite2> adv(kPFAdvAppSuite, kPFAdvAppSuiteVersion2);
             const PF_Err e = adv ? adv->PF_RefreshAllWindows() : -1;
