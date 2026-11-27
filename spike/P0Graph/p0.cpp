@@ -23,6 +23,8 @@
 #include "String_Utils.h"
 
 #include <chrono>
+#include <cmath>
+#include <mutex>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -30,8 +32,8 @@
 
 namespace {
 
-enum { P_INPUT = 0, P_OPEN, P_GRAPH, P_MACRO1, P_OVERVIEW, P_NUM };
-enum { D_OPEN = 1, D_GRAPH, D_MACRO1, D_OVERVIEW };
+enum { P_INPUT = 0, P_OPEN, P_GRAPH, P_MACRO1, P_OVERVIEW, P_ALPHA_LAYER, P_SAMPLE_TIME, P_NUM };
+enum { D_OPEN = 1, D_GRAPH, D_MACRO1, D_OVERVIEW, D_ALPHA_LAYER, D_SAMPLE_TIME };
 constexpr A_u_long kMagic = 0x31475844;  // "DXG1"
 void* const kArbRefcon = (void*)0x50304758;
 
@@ -403,6 +405,11 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     def.ui_height = 40;
     def.uu.id = D_OVERVIEW;
     if ((err = PF_ADD_PARAM(in_data, -1, &def))) return err;
+    // Layer Alpha (design v4 2: read at a fixed Sample Time, the point set cached)
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_LAYER("Alpha Layer", PF_LayerDefault_NONE, D_ALPHA_LAYER);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX("Sample Time", -100000, 100000, 0, 10, 0, PF_Precision_HUNDREDTHS, 0, 0, D_SAMPLE_TIME);
     PF_CustomUIInfo ci;
     AEFX_CLR_STRUCT(ci);
     ci.events = PF_CustomEFlag_EFFECT;
@@ -427,8 +434,48 @@ void ApplyMacroNames(PF_InData* in_data, PF_ParamDef* params[])
         (int)e);
 }
 
+// Layer Alpha: the chosen layer read at the Sample Time; the points (opaque pixels on an 8 px grid) are rebuilt only
+// when its alpha differs (an FNV hash of the alpha channel), not when other things change.
+struct AlphaCache {
+    std::mutex mu;
+    unsigned long long hash = 0;
+    int points = -1;
+} g_alpha;
+void ReadLayerAlpha(PF_InData* in_data, PF_ParamDef* params[])
+{
+    const double st = params[P_SAMPLE_TIME]->u.fs_d.value;
+    PF_ParamDef pd;
+    AEFX_CLR_STRUCT(pd);
+    const A_long t = (A_long)std::llround(st * in_data->time_scale);
+    if (PF_CHECKOUT_PARAM(in_data, P_ALPHA_LAYER, t, in_data->time_step, in_data->time_scale, &pd)) return;
+    const PF_LayerDef* w = &pd.u.ld;
+    if (w->data && w->width > 0 && w->height > 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        unsigned long long h = 1469598103934665603ULL ^ ((unsigned long long)w->width << 32 | (unsigned)w->height);
+        for (A_long y = 0; y < w->height; y++) {
+            const PF_Pixel8* row = (const PF_Pixel8*)((const char*)w->data + (size_t)y * w->rowbytes);
+            for (A_long x = 0; x < w->width; x++) h = (h ^ row[x].alpha) * 1099511628211ULL;
+        }
+        const double hashMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::lock_guard<std::mutex> lk(g_alpha.mu);
+        if (h == g_alpha.hash && g_alpha.points >= 0) {
+            Log("alpha: reused %d points (hash %.3f ms)", g_alpha.points, hashMs);
+        } else {
+            int n = 0;
+            for (A_long y = 0; y < w->height; y += 8) {
+                const PF_Pixel8* row = (const PF_Pixel8*)((const char*)w->data + (size_t)y * w->rowbytes);
+                for (A_long x = 0; x < w->width; x += 8) n += row[x].alpha > 128;
+            }
+            Log("alpha: rebuilt %d points from %dx%d at %.2f s (hash %.3f ms)", n, (int)w->width, (int)w->height, st, hashMs);
+            g_alpha.hash = h, g_alpha.points = n;
+        }
+    }
+    PF_CHECKIN_PARAM(in_data, &pd);
+}
+
 PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output)
 {
+    ReadLayerAlpha(in_data, params);
     GraphHeader g{};
     if (!ReadGraph(params[P_GRAPH]->u.arb_d.value, &g)) g.r = g.g = g.b = 0.25f;
     PF_Pixel c;
