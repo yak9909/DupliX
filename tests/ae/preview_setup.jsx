@@ -38,6 +38,13 @@
             for (var a = 1; a <= c.numLayers; a++) if (fxOf(c.layer(a))) T = c.layer(a);
             var lname = $.getenv("RANDAMU_PV_LAYER") || "";
             if (lname) for (var a2 = 1; a2 <= c.numLayers; a2++) if (c.layer(a2).name === lname && fxOf(c.layer(a2))) T = c.layer(a2);
+            // RANDAMU_PV_SET ("index=value;..."): DupliX parameters of the layer set in every variant (e.g. 21=7: the world
+            // rotation Y)
+            var pvSets = ($.getenv("RANDAMU_PV_SET") || "").split(";");
+            for (var ps = 0; ps < pvSets.length; ps++) {
+                var pm = /^(\d+)=(-?[\d.]+)$/.exec(pvSets[ps]);
+                if (pm) fxOf(T).property(parseInt(pm[1], 10)).setValue(parseFloat(pm[2]));
+            }
             fn(c, T, fxOf(T));
             // every frame different (AE reuses identical frames), footage caches kept: move the camera a bit
             for (var b = 1; b <= c.numLayers; b++) {

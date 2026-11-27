@@ -75,6 +75,17 @@
                     var d2 = dupli(cc.layer(j2));
                     if (d2) d2.property(MERGE).setValue(modes[m] === "on" ? 1 : 0);
                 }
+                // RANDAMU_UM_SET ("layer:index=value;..."): a DupliX parameter of a named layer set (e.g. the world
+                // rotation Y, index 21)
+                var sets = ($.getenv("RANDAMU_UM_SET") || "").split(";");
+                for (var si = 0; si < sets.length; si++) {
+                    var mm = /^(.+):(\d+)=(-?[\d.]+)$/.exec(sets[si]);
+                    if (!mm) continue;
+                    for (var j4 = 1; j4 <= cc.numLayers; j4++) {
+                        var d4 = cc.layer(j4).name === mm[1] ? dupli(cc.layer(j4)) : null;
+                        if (d4) { d4.property(parseInt(mm[2], 10)).setValue(parseFloat(mm[3])); log("set " + sets[si]); }
+                    }
+                }
                 var tag = src0.id + "_" + modes[m];
                 $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
                 $.setenv("RANDAMU_CACHE_SALT", "um-" + tag + "-" + new Date().getTime());

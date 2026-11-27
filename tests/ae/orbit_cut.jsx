@@ -51,18 +51,37 @@
         var degs = ($.getenv("RANDAMU_OC_DEGS") || "40,50,60,75").split(",");
         var variants = ($.getenv("RANDAMU_OC_VARIANTS") || "dx,real").split(",");
         var refIdx = parseInt($.getenv("RANDAMU_OC_REF") || "7", 10);
+        var const_keep = false;
         var frame = parseInt($.getenv("RANDAMU_OC_FRAME") || "0", 10);
         while (P.renderQueue.numItems > 0) P.renderQueue.item(1).remove();
         for (var vi = 0; vi < variants.length; vi++) {
             var vname = variants[vi];
             var c = main.duplicate();
             c.name = "oc_" + vname;
-            var cam = null, D = null, R = c.layer(refIdx);
+            var cam = null, D = null, R = null;
             for (var a = 1; a <= c.numLayers; a++) {
                 if (c.layer(a) instanceof CameraLayer) cam = c.layer(a);
-                if (dupli(c.layer(a))) D = c.layer(a);
+                if (dupli(c.layer(a)) && (!D || c.layer(a).enabled)) D = c.layer(a);
             }
-            if (!cam || !cam.parent) throw new Error("camera without an orbit null");
+            // RANDAMU_OC_REF=dupe: the reference layer is a copy of the DupliX layer without its effects (twins with
+            // the copies' own source)
+            if ($.getenv("RANDAMU_OC_REF") === "dupe") {
+                R = D.duplicate();
+                var fxp = R.property("ADBE Effect Parade");
+                while (fxp.numProperties > 0) fxp.property(1).remove();
+                R.name = "oc_ref";
+            } else {
+                R = c.layer(refIdx);
+            }
+            // RANDAMU_OC_SET ("index=value;..."): DupliX parameters set (e.g. 21=7, the world rotation Y)
+            var ocSets = ($.getenv("RANDAMU_OC_SET") || "").split(";");
+            for (var os = 0; os < ocSets.length; os++) {
+                var om2 = /^(\d+)=(-?[\d.]+)$/.exec(ocSets[os]);
+                if (om2) dupli(D).property(parseInt(om2[1], 10)).setValue(parseFloat(om2[2]));
+            }
+            // RANDAMU_OC_KEEPCAM=1: the orbit null as it is (RANDAMU_OC_DEGS only names the outputs)
+            const_keep = $.getenv("RANDAMU_OC_KEEPCAM") === "1";
+            if (!const_keep && (!cam || !cam.parent)) throw new Error("camera without an orbit null");
             if (vname === "real") { D.enabled = false; R.enabled = true; }
             else if (vname.indexOf("twin") === 0) {
                 // a real layer per copy with the copy's world matrix (RANDAMU_OC_TWINS: "px py pz rx ry rz" per line,
@@ -102,10 +121,12 @@
                 D.enabled = true;
                 dupli(D).property("RANDAMU Scatter-0027").setValue(vname === "dxon" ? 1 : 0);
             }
-            var ry = tg(cam.parent).property("ADBE Rotate Y");
+            var ry = const_keep ? null : tg(cam.parent).property("ADBE Rotate Y");
             for (var di = 0; di < degs.length; di++) {
-                while (ry.numKeys > 0) ry.removeKey(1);
-                ry.setValue(parseFloat(degs[di]));
+                if (ry) {
+                    while (ry.numKeys > 0) ry.removeKey(1);
+                    ry.setValue(parseFloat(degs[di]));
+                }
                 var tag = vname + "_" + degs[di];
                 $.setenv("RANDAMU_LOG", (outDir + "/plugin_" + tag + ".log").replace(/\//g, "\\"));
                 $.setenv("RANDAMU_CACHE_SALT", "oc-" + tag + "-" + new Date().getTime());
@@ -130,7 +151,7 @@
                 P.renderQueue.render();
                 var fl = new Folder(outDir).getFiles("r_" + tag + "_*.tif");
                 if (fl.length) fl[0].copy(outDir + "/" + tag + ".tif");
-                log("rendered " + tag + (fl.length ? "" : " (no output)") + " cam=" + cam.name + " null=" + cam.parent.name);
+                log("rendered " + tag + (fl.length ? "" : " (no output)") + " cam=" + (cam ? cam.name : "-") + " null=" + (cam && cam.parent ? cam.parent.name : "-"));
             }
         }
         $.setenv("RANDAMU_LOG", "");
