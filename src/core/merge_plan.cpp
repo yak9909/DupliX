@@ -179,7 +179,6 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
     std::vector<int> byX(cs.size());
     for (size_t i = 0; i < cs.size(); i++) byX[i] = (int)i;
     std::sort(byX.begin(), byX.end(), [&](int a, int b) { return cs[a].minX < cs[b].minX; });
-    std::vector<int> meet;
     // the bounding boxes in x order, packed (the sweep reads them for every candidate pair)
     struct Box {
         double x0, x1, y0, y1;
@@ -190,17 +189,26 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
         boxes[a] = c.q.valid ? Box{c.minX, c.maxX, c.minY, c.maxY} : Box{c.minX, -1e300, 1e300, -1e300};
     }
     const double g = 2 * marginPx;
-    // the overlapping pairs (and whether they meet in 3D) on several threads: each a range of the sweep, its pairs
-    // in sweep order; then joined in that order (the components do not depend on it)
+    // the overlapping pairs on several threads: each a range of the sweep, its pairs in sweep order; then joined
+    // (the components do not depend on the order). Only the components count: a thread skips a pair already joined
+    // by its own earlier pairs (a union-find of its own), most of the pairs of a dense pile (11/27, 3271 copies of a
+    // large image: 1.6 million overlapping pairs, about 280 ms of overlap tests).
+    // Copies meeting in 3D join groups too (11/27): AE draws them as a cluster in its M buffer, and so does the group
+    // drawing now (DrawGroup draws a group's clusters with AE's own M buffer).
     struct Pair {
         int a, b;
-        bool meets;
     };
     const int nt = byX.size() >= 1024 ? std::max(1, std::min(8, (int)std::thread::hardware_concurrency())) : 1;
     std::vector<std::vector<Pair>> found((size_t)nt);
     std::vector<double> counted((size_t)nt * 2, 0);
     auto sweep = [&](int t) {
         const size_t from = byX.size() * t / nt, to = byX.size() * (t + 1) / nt;
+        std::vector<int> up(cs.size());
+        for (size_t i = 0; i < cs.size(); i++) up[i] = (int)i;
+        auto find = [&](int i) {
+            while (up[i] != i) i = up[i] = up[up[i]];
+            return i;
+        };
         for (size_t a = from; a < to; a++) {
             const C& A = cs[byX[a]];
             if (!A.q.valid) continue;
@@ -209,14 +217,13 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
                 const Box& bb = boxes[b];
                 counted[2 * t]++;  // diagnostics: candidate pairs
                 if (bb.y0 > ba.y1 + g || ba.y0 > bb.y1 + g) continue;  // also an invalid B (an empty box)
+                const int ra = find(byX[a]), rb = find(byX[b]);
+                if (ra == rb) continue;  // joined already
                 const C& B = cs[byX[b]];
                 if (!QuadsOverlap(A.q, B.q, marginPx)) continue;
-                counted[2 * t + 1]++;  // diagnostics: overlapping pairs
-                // copies meeting in 3D: AE draws them as one cluster (a fragment table), which the group drawing
-                // does not reproduce: their component is drawn one by one
-                // (quads apart in camera depth cannot meet: every point of a quad is within its z range)
-                const bool m = A.q.zMax >= B.q.zMin && B.q.zMax >= A.q.zMin && QuadsIntersect3D(A.corners, B.corners);
-                found[t].push_back({byX[a], byX[b], m});
+                counted[2 * t + 1]++;  // diagnostics: overlapping pairs tested and joined
+                up[ra] = rb;
+                found[t].push_back({byX[a], byX[b]});
             }
         }
     };
@@ -230,10 +237,7 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
     }
     for (int t = 0; t < nt; t++) {
         plan.ms[2] += counted[2 * t], plan.ms[3] += counted[2 * t + 1];
-        for (const Pair& p : found[t]) {
-            parent[root(p.a)] = root(p.b);
-            if (p.meets) meet.push_back(p.a);
-        }
+        for (const Pair& p : found[t]) parent[root(p.a)] = root(p.b);
     }
     plan.ms[0] = std::chrono::duration<double, std::milli>(tPairs - t0).count();
     plan.ms[1] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tPairs).count();
@@ -248,7 +252,6 @@ MergePlan BuildIsolatedGroupPlan(const MergeSceneInput& in, double marginPx)
         if (compLayer[r] < 0) compLayer[r] = cs[i].layer;
         else if (compLayer[r] != cs[i].layer) compOk[r] = 0;
     }
-    for (int i : meet) compOk[root(i)] = 0;
     size_t at = 0;
     for (int li = 0; li < (int)in.layers.size(); li++) {
         const MergeLayerInput& l = in.layers[li];
