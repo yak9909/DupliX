@@ -88,6 +88,10 @@ bool GpuAeSpans(const GpuAeSpanJob& job, double* msOut = nullptr, GpuAeSpanTimes
 // Several jobs drawn in order with one upload and one download (one kernel per job on one stream): they must share
 // the target, the texture's pixels and the table. False: nothing drawn (the caller draws them one by one).
 bool GpuAeSpansBatch(const GpuAeSpanJob* jobs, int n, double* msOut = nullptr);
+// The fragments AE's M buffer row (sub_1800477F0) makes of the job's rows (core/ae_span's AeMbufSpan8; target and
+// rcp unused): per pixel, the rows' pixels one after another, the sample col[4 i ..] and the depth depth[i].
+// False: nothing computed (the caller computes them on the CPU).
+bool GpuAeMbufSpans(const GpuAeSpanJob& job, unsigned char* col, float* depth, double* msOut = nullptr);
 
 // Where the rasterizer logs failures (printf-style; the effect passes its log).
 void GpuRasterSetLog(void (*fn)(const char*, ...));

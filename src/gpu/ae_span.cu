@@ -342,6 +342,31 @@ extern "C" __global__ void AeSpanPixels(const rnd::AeSpanCore* __restrict__ core
     }
 }
 
+// ---- the fragments of spans into AE's M buffer (sub_1800477F0, core/ae_span_impl.h's MbufDepth): a block per span
+// (sp as AeSpanWalk's, e[4] = the span's first pixel in col / depth), a thread per pixel from the kept states
+extern "C" __global__ void AeMbufSpans(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,
+                                       int texRowbytes, int texW, int texH, unsigned char* __restrict__ col,
+                                       float* __restrict__ depth, const int* __restrict__ sp, int n,
+                                       const double* __restrict__ states)
+{
+    using namespace rnd::aeimpl;
+    const int r = blockIdx.x;
+    if (r >= n) return;
+    const int* e = sp + 8 * r;
+    const int x0 = e[1], len = e[2] - e[1];
+    const rnd::AeSpanCore p = cores[e[5]];
+    rnd::AeTex8 tex;
+    tex.data = texData, tex.rowbytes = texRowbytes, tex.width = texW, tex.height = texH;
+    for (int i = threadIdx.x; i < len; i += blockDim.x) {
+        Samp s;
+        StateAtPixel(p, e, x0 + i, states, s);
+        const float off = MbufOff(s, p.zoff);  // (dWx, dWy: InitRow's, the same at every pixel)
+        const long long o = (long long)e[4] + i;
+        SamplePixel(p, s, tex, col + 4 * o);
+        depth[o] = MbufDepth(s, off, MbufPairFirst(i, len));
+    }
+}
+
 // One block = one target row: its spans gStart[g] .. gStart[g + 1] - 1, in AE's drawing order, one after another
 // (spans of one row may overlap; rows never touch each other's pixels). One launch draws every surface of a group.
 extern "C" __global__ void AeSpanRowsOrdered(const rnd::AeSpanCore* __restrict__ cores, const unsigned char* __restrict__ texData,

@@ -15,7 +15,23 @@ AeSpanCore AeCoreOf(const AeSpanParams& p)
     AeSpanCore c = {};
     for (int k = 0; k < 9; k++) c.m[k] = p.m[k];
     c.a0 = p.a0, c.opacity = p.opacity, c.persp = p.persp ? 1 : 0, c.quality = p.quality, c.colorMode = p.colorMode;
+    c.zoff = p.zoff;
     return c;
+}
+
+void AeMbufSpan8(const AeSpanParams& p, const AeTex8& tex, int x0, int x1, int y, uint8_t* col, float* depth)
+{
+    if (x1 <= x0) return;
+    const AeSpanCore c = AeCoreOf(p);
+    aeimpl::Samp s;
+    aeimpl::InitRow(s, c, aeimpl::SpanStart(x0), aeimpl::SpanStart(y));
+    const float off = aeimpl::MbufOff(s, c.zoff);
+    const int len = x1 - x0;
+    for (int i = 0; i < len; i++) {
+        aeimpl::SamplePixel(c, s, tex, col + 4 * i);
+        depth[i] = aeimpl::MbufDepth(s, off, aeimpl::MbufPairFirst(i, len));
+        aeimpl::Step(s);
+    }
 }
 
 void AeSubpixelSample8(const AeTex8& t, int fx, int fy, uint8_t out[4]) { aeimpl::SubpixelSample8(t, fx, fy, out); }

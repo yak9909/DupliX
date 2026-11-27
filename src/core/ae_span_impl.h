@@ -26,7 +26,7 @@ struct AeSpanCore {
     int persp;         // raster state + 0x98
     int quality;       // raster state + 0xA8: 0 nearest, 1 bilinear / area
     int colorMode;     // layer params + 0x5B (2: colour forced to white)
-    int pad;
+    float zoff;        // layer params + 0xA8 (the M buffer's depth offset)
 };
 
 namespace aeimpl {
@@ -402,6 +402,24 @@ RND_HD void DrawPixel(const AeSpanCore& p, const Samp& s, const AeTex8& tex, uns
     SamplePixel(p, s, tex, px);
     if (px[0]) XferInFront8(px, op, rcp, dst);
 }
+
+// ---- a span into AE's M buffer (sub_1800477F0: 8 bpc, one motion sample, no lights, no mask, [params+0xB0][0] == 0).
+// Each pixel whose sample's alpha is not 0 becomes a fragment: the sample (SamplePixel; AE's insert sub_180021A40
+// multiplies its alpha by the opacity byte) at a depth. The depth's offset, at the span's start (after InitRow):
+// ((-dWx * 0.5f) - 0.5f * dWy) + params+0xA8, in float. AE takes the pixels in pairs while two are left: a pair's
+// first pixel's depth is float(f0 + W) + off in float, the second's (and a last single pixel's) (f0 + W) + off in
+// double, rounded once.
+RND_HD float MbufOff(const Samp& s, float zoff) { return ((-s.dWx) * 0.5f - 0.5f * s.dWy) + zoff; }
+RND_HD float MbufDepth(const Samp& s, float off, bool pairFirst)
+{
+    if (pairFirst) {
+        const float a = (float)((double)s.f0 + s.W);
+        return a + off;
+    }
+    return (float)(((double)s.f0 + s.W) + (double)off);
+}
+// whether pixel i of a span of len pixels is the first of a pair
+RND_HD bool MbufPairFirst(int i, int len) { return !(i & 1) && i + 1 < len; }
 
 // The pixel centre AE starts a span at (sub_18004CFD0: (float)x + 0.5f, as double)
 RND_HD double SpanStart(int v) { return (double)((float)v + 0.5f); }

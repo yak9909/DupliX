@@ -477,7 +477,7 @@ struct AeHost {
     CUcontext ctx = nullptr;
     CUstream stream = nullptr;
     CUmodule mod = nullptr;
-    CUfunction fn = nullptr, fnOrdered = nullptr, fnWalk = nullptr, fnTiles = nullptr, fnPixels = nullptr;
+    CUfunction fn = nullptr, fnOrdered = nullptr, fnWalk = nullptr, fnTiles = nullptr, fnPixels = nullptr, fnMbuf = nullptr;
     CUdeviceptr tex = 0, rcp = 0, region = 0, rows = 0, states = 0;
     size_t texCap = 0, regionCap = 0, rowsCap = 0, statesCap = 0;
     unsigned long long texKey = ~0ull;
@@ -503,6 +503,74 @@ bool GrowHost(unsigned char** p, size_t* cap, size_t need)
     void* q = nullptr;
     if (Cuda().memAllocHost(&q, need ? need : 4)) return false;
     *p = (unsigned char*)q, *cap = need;
+    return true;
+}
+
+// the context, stream and kernels (once; g_ae.mu held)
+bool AeInit()
+{
+    const Api& cu = Cuda();
+    if (!g_ae.tried) {
+        g_ae.tried = true;
+        CUdevice dev = 0;
+        if (cu.init(0) || cu.deviceGet(&dev, 0) || cu.primaryRetain(&g_ae.ctx, dev)) {
+            g_ae.ctx = nullptr;
+        } else {
+            CtxScope scope(g_ae.ctx);
+            CUresult r = !scope.pushed ? 1 : cu.streamCreate(&g_ae.stream, 1 /* CU_STREAM_NON_BLOCKING */);
+            if (!r) r = cu.moduleLoadData(&g_ae.mod, kAeSpanPtx);
+            if (!r) r = cu.moduleGetFunction(&g_ae.fn, g_ae.mod, "AeSpanRows");
+            if (!r) r = cu.moduleGetFunction(&g_ae.fnOrdered, g_ae.mod, "AeSpanRowsOrdered");
+            if (!r && cu.moduleGetFunction(&g_ae.fnWalk, g_ae.mod, "AeSpanWalk")) g_ae.fnWalk = nullptr;
+            if (!r && cu.moduleGetFunction(&g_ae.fnTiles, g_ae.mod, "AeSpanTiles")) g_ae.fnTiles = nullptr;
+            if (!r && cu.moduleGetFunction(&g_ae.fnPixels, g_ae.mod, "AeSpanPixels")) g_ae.fnPixels = nullptr;
+            if (!r && cu.moduleGetFunction(&g_ae.fnMbuf, g_ae.mod, "AeMbufSpans")) g_ae.fnMbuf = nullptr;
+            if (r) {
+                GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
+                g_ae.ctx = nullptr;
+            }
+        }
+    }
+    return g_ae.ctx != nullptr;
+}
+// the job's texture on the GPU (uploaded unless its key or its pixels are those there already; g_ae.mu held, the
+// context current). *texMs: the time it took
+bool AeTexture(const GpuAeSpanJob& j, double* texMs)
+{
+    const Api& cu = Cuda();
+    const size_t texBytes = (size_t)j.tex.rowbytes * j.tex.height;
+    if (g_ae.texKey != j.texKey || !g_ae.tex) {
+        LARGE_INTEGER qf, ta, tb;
+        QueryPerformanceFrequency(&qf);
+        QueryPerformanceCounter(&ta);
+        // the same pixels as the texture on the GPU (the copies of one layer share one texture): no upload
+        // (each row's pixels only: the padding after them differs between textures and is never read)
+        bool same = g_ae.tex && g_ae.shadow.size() == texBytes && g_ae.shadowW == j.tex.width &&
+                    g_ae.shadowH == j.tex.height && g_ae.shadowRb == j.tex.rowbytes;
+        for (int y = 0; same && y < j.tex.height; y++)
+            same = !std::memcmp(g_ae.shadow.data() + (size_t)y * j.tex.rowbytes, j.tex.data + (size_t)y * j.tex.rowbytes,
+                                (size_t)j.tex.width * 4);
+        if (!same) {
+            if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
+                g_ae.texKey = ~0ull;
+                g_ae.shadow.clear();
+                return false;
+            }
+            g_ae.shadow.assign(j.tex.data, j.tex.data + texBytes);
+            g_ae.shadowW = j.tex.width, g_ae.shadowH = j.tex.height, g_ae.shadowRb = j.tex.rowbytes;
+            long long nOpaque = 0;
+            for (int y = 0; y < j.tex.height; y++) {
+                const unsigned char* p = j.tex.data + (size_t)y * j.tex.rowbytes;
+                for (int x = 0; x < j.tex.width; x++) nOpaque += p[4 * (size_t)x] == 0xFF;
+            }
+            g_ae.opaque = j.tex.width > 0 && j.tex.height > 0 ? (double)nOpaque / ((double)j.tex.width * j.tex.height) : 0;
+            static std::atomic<int> logged{0};
+            if (++logged <= 8) GpuLog("gpu ae span: texture %dx%d, %.1f%% opaque", j.tex.width, j.tex.height, 100.0 * g_ae.opaque);
+        }
+        g_ae.texKey = j.texKey;
+        QueryPerformanceCounter(&tb);
+        if (texMs) *texMs = (double)(tb.QuadPart - ta.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    }
     return true;
 }
 
@@ -560,27 +628,7 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
     LARGE_INTEGER t0;
     QueryPerformanceCounter(&t0);
     std::lock_guard<std::mutex> lk(g_ae.mu);
-    if (!g_ae.tried) {
-        g_ae.tried = true;
-        CUdevice dev = 0;
-        if (cu.init(0) || cu.deviceGet(&dev, 0) || cu.primaryRetain(&g_ae.ctx, dev)) {
-            g_ae.ctx = nullptr;
-        } else {
-            CtxScope scope(g_ae.ctx);
-            CUresult r = !scope.pushed ? 1 : cu.streamCreate(&g_ae.stream, 1 /* CU_STREAM_NON_BLOCKING */);
-            if (!r) r = cu.moduleLoadData(&g_ae.mod, kAeSpanPtx);
-            if (!r) r = cu.moduleGetFunction(&g_ae.fn, g_ae.mod, "AeSpanRows");
-            if (!r) r = cu.moduleGetFunction(&g_ae.fnOrdered, g_ae.mod, "AeSpanRowsOrdered");
-            if (!r && cu.moduleGetFunction(&g_ae.fnWalk, g_ae.mod, "AeSpanWalk")) g_ae.fnWalk = nullptr;
-            if (!r && cu.moduleGetFunction(&g_ae.fnTiles, g_ae.mod, "AeSpanTiles")) g_ae.fnTiles = nullptr;
-            if (!r && cu.moduleGetFunction(&g_ae.fnPixels, g_ae.mod, "AeSpanPixels")) g_ae.fnPixels = nullptr;
-            if (r) {
-                GpuLog("gpu ae span: not available (CUresult %d): copies drawn on the CPU", (int)r);
-                g_ae.ctx = nullptr;
-            }
-        }
-    }
-    if (!g_ae.ctx) return false;
+    if (!AeInit()) return false;
     CtxScope scope(g_ae.ctx);
     if (!scope.pushed) return false;
     CUstream st = g_ae.stream;
@@ -715,34 +763,10 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
     if (times) times->regionPx = (long long)(regionBytes / 4);
     if (GetEnvironmentVariableA("RANDAMU_GPU_KTIME", nullptr, 0) > 0)
         GpuLog("gpu ae span host: checks %.2f, sort %.2f, segments %.2f, states and buffers %.2f ms", hp0 - (double)t0.QuadPart * 1000.0 / (double)qf.QuadPart, hp1 - hp0, hp2 - hp1, nowMs() - hp2);
-    if (g_ae.texKey != j.texKey || !g_ae.tex) {
-        const double ta = nowMs();
-        // the same pixels as the texture on the GPU (the copies of one layer share one texture): no upload
-        // (each row's pixels only: the padding after them differs between textures and is never read)
-        bool same = g_ae.tex && g_ae.shadow.size() == texBytes && g_ae.shadowW == j.tex.width &&
-                    g_ae.shadowH == j.tex.height && g_ae.shadowRb == j.tex.rowbytes;
-        for (int y = 0; same && y < j.tex.height; y++)
-            same = !std::memcmp(g_ae.shadow.data() + (size_t)y * j.tex.rowbytes, j.tex.data + (size_t)y * j.tex.rowbytes,
-                                (size_t)j.tex.width * 4);
-        if (!same) {
-            if (!GrowDev(&g_ae.tex, &g_ae.texCap, texBytes) || cu.htod(g_ae.tex, j.tex.data, texBytes)) {
-                g_ae.texKey = ~0ull;
-                g_ae.shadow.clear();
-                return false;
-            }
-            g_ae.shadow.assign(j.tex.data, j.tex.data + texBytes);
-            g_ae.shadowW = j.tex.width, g_ae.shadowH = j.tex.height, g_ae.shadowRb = j.tex.rowbytes;
-            long long nOpaque = 0;
-            for (int y = 0; y < j.tex.height; y++) {
-                const unsigned char* p = j.tex.data + (size_t)y * j.tex.rowbytes;
-                for (int x = 0; x < j.tex.width; x++) nOpaque += p[4 * (size_t)x] == 0xFF;
-            }
-            g_ae.opaque = j.tex.width > 0 && j.tex.height > 0 ? (double)nOpaque / ((double)j.tex.width * j.tex.height) : 0;
-            static std::atomic<int> logged{0};
-            if (++logged <= 8) GpuLog("gpu ae span: texture %dx%d, %.1f%% opaque", j.tex.width, j.tex.height, 100.0 * g_ae.opaque);
-        }
-        g_ae.texKey = j.texKey;
-        if (times) times->texMs = nowMs() - ta;
+    {
+        double texMs = 0;
+        if (!AeTexture(j, &texMs)) return false;
+        if (times) times->texMs = texMs;
     }
     if (!g_ae.rcpSet || std::memcmp(g_ae.rcpHost, j.rcp, sizeof(g_ae.rcpHost))) {
         if (!g_ae.rcp && cu.memAlloc(&g_ae.rcp, sizeof(g_ae.rcpHost))) return false;
@@ -850,6 +874,66 @@ bool AeSpansImpl(const GpuAeSpanJob* jobs, int nJobs, double* msOut, GpuAeSpanTi
     return true;
 }
 }  // namespace
+
+bool GpuAeMbufSpans(const GpuAeSpanJob& j, unsigned char* col, float* depth, double* msOut)
+{
+    const Api& cu = Cuda();
+    if (!cu.ok || g_failed.load() || !cu.primaryRetain || !cu.streamCreate || !cu.dtohAsync || !cu.memAllocHost) return false;
+    if (!j.tex.data) return false;
+    LARGE_INTEGER qf, t0;
+    QueryPerformanceFrequency(&qf);
+    QueryPerformanceCounter(&t0);
+    // (y, x0, x1, 0, the span's first pixel in col / depth, job 0, its first kept state, 0) per span (ae_span.cu)
+    std::vector<int> packed;
+    packed.reserve(8 * (size_t)j.nRows);
+    long long px = 0, nStates = 0;
+    for (int i = 0; i < j.nRows; i++) {
+        const int* r = j.rows + 3 * i;
+        if (r[2] <= r[1]) continue;
+        const int o[8] = {r[0], r[1], r[2], 0, (int)px, 0, (int)nStates, 0};
+        packed.insert(packed.end(), o, o + 8);
+        px += r[2] - r[1], nStates += (r[2] - 1) / 8 - r[1] / 8;
+    }
+    if (packed.empty()) return true;
+    std::lock_guard<std::mutex> lk(g_ae.mu);
+    if (!AeInit() || !g_ae.fnWalk || !g_ae.fnMbuf) return false;
+    CtxScope scope(g_ae.ctx);
+    if (!scope.pushed || !AeTexture(j, nullptr)) return false;
+    CUstream st = g_ae.stream;
+    const size_t rowsBytes = packed.size() * 4, coreBytes = sizeof(AeSpanCore), outBytes = (size_t)px * 8;
+    if (!GrowDev(&g_ae.region, &g_ae.regionCap, outBytes) || !GrowDev(&g_ae.states, &g_ae.statesCap, (size_t)nStates * 24 + 8) ||
+        !GrowDev(&g_ae.rows, &g_ae.rowsCap, rowsBytes + coreBytes) ||
+        !GrowHost(&g_ae.stage, &g_ae.stageCap, std::max(outBytes, rowsBytes + coreBytes)))
+        return false;
+    std::memcpy(g_ae.stage, packed.data(), rowsBytes);
+    std::memcpy(g_ae.stage + rowsBytes, &j.core, coreBytes);
+    if (cu.htodAsync(g_ae.rows, g_ae.stage, rowsBytes + coreBytes, st)) return false;
+    CUdeviceptr coresD = g_ae.rows + rowsBytes, texD = g_ae.tex, rowsD = g_ae.rows, stD = g_ae.states, colD = g_ae.region,
+                depD = g_ae.region + (size_t)px * 4;
+    int texRb = j.tex.rowbytes, texW = j.tex.width, texH = j.tex.height, ns = (int)(packed.size() / 8);
+    void* wargs[] = {&coresD, &rowsD, &ns, &stD};
+    CUresult lr = cu.launch(g_ae.fnWalk, (unsigned)((ns + 127) / 128), 1, 1, 128, 1, 1, 0, st, wargs, nullptr);
+    void* margs[] = {&coresD, &texD, &texRb, &texW, &texH, &colD, &depD, &rowsD, &ns, &stD};
+    if (!lr) lr = cu.launch(g_ae.fnMbuf, (unsigned)ns, 1, 1, 64, 1, 1, 0, st, margs, nullptr);
+    if (lr) {
+        g_failed = true;
+        GpuLog("gpu ae mbuf: launch failed: copies drawn on the CPU from now on");
+        return false;
+    }
+    if (cu.dtohAsync(g_ae.stage, g_ae.region, outBytes, st) || cu.streamSync(st)) {
+        g_failed = true;
+        GpuLog("gpu ae mbuf: the kernel failed: copies drawn on the CPU from now on");
+        return false;
+    }
+    std::memcpy(col, g_ae.stage, (size_t)px * 4);
+    std::memcpy(depth, g_ae.stage + (size_t)px * 4, (size_t)px * 4);
+    if (msOut) {
+        LARGE_INTEGER t1;
+        QueryPerformanceCounter(&t1);
+        *msOut = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    }
+    return true;
+}
 
 namespace cu {
 bool Init() { return Cuda().ok && Cuda().init(0) == 0; }

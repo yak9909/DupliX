@@ -1,4 +1,26 @@
-# 引き継ぎメモ（最新: 2026-11-27 14 時。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-27 13 時（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-27 13 時、M バッファーの行の処理の置き換えの途中。利用者「一旦中断してください」）
+
+- **今の状態:** この節の commit で、M バッファー（塊）へのコピーの描画を DupliX が行う版を push 済み（既定で有効、`RANDAMU_MBUF=0` で AE に戻す）。
+  `dev_plugins\randamu.aex` はこの commit のソースのビルド。全体の試験（単体・GPU・EDIT・MERGE・Test〜D）は**まだ回していない**。
+- **分かったこと:**
+  - 計測（`RANDAMU_A3D_TIME=2` の `mbuf:` の行）: Test D に大きい画像 380 枚は塊の描画 約 1.2 秒のうち、AE の行の処理が約 1.1 秒（81 万画素）、
+    bigS3271 は塊 230 ms のうち行の処理 125 ms・塊の前に流す GPU の仕事 100 ms・解決 3〜4 ms。
+  - 実際の経路は `sub_1800477F0` ではなく、M バッファーの仮想関数 +8 が真の `sub_18004D870` → `sub_180046A90` → 挿入 `sub_180021710`
+    （32 バイトの断片に dWx・dWy）。3 つの行の処理（477F0・46A90・48500）は計算が同じで、挿入だけ違う（`bee_hooks.cpp` の `kMbufInsertRva` の注釈）。
+  - 奥行き: 2 画素の組の 1 枚目は `float(f0+W)+off`（float）、2 枚目と最後の 1 画素は double で足して 1 回丸める。off＝`((-dWx*0.5f)-0.5f*dWy)+params[0xA8]`。
+- **実装:** `core/ae_span_impl.h` の `MbufOff`・`MbufDepth`・`MbufPairFirst`、`AeSpanCore::zoff`（旧 pad）、`AeMbufSpan8`（CPU）、
+  GPU `AeMbufSpans`（`ae_span.cu`）と `GpuAeMbufSpans`（`gpu_raster.cpp`、初期化とテクスチャを `AeInit`・`AeTexture` に切り出した）、
+  フック `OurIterate` の種類 2 → GPU で断片を計算 → AE の反復の中で `OurMbRow` が AE の挿入関数で入れる（スレッド番号は AE のもの）。
+  診断: `RANDAMU_MBUF=2`（AE が描き、入った断片を 1 つずつ DupliX の計算と比べる）、`=3`（CPU で計算）。
+- **確かめた結果:** `RANDAMU_MBUF=2` で bigS3271 53 万画素・Test D 大きい画像 約 240 万画素が全部一致（違ったのは AE の反復が 517＝中断を
+  返した描画だけ）。Test D 大きい画像で MBUF=0 と 1 の絵が一致（CPU 版・GPU 版とも）。速さ: Test D 大きい画像 1 フレーム 1216 → 465 ms
+  （span）。GPU は 1 面ずつ呼んでいて 376 回で約 290 ms。
+- **次の 1 手:** (1) 全体の試験（単体・GPU・EDIT・MERGE、`run_user_merge.ps1` Test〜D、`run_big_merge.ps1`、bigS3271 の MBUF 0/1 比較、花の Test C・D）。
+  比較の道具はスクラッチパッドの `mbcmp.sh`（消えていたら: MBUF=0 と 1 で `run_preview.ps1` を回し `cmp_dirs.py` で比べるだけ）。
+  (2) GPU の呼び出しを 1 面ずつ → まとめる（溜めて、AE が同じ M バッファーに描く前・解決の前に流す。同じ奥行きの断片は入れた順が効くので面の順を保つ）。
+  (3) 開発記録（11/27 の 12 節）に今回の内容を書く。トラブル: 検査で「AE は入れていない」と出たのは中断された描画だった。
 
 ## 再開の手順（2026-11-27 14 時、Test E の件を閉じた。利用者がセッションをクリア）
 

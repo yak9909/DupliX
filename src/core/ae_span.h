@@ -25,12 +25,17 @@ struct AeSpanParams {
     int quality = 1;       // raster state + 0xA8: 0 nearest, 1 bilinear / area
     double opacity = 1;    // layer params + 0x20
     int colorMode = 1;     // layer params + 0x5B (2: colour forced to white)
+    float zoff = 0;        // layer params + 0xA8 (the M buffer's depth offset)
     const AeRcpTable* rcp = nullptr;
 };
 AeSpanCore AeCoreOf(const AeSpanParams& p);
 
 // Draws pixels x0 .. x1 - 1 of row y (screen px) into `row` (the target's row y, 8 bpc ARGB) like AE.
 void AeDrawSpan8(const AeSpanParams& p, const AeTex8& tex, int x0, int x1, int y, uint8_t* row);
+
+// The fragments AE's M buffer row (sub_1800477F0) makes of pixels x0 .. x1 - 1 of row y: per pixel i, the sample
+// col[4 i .. 4 i + 3] (ARGB, alpha before the opacity; 0 alpha: no fragment) and its depth depth[i].
+void AeMbufSpan8(const AeSpanParams& p, const AeTex8& tex, int x0, int x1, int y, uint8_t* col, float* depth);
 
 // The pieces (exposed for tests): PF.dll's samplers and transfer.
 void AeSubpixelSample8(const AeTex8& tex, int fx, int fy, uint8_t out[4]);

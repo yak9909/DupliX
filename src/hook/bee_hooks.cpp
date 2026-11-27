@@ -1600,6 +1600,10 @@ constexpr uintptr_t kDrawParamsRva = 0x50FD0;
 // RANDAMU_A3D_TIME (diagnostics): a group's draws, summed: AE's draw parameters, AE's draw up to its row callback,
 // the row callback (ours), AE's draw after it
 thread_local std::chrono::steady_clock::time_point t_gIterIn, t_gIterOut;
+// (diagnostics, RANDAMU_A3D_TIME) a frame's clusters: their time, the resolve's, AE's rows of copies into M buffers
+thread_local double t_mbIterMs = 0, t_mbClusterMs = 0, t_mbResolveMs = 0, t_mbNewMs = 0, t_mbFlushMs = 0, t_mbGpuMs = 0;
+thread_local int t_mbIters = 0, t_mbClusters = 0;
+thread_local long long t_mbPx = 0;
 thread_local double t_gAcc[4];
 thread_local int t_gIters;
 bool DrawSurfaceDirect(uintptr_t ctx, uintptr_t sf, void* kt)
@@ -1801,12 +1805,16 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
                     }
                     f133 |= *(const unsigned char*)(sf + 133), f136 |= *(const unsigned char*)(sf + 136);
                 }
+                const auto tc0 = std::chrono::steady_clock::now();
                 int rc[4] = {std::max(r[0], 0), std::max(r[1], 0), std::min(r[2], *(const int*)(ctx + 192)),
                              std::min(r[3], *(const int*)(ctx + 196))};
                 const unsigned short depth = (*(unsigned short (**)(uintptr_t))(*(uintptr_t*)target + 8))(target);
                 const uintptr_t mb = ((MBufNewFn)(g_a3dLo + a3d::kMBufNewRva))(rc, depth, f133, f136);
+                const auto tn = std::chrono::steady_clock::now();
+                t_mbNewMs += std::chrono::duration<double, std::milli>(tn - tc0).count();
                 // the copies before the cluster first (they are under it in the target)
                 FlushGroupJobs();
+                t_mbFlushMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tn).count();
                 struct MbDel {
                     uintptr_t mb;
                     ~MbDel()
@@ -1823,8 +1831,13 @@ bool DrawGroup(uintptr_t self, uintptr_t ctx, uintptr_t a7, const void* L, const
                     if (*(const unsigned char*)(q[2] + 129)) FlushGroupJobs(), ((AfterDrawFn)(g_a3dLo + a3d::kAfterDrawRva))(q[2], target);
                 }
                 FlushGroupJobs();  // (a cluster's draws go into the M buffer through AE's own row callback)
+                const auto tr0 = std::chrono::steady_clock::now();
                 (*(void (**)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)mb + 24))(
                     mb, *(const uintptr_t*)(ctx + 208), *(const uintptr_t*)(*(const uintptr_t*)ctx + 480), target);
+                const auto tr1 = std::chrono::steady_clock::now();
+                t_mbResolveMs += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
+                t_mbClusterMs += std::chrono::duration<double, std::milli>(tr1 - tc0).count();
+                t_mbClusters++;
             }
             drawn += (int)j[3], clusters++, inClusters += (int)j[3];
         }
@@ -2452,8 +2465,27 @@ struct SpanJob {
     rnd::AeTex8 tex;
     unsigned char* tdata = nullptr;
     int trb = 0;
+    uintptr_t mb = 0;  // target kind 2: AE's M buffer (fragments per pixel), else 0
+    int mode = 0;      // layer params + 0x18 (the transfer, kept in each fragment)
+    int mbKind = 0;    // the M buffer's fragments: 0 plain, 1 with the depth's slopes, 2 with the slopes and a 0
+    float dWx = 0, dWy = 0;  // the span state's +0x40, +0x44 (InitRow's)
 };
+// AE's M buffer (sub_1800234F0): +0x20 width, +0x28 the fragment pools (one per row thread), +0x38 the pixels' list
+// heads (8 bytes each, pixel (x, y) at (int)(y * width) + x). Its vfuncs +8 and +16 choose the fragment
+// (sub_180050B40): +8 false: sub_18004DCD0 -> row sub_1800477F0 -> insert sub_180021A40, 24 bytes; +8 and +16 true:
+// sub_18004E130 -> sub_180048500 -> sub_180021D60, 40 bytes; +8 only: sub_18004D870 -> sub_180046A90 ->
+// sub_180021710, 32 bytes. The three rows are one computation (only the insert differs). A fragment: +0 next,
+// +8 transfer, +9 opaque (transfer 2 and alpha 0xFF), +0x0C depth (float, the list ascending), then (kinds 1, 2)
+// dWx +0x10, dWy +0x14, (kind 2) 0.0f +0x18, then the colour (ARGB, alpha times the opacity byte).
+constexpr uintptr_t kMbufInsertRva[3] = {0x21A40, 0x21710, 0x21D60};
+constexpr int kMbufColOff[3] = {0x10, 0x18, 0x20};
 }  // namespace a3d
+// the inserts (mb, colour, opacity byte, transfer, depth, [dWx, dWy, [0]], list head, row thread): a fragment,
+// unless the colour's alpha is 0, after the last one at most as deep
+typedef void (*MbufInsert0)(uintptr_t, const unsigned char*, unsigned, unsigned, float, uintptr_t*, int);
+typedef void (*MbufInsert1)(uintptr_t, const unsigned char*, unsigned, unsigned, float, float, float, uintptr_t*, int);
+typedef void (*MbufInsert2)(uintptr_t, const unsigned char*, unsigned, unsigned, float, float, float, float, uintptr_t*,
+                            int);
 rnd::AeRcpTable g_rcp;
 int g_cpuFlag = -1;
 std::mutex g_jobMu;
@@ -2467,9 +2499,23 @@ uint16_t BitDepthOf(uintptr_t buf) { return (*(uint16_t(**)(uintptr_t))(*(uintpt
 bool SpanJobFor(uintptr_t d, a3d::SpanJob* j, const char** why)
 {
     const uintptr_t ctx = *(uintptr_t*)d, st = *(uintptr_t*)(d + 8), lp = *(uintptr_t*)(d + 16), a7 = *(uintptr_t*)(d + 56);
-    if (*(int*)a7 != 1) return *why = "target kind", false;
+    const int kind = *(int*)a7;
+    // kind 2 (an M buffer, a cluster's surfaces): RANDAMU_MBUF=0 leaves it to AE
+    static const bool s_mbuf = [] {
+        char v[4] = {0};
+        return !(GetEnvironmentVariableA("RANDAMU_MBUF", v, sizeof(v)) > 0 && v[0] == '0');
+    }();
+    if (kind != 1 && !(kind == 2 && s_mbuf)) return *why = "target kind", false;
     const uintptr_t tgt = *(uintptr_t*)(a7 + 8), tex = *(uintptr_t*)(st + 16);
-    if (!tgt || !tex || BitDepthOf(tgt) != 8 || BitDepthOf(tex) != 8) return *why = "bit depth", false;
+    if (!tgt || !tex) return *why = "bit depth", false;
+    if (kind == 2) {
+        // sub_180050B40: the M buffer's vfuncs +8 / +16 choose the fragment; its bit depth that of the buffer at +8
+        const bool v8 = (*(unsigned char (**)(uintptr_t))(*(uintptr_t*)tgt + 8))(tgt) != 0;
+        j->mbKind = !v8 ? 0 : (*(unsigned char (**)(uintptr_t))(*(uintptr_t*)tgt + 16))(tgt) ? 2 : 1;
+        if (BitDepthOf(tgt + 8) != 8 || BitDepthOf(tex) != 8) return *why = "bit depth", false;
+    } else if (BitDepthOf(tgt) != 8 || BitDepthOf(tex) != 8) {
+        return *why = "bit depth", false;
+    }
     if (*(int*)(st + 40) != 1) return *why = "motion samples", false;
     const int q = *(unsigned char*)(st + 0xA8);
     if (q != 0 && q != 1) return *why = "quality", false;
@@ -2487,12 +2533,176 @@ bool SpanJobFor(uintptr_t d, a3d::SpanJob* j, const char** why)
     j->p.quality = q;
     j->p.opacity = *(double*)(lp + 0x20);
     j->p.colorMode = p[0x5B];
+    j->p.zoff = *(const float*)(lp + 0xA8);
     j->p.rcp = &g_rcp;
     j->tex.data = *(const uint8_t**)(tex + 32), j->tex.rowbytes = *(int*)(tex + 40);
     j->tex.width = *(int*)(tex + 44), j->tex.height = *(int*)(tex + 48);
-    j->tdata = *(unsigned char**)(tgt + 32), j->trb = *(int*)(tgt + 40);
+    if (kind == 2) {
+        j->mb = tgt, j->mode = p[0x18];
+        rnd::aeimpl::Samp s;
+        rnd::aeimpl::InitRow(s, rnd::AeCoreOf(j->p), 0.5, 0.5);  // (the slopes do not depend on the pixel)
+        j->dWx = s.dWx, j->dWy = s.dWy;
+    } else {
+        j->tdata = *(unsigned char**)(tgt + 32), j->trb = *(int*)(tgt + 40);
+    }
     j->d = d;
     return true;
+}
+
+// ---- a cluster's surface into AE's M buffer (target kind 2): the fragments sub_1800477F0 would make (core/ae_span's
+// AeMbufSpan8), inserted by AE's own sub_180021A40 on AE's row threads (each its own fragment pool)
+a3d::SpanJob g_mbJobs[32];
+// a job's fragments computed beforehand (the GPU): per row, the offset of its first pixel in col / depth (-1: none)
+struct MbufPre {
+    uintptr_t d = 0;
+    const unsigned char* col = nullptr;
+    const float* depth = nullptr;
+    const long long* rowOff = nullptr;
+};
+MbufPre g_mbPre[32];
+void MbufInsertSpan(const a3d::SpanJob& j, int y, int x0, int len, const unsigned char* col, const float* depth, int thread)
+{
+    const uintptr_t ins = g_a3dLo + a3d::kMbufInsertRva[j.mbKind];
+    const int w = *(const int*)(j.mb + 0x20);
+    uintptr_t* head = *(uintptr_t**)(j.mb + 0x38) + ((long long)(int)(y * w) + x0);
+    const unsigned op = rnd::aeimpl::OpacityByte(j.p.opacity), mode = (unsigned)j.mode;
+    for (int i = 0; i < len; i++) {
+        if (!col[4 * i]) continue;
+        if (j.mbKind == 0) ((MbufInsert0)ins)(j.mb, col + 4 * i, op, mode, depth[i], head + i, thread);
+        else if (j.mbKind == 1) ((MbufInsert1)ins)(j.mb, col + 4 * i, op, mode, depth[i], j.dWx, j.dWy, head + i, thread);
+        else ((MbufInsert2)ins)(j.mb, col + 4 * i, op, mode, depth[i], j.dWx, j.dWy, 0.0f, head + i, thread);
+    }
+}
+int OurMbRowBody(uintptr_t d, uintptr_t thread, uintptr_t rowArg);
+// as sub_180016900: AE's error codes (thrown, e.g. by the progress callback when the render is interrupted) returned
+int OurMbRow(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
+{
+    try {
+        return OurMbRowBody(d, thread, rowArg);
+    } catch (int e) {
+        return e;
+    } catch (...) {
+        return 2;
+    }
+}
+int OurMbRowBody(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
+{
+    int slot = -1;
+    for (int i = 0; i < 32; i++)
+        if (g_mbJobs[i].d == d) {
+            slot = i;
+            break;
+        }
+    if (slot < 0) return 2;
+    const a3d::SpanJob& j = g_mbJobs[slot];
+    const int row = (int)rowArg;
+    const int y = row + *(int*)(d + 44);
+    if (((y & 1) != 2 - *(int*)(d + 48))) {
+        const short* sp = (const short*)(**(uintptr_t**)(d + 32)) + 2 * row;
+        const int x0 = sp[0], len = sp[1] - sp[0];
+        if (len > 0) {
+            const MbufPre& pre = g_mbPre[slot];
+            if (pre.d == d) {
+                const long long o = pre.rowOff[row];
+                if (o >= 0) MbufInsertSpan(j, y, x0, len, pre.col + 4 * o, pre.depth + o, (int)thread);
+            } else {
+                thread_local std::vector<unsigned char> col;
+                thread_local std::vector<float> dep;
+                if ((int)dep.size() < len) col.resize(4 * (size_t)len), dep.resize((size_t)len);
+                rnd::AeMbufSpan8(j.p, j.tex, x0, x0 + len, y, col.data(), dep.data());
+                MbufInsertSpan(j, y, x0, len, col.data(), dep.data(), (int)thread);
+            }
+        }
+        if (!(int)thread) {
+            const unsigned count = *(unsigned*)(d + 40);
+            if ((row & 3) == 0 || (unsigned)row == count) {
+                const uintptr_t pr = *(uintptr_t*)(*(uintptr_t*)d + 208);
+                (*(void (**)(uintptr_t, uintptr_t, uintptr_t))(*(uintptr_t*)pr + 8))(pr, (unsigned)row, count);
+            }
+        }
+    }
+    return 0;
+}
+
+// RANDAMU_MBUF=2 (diagnostics): AE draws the surface into its M buffer, and every fragment it adds is compared with
+// ours (colour, opacity, transfer, opaque flag, depth bits); a pixel AE gives none must get none from us
+std::atomic<long long> g_mbChecked{0}, g_mbBad{0};
+void MbufCheck(const a3d::SpanJob& j, uintptr_t n, uintptr_t d, uintptr_t cb, int (*iter)(uintptr_t, uintptr_t, uintptr_t),
+               int* err)
+{
+    const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+    const int yFirst = *(int*)(d + 44), field = *(int*)(d + 48);
+    const int w = *(const int*)(j.mb + 0x20);
+    struct Px {
+        uintptr_t* head;
+        std::vector<uintptr_t> before;
+        unsigned char col[4];
+        float depth;
+        int x, y;
+    };
+    std::vector<Px> px;
+    std::vector<unsigned char> col;
+    std::vector<float> dep;
+    for (uintptr_t row = 0; row < n; row++) {
+        const int y = (int)row + yFirst;
+        if ((y & 1) == 2 - field) continue;
+        const int x0 = sp[2 * row], len = sp[2 * row + 1] - sp[2 * row];
+        if (len <= 0) continue;
+        col.resize(4 * (size_t)len), dep.resize((size_t)len);
+        rnd::AeMbufSpan8(j.p, j.tex, x0, x0 + len, y, col.data(), dep.data());
+        uintptr_t* head = *(uintptr_t**)(j.mb + 0x38) + ((long long)(int)(y * w) + x0);
+        for (int i = 0; i < len; i++) {
+            Px p;
+            p.head = head + i, p.x = x0 + i, p.y = y, p.depth = dep[i];
+            std::memcpy(p.col, &col[4 * (size_t)i], 4);
+            for (uintptr_t q = *p.head; q; q = *(uintptr_t*)q) p.before.push_back(q);
+            px.push_back(std::move(p));
+        }
+    }
+    *err = iter(n, d, cb);
+    const unsigned op = rnd::aeimpl::OpacityByte(j.p.opacity);
+    long long bad = 0;
+    static LogLimit bl;
+    for (const Px& p : px) {
+        // the node AE added: the first one where the lists part (none: the lists are the same)
+        uintptr_t q = *p.head, added = 0;
+        size_t k = 0;
+        for (; q; q = *(uintptr_t*)q, k++)
+            if (k >= p.before.size() || p.before[k] != q) {
+                added = q;
+                break;
+            }
+        unsigned char ec[4];
+        std::memcpy(ec, p.col, 4);
+        const unsigned e = ec[0] * op + 128;
+        ec[0] = (unsigned char)(((e >> 8) + e) >> 8);
+        const bool want = p.col[0] != 0;
+        bool ok = want == (added != 0);
+        if (ok && added) {
+            const unsigned char* a = (const unsigned char*)added;
+            const unsigned char* ac = a + a3d::kMbufColOff[j.mbKind];
+            float ad;
+            std::memcpy(&ad, a + 0x0C, 4);
+            const float ex[3] = {j.dWx, j.dWy, 0.0f};
+            ok = !std::memcmp(ac, ec, 4) && a[8] == (unsigned char)j.mode &&
+                 a[9] == (unsigned char)(j.mode == 2 && ec[0] == 0xFF) && !std::memcmp(&ad, &p.depth, 4) &&
+                 !std::memcmp(a + 0x10, ex, (size_t)(j.mbKind == 0 ? 0 : j.mbKind == 1 ? 8 : 12));
+            if (!ok && bl.Take(30))
+                RLog("mbuf check: (%d, %d) kind %d AE %02x%02x%02x%02x t%d o%d z %.9g, ours %02x%02x%02x%02x z %.9g", p.x, p.y,
+                     j.mbKind, ac[0], ac[1], ac[2], ac[3], a[8], a[9], ad, ec[0], ec[1], ec[2], ec[3], p.depth);
+        } else if (!ok && bl.Take(30)) {
+            RLog("mbuf check: (%d, %d) AE %s a fragment, ours %02x%02x%02x%02x", p.x, p.y, added ? "added" : "did not add", p.col[0],
+                 p.col[1], p.col[2], p.col[3]);
+        }
+        bad += !ok;
+    }
+    g_mbChecked += (long long)px.size(), g_mbBad += bad;
+    static LogLimit sl, el;
+    if ((bad || *err) && el.Take(100))
+        RLog("mbuf check: a draw with %lld of %zu pixels differing, AE's iterate returned %d", bad, px.size(), *err);
+    if (sl.Take(400))
+        RLog("mbuf check: kind %d, %zu pixels, %lld differ (all: %lld of %lld)", j.mbKind, px.size(), bad, g_mbBad.load(),
+             g_mbChecked.load());
 }
 
 int OurRow(uintptr_t d, uintptr_t thread, uintptr_t rowArg)
@@ -2663,17 +2873,26 @@ uintptr_t HookCtxEnd(uintptr_t ctx)
 {
     FlushGroupJobs();
     static const bool s_time = GetEnvironmentVariableA("RANDAMU_A3D_TIME", nullptr, 0) > 0;
-    static LogLimit bl;
+    static LogLimit bl, ml;
     if (s_time && t_bCopies && bl.Take(200))
         RLog("batch: frame drawn with %lld flushes of %lld copies, %.1f MB of textures kept", t_bFlushes, t_bCopies,
              t_bTexBytes / 1048576.0);
+    if (s_time && (t_mbIters || t_mbClusters) && ml.Take(200))
+        RLog("mbuf: frame's clusters %d in %.1f ms (group clusters: M buffers made %.1f, copies flushed before %.1f, "
+             "resolve %.1f ms); copies' rows into M buffers %.1f ms (%d draws, %lld px; of it the GPU %.1f ms)",
+             t_mbClusters, t_mbClusterMs, t_mbNewMs, t_mbFlushMs, t_mbResolveMs, t_mbIterMs, t_mbIters, t_mbPx, t_mbGpuMs);
     t_bFlushes = t_bCopies = t_bTexBytes = 0;
+    t_mbIterMs = t_mbClusterMs = t_mbResolveMs = t_mbNewMs = t_mbFlushMs = t_mbGpuMs = 0, t_mbIters = t_mbClusters = 0, t_mbPx = 0;
     return g_origCtxEnd(ctx);
 }
 uintptr_t HookClusterCall(uintptr_t ctx, uintptr_t comp, uintptr_t target)
 {
     FlushGroupJobs();
-    return ((uintptr_t(*)(uintptr_t, uintptr_t, uintptr_t))(g_a3dLo + a3d::kDrawClusterRva))(ctx, comp, target);
+    const auto t0 = std::chrono::steady_clock::now();
+    const uintptr_t r = ((uintptr_t(*)(uintptr_t, uintptr_t, uintptr_t))(g_a3dLo + a3d::kDrawClusterRva))(ctx, comp, target);
+    t_mbClusterMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t_mbClusters++;
+    return r;
 }
 uintptr_t HookAfterDrawCall(uintptr_t sf, uintptr_t target)
 {
@@ -2713,6 +2932,17 @@ void InstallFrameBatchHooks(uintptr_t lo)
     RLog("batch hooks: installed (frame call at +%llx)", (unsigned long long)((uintptr_t)frameSite - lo));
 }
 
+// a texture's key on the GPU: a shared master's pixels (every copy of the layer this frame): its serial, so the GPU
+// neither uploads nor compares the texture again for each copy (8 MB for 1920x1080). Else a key that changes with
+// every fetch.
+unsigned long long TexKeyOf(const rnd::AeTex8& t)
+{
+    const unsigned long long serial = TexSerialOf(t.data);
+    return serial ? (1ull << 63) | serial
+                  : (((unsigned long long)(uintptr_t)t.data * 1000003ull) ^ (g_texGen.load() << 1) ^
+                     ((unsigned long long)t.width << 40) ^ (unsigned long long)t.height) &
+                        ~(1ull << 63);
+}
 int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
 {
     static const bool s_gtr = GetEnvironmentVariableA("RANDAMU_GROUP_TRACE", nullptr, 0) > 0;
@@ -2728,7 +2958,84 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         if (g_oursSkip.Take(20)) RLog("a3d ours: AE draws this copy (%s)", why);
         g_aeDraws++;
         FlushGroupJobs();  // the kept copies first: AE draws this one into the target now
+        // (diagnostics, RANDAMU_A3D_TIME) AE's rows into an M buffer (target kind 2): their time and pixels
+        if (cb == g_a3dLo + a3d::kRowPolygonRva && *(int*)*(uintptr_t*)(d + 56) == 2) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const int e = t_origIter(n, d, cb);
+            t_mbIterMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            t_mbIters++;
+            const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+            for (uintptr_t row = 0; row < n; row++) t_mbPx += sp[2 * row + 1] - sp[2 * row];
+            return e;
+        }
         return t_origIter(n, d, cb);
+    }
+    if (job.mb) {
+        // into an M buffer: our fragments, inserted on AE's row threads (the target is not touched: the kept copies
+        // stay kept). RANDAMU_MBUF=2: AE's, checked against ours
+        static const int s_mbMode = [] {
+            char v[4] = {0};
+            return GetEnvironmentVariableA("RANDAMU_MBUF", v, sizeof(v)) > 0 ? atoi(v) : 1;
+        }();
+        const auto t0 = std::chrono::steady_clock::now();
+        int e = 0;
+        if (s_mbMode == 2) {
+            MbufCheck(job, n, d, cb, t_origIter, &e);
+        } else {
+            int slot = -1;
+            {
+                std::lock_guard<std::mutex> lk(g_jobMu);
+                for (int i = 0; i < 32 && slot < 0; i++)
+                    if (!g_mbJobs[i].d) g_mbJobs[i] = job, slot = i;
+            }
+            if (slot < 0) {
+                e = t_origIter(n, d, cb);
+            } else {
+                // the fragments on the GPU (RANDAMU_MBUF=3: on the CPU, in the row callback), inserted in the rows
+                std::vector<unsigned char> mcol;
+                std::vector<float> mdep;
+                std::vector<long long> rowOff;
+                if (t_aeGpu && s_mbMode != 3) {
+                    const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+                    const int yFirst = *(int*)(d + 44), field = *(int*)(d + 48);
+                    std::vector<int> tri;
+                    tri.reserve(3 * (size_t)n);
+                    rowOff.assign((size_t)n, -1);
+                    long long px = 0;
+                    for (uintptr_t row = 0; row < n; row++) {
+                        const int y = (int)row + yFirst;
+                        if ((y & 1) == 2 - field) continue;
+                        const int x0 = sp[2 * row], len = sp[2 * row + 1] - sp[2 * row];
+                        if (len <= 0) continue;
+                        rowOff[row] = px, px += len;
+                        tri.push_back(y), tri.push_back(x0), tri.push_back(x0 + len);
+                    }
+                    rnd::GpuAeSpanJob gj;
+                    gj.core = rnd::AeCoreOf(job.p);
+                    gj.tex = job.tex;
+                    gj.texKey = TexKeyOf(job.tex);
+                    gj.rcp = g_rcp.r, gj.target = nullptr, gj.targetRowbytes = 0;
+                    gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
+                    mcol.resize(4 * (size_t)px + 4), mdep.resize((size_t)px + 1);
+                    double ms = 0;
+                    if (rnd::GpuAeMbufSpans(gj, mcol.data(), mdep.data(), &ms)) {
+                        g_mbPre[slot] = {d, mcol.data(), mdep.data(), rowOff.data()};
+                        t_mbGpuMs += ms;
+                    } else if (g_gpuLog.Take(10)) {
+                        RLog("a3d ours: GPU failed for an M buffer's surface, its fragments on the CPU");
+                    }
+                }
+                g_oursDraws++;
+                e = t_origIter(n, d, (uintptr_t)&OurMbRow);
+                std::lock_guard<std::mutex> lk(g_jobMu);
+                g_mbJobs[slot].d = 0, g_mbPre[slot].d = 0;
+            }
+        }
+        t_mbIterMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        t_mbIters++;
+        const short* sp = (const short*)(**(uintptr_t**)(d + 32));
+        for (uintptr_t row = 0; row < n; row++) t_mbPx += sp[2 * row + 1] - sp[2 * row];
+        return e;
     }
     // RANDAMU_GROUP_NOGPU=1 (diagnostics): a group's copies are not drawn (the cost of AE's draw setup alone)
     static const bool s_noGpu = GetEnvironmentVariableA("RANDAMU_GROUP_NOGPU", nullptr, 0) > 0;
@@ -2761,15 +3068,9 @@ int OurIterate(uintptr_t n, uintptr_t d, uintptr_t cb)
         rnd::GpuAeSpanJob gj;
         gj.core = rnd::AeCoreOf(job.p);
         gj.tex = job.tex;
-        // a shared master's pixels (every copy of the layer this frame): its serial, so the GPU neither uploads nor
-        // compares the texture again for each copy (8 MB for 1920x1080). Else a key that changes with every fetch.
-        const unsigned long long serial = TexSerialOf(job.tex.data);
-        gj.texKey = serial ? (1ull << 63) | serial
-                           : (((unsigned long long)(uintptr_t)job.tex.data * 1000003ull) ^ (g_texGen.load() << 1) ^
-                              ((unsigned long long)job.tex.width << 40) ^ (unsigned long long)job.tex.height) &
-                                 ~(1ull << 63);
         gj.rcp = g_rcp.r, gj.target = job.tdata, gj.targetRowbytes = job.trb;
         gj.rows = tri.data(), gj.nRows = (int)tri.size() / 3;
+        gj.texKey = TexKeyOf(job.tex);
         // a group's copies: kept, drawn together at the end of the group (FlushGroupJobs) in this order
         // (RANDAMU_GROUP_BATCH=0, diagnostics: each one at once)
         static const bool s_batch = [] {
