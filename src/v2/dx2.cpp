@@ -85,6 +85,13 @@ struct Builder {
         d.u.ad.value = d.u.ad.dephault = FLOAT2FIX(dflt);
         Add(d, at);
     }
+    // An angle in degrees as a plain slider, for rows that may be hidden: AE left an angle parameter's dial drawn
+    // where its hidden row had been, with AEGP's HIDDEN flag and PF_PUI_INVISIBLE alike (user, 11/27). The rows
+    // that are never hidden (Global Rotation) keep the real angle control.
+    void Degrees(int at, const char* name, double dflt)
+    {
+        Float(at, name, -360000, 360000, -360, 360, dflt);
+    }
     void Popup(int at, const char* name, const char* items, int dflt, bool supervise = false)
     {
         int n = 1;
@@ -166,13 +173,13 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     b.Percent(P_GRID_BRICK, "Brick Offset", -100, 100, -100, 100, 0);
     b.Float(P_POLAR_INNER, "Inner Radius", 0, 100000, 0, 2000, 0);
     b.Float(P_POLAR_OUTER, "Outer Radius", 0, 100000, 0, 2000, 400);
-    b.Angle(P_POLAR_ANGLE, "Angle Range", 360);
+    b.Degrees(P_POLAR_ANGLE, "Angle Range", 360);
     b.Slider(P_POLAR_SIDES, "Sides", 0, 64, 0, 12, 0);
-    b.Angle(P_POLAR_TWIST, "Twist", 0);
+    b.Degrees(P_POLAR_TWIST, "Twist", 0);
     b.Float(P_POLAR_HEIGHT, "Height", -100000, 100000, -2000, 2000, 0);
     b.Float(P_SPHERE_RADIUS, "Sphere Radius", 0, 100000, 0, 2000, 400);
     b.Float(P_SPHERE_SHELL, "Shell Spacing", 0, 100000, 0, 1000, 100);
-    b.Angle(P_SPHERE_LATITUDE, "Latitude Range", 180);
+    b.Degrees(P_SPHERE_LATITUDE, "Latitude Range", 180);
     b.Path(P_PATH_MASK, "Path");
     b.Float(P_PATH_ROW_SPACING, "Row Spacing", 0, 100000, 0, 500, 50);
     b.Check(P_PATH_EVEN, "Even Spacing", true);
@@ -212,7 +219,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     b.Float(P_EMIT_VELOCITY, "Velocity", -100000, 100000, 0, 1000, 100);
     b.Percent(P_EMIT_VELOCITY_RANDOM, "Velocity Random", 0, 100, 0, 100, 0);
     b.Popup(P_EMIT_DIRECTION, "Direction", "Outward (N)|Along (T)|Up|Down", 1);
-    b.Angle(P_EMIT_SPREAD, "Spread", 0);
+    b.Degrees(P_EMIT_SPREAD, "Spread", 0);
     b.Float(P_EMIT_GRAVITY, "Gravity", -100000, 100000, -500, 500, 0);
     b.Float(P_EMIT_WIND_X, "Wind X", -100000, 100000, -500, 500, 0);
     b.Float(P_EMIT_WIND_Y, "Wind Y", -100000, 100000, -500, 500, 0);
@@ -221,7 +228,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     b.Float(P_EMIT_TURB_AMOUNT, "Turbulence Amount", 0, 100000, 0, 500, 0);
     b.Float(P_EMIT_TURB_SCALE, "Turbulence Scale", 0, 100000, 0, 2000, 300);
     b.Slider(P_EMIT_TURB_COMPLEXITY, "Turbulence Complexity", 1, 8, 1, 8, 3);
-    b.Angle(P_EMIT_TURB_EVOLUTION, "Turbulence Evolution", 0);
+    b.Degrees(P_EMIT_TURB_EVOLUTION, "Turbulence Evolution", 0);
     b.Float(P_EMIT_TURB_FLOW, "Turbulence Flow Speed", -1000, 1000, -10, 10, 0, false, PF_Precision_HUNDREDTHS);
     b.Float(P_EMIT_TURB_RAMP, "Turbulence Fade In", 0, 100, 0, 5, 1, false, PF_Precision_HUNDREDTHS);
     b.End(P_EMIT_TOPIC_END);
@@ -242,10 +249,10 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
         b.Popup(at(M_TYPE), name("Type"), kModTypeItems, MT_NONE, true);
         b.Popup(at(M_ALONG), name("Along"), "A|B|C|Index|Distance|X|Y|Z|Age", 1);
         b.Float(at(M_FREQUENCY), name("Frequency"), 0, 1000, 0, 10, 1, false, PF_Precision_HUNDREDTHS);
-        b.Angle(at(M_PHASE), name("Phase"), 0);
+        b.Degrees(at(M_PHASE), name("Phase"), 0);
         b.Float(at(M_SPEED), name("Speed"), -1000, 1000, -5, 5, 0, false, PF_Precision_HUNDREDTHS);
         b.Float(at(M_NOISE_SCALE), name("Noise Scale"), 0, 100000, 0, 2000, 300);
-        b.Angle(at(M_EVOLUTION), name("Evolution"), 0);
+        b.Degrees(at(M_EVOLUTION), name("Evolution"), 0);
         b.Slider(at(M_SEED), name("Seed"), 0, 1000000, 0, 1000, k + 1);
         b.Percent(at(M_PROGRESS), name("Progress"), 0, 100, 0, 100, 0);
         b.Popup(at(M_ORDER), name("Order"), "Index|A|B|Random|Distance|Age", 1);
@@ -267,7 +274,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
         b.Float(at(M_POS_B), name("Position B"), -100000, 100000, -500, 500, 0);
         b.Percent(at(M_SHIFT_A), name("Shift A"), -100000, 100000, -100, 100, 0);
         b.Percent(at(M_SHIFT_B), name("Shift B"), -100000, 100000, -100, 100, 0);
-        b.Angle(at(M_ROTATION), name("Rotation"), 0);
+        b.Degrees(at(M_ROTATION), name("Rotation"), 0);
         b.Percent(at(M_SCALE), name("Scale"), -100, 10000, -100, 200, 0);
         b.Percent(at(M_OPACITY), name("Opacity"), -100, 100, -100, 100, 0);
         b.Color(at(M_TINT), name("Tint"), 255, 255, 255);
