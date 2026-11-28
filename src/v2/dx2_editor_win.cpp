@@ -617,12 +617,14 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_CLOSE:
         DestroyWindow(h);
         return 0;
-    case WM_DESTROY:
+    case WM_DESTROY: {
+        Session* gone = g_win.s;
         if (g_win.edit) g_win.edit = nullptr;
         g_win.s = nullptr;
         g_win.wnd = nullptr;
-        WindowGone();
+        WindowGone(gone);
         return 0;
+    }
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -657,7 +659,7 @@ HWND CreateEditorWindow(Session* s)
     HWND wnd = CreateWindowExW(0, L"DupliX2Editor", L"DupliX 2 Editor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                900, 560, (HWND)owner, nullptr, inst, nullptr);
     g_win.wnd = wnd;
-    if (wnd) ShowWindow(wnd, SW_SHOWNOACTIVATE);
+    if (wnd) ShowWindow(wnd, SW_SHOWNORMAL);
     return wnd;
 }
 

@@ -238,7 +238,8 @@ extern "C" DllExport PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutDat
             if (UpdateParamsUI(in_data, params)) out_data->out_flags |= PF_OutFlag_REFRESH_UI;
             break;
         case PF_Cmd_USER_CHANGED_PARAM:
-            MaybeRunTestScript(in_data, ((PF_UserChangedParamExtra*)extra)->param_index);
+            MaybeRunTestScript(in_data, ((PF_UserChangedParamExtra*)extra)->param_index,
+                               params && params[P_SEED] ? params[P_SEED]->u.sd.value : 0);
             UpdateParamsUI(in_data, params);
             out_data->out_flags |= PF_OutFlag_REFRESH_UI;  // the Overview shows the layers and the seed
             break;

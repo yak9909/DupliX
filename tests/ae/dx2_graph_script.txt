@@ -1,4 +1,6 @@
-# the editor script of tests/ae/dx2_graph.jsx (comp B), run by the effect through the editor's write
+# the editor scripts of tests/ae/dx2_graph.jsx, run by the effect through the editor when Random Seed is set
+== seed 1 ==
+# comp B: a circle of 6, its Radius exposed (Macro 1: nothing is linked after "clear"), turned 45 degrees, 50%
 clear
 add Circle 40 60 as c
 add Modify 200 60 as m
@@ -9,3 +11,9 @@ set c count 6
 expose c radius
 set m rotZ 45
 set m opacity -50
+== seed 2 ==
+# comp C: the default grid (Macro 1-3 in use) with a second layer in z; Spacing Z exposed lands on Macro 4, a row
+# AE hides until the graph uses it (the user's first Expose on a new instance)
+set 1 countZ 2
+set 1 spacingZ 80
+expose 1 spacingZ

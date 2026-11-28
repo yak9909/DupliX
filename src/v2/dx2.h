@@ -87,9 +87,10 @@ void OpenEditor(PF_InData* in_data);
 void EditorInstanceGone(A_u_longlong instance);
 // The idle hook (registered at GLOBAL_SETUP).
 A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep);
-// Tests: DUPLIX2_TEST_SCRIPT=<file> runs that editor script on this instance through the editor's write path
-// (once per file content and instance) when its Random Seed changes (`changed` is the parameter's index).
-void MaybeRunTestScript(PF_InData* in_data, int changed);
+// Tests: DUPLIX2_TEST_SCRIPT=<file> runs that editor script on this instance through the editor (once per script
+// and instance) when its Random Seed changes (`changed` is the parameter's index, `seed` its new value). A file
+// with lines "== seed <n> ==" holds one script per seed value.
+void MaybeRunTestScript(PF_InData* in_data, int changed, int seed);
 
 // ---- custom UI (dx2_ui.cpp) ----
 PF_Err HandleEvent(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output,

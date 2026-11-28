@@ -11,6 +11,7 @@
 // editor script (graph/edit.h RunScript) on the editor's graph, committed like any edit.
 #include "v2/dx2_editor.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <mutex>
@@ -34,6 +35,7 @@ std::mutex g_mu;                 // the queue and g_gone (SEQUENCE_SETDOWN may c
 std::vector<Write> g_queue;
 std::set<A_u_longlong> g_gone;   // instances whose SEQUENCE_SETDOWN came
 ed::Session* g_session = nullptr;  // main thread only
+std::vector<ed::Session*> g_old;    // closed editors whose writes may still be queued (main thread only)
 int g_undo = 0;                  // AE commands asked by the editor: +1 undo, -1 redo (main thread)
 
 bool Gone(A_u_longlong inst)
@@ -135,19 +137,29 @@ bool QueuedFor(AEGP_EffectRefH eff)
     return false;
 }
 
+// A closed session lets its reference go once its writes are done. Returns true if it was deleted.
+bool Retire(ed::Session* s)
+{
+    if (QueuedFor(s->eff)) return false;
+    const bool gone = Gone(s->instance);
+    if (!gone) DisposeEffect(s->eff);  // the reference of an instance that went away is not touched (P0)
+    Log("editor: session closed (instance %llu%s)", (unsigned long long)s->instance, gone ? ", gone" : "");
+    delete s;
+    return true;
+}
+
 // The editor's session after the writes: AE's undo noticed (by the revision), the reference let go when closed.
 void TendSession()
 {
+    g_old.erase(std::remove_if(g_old.begin(), g_old.end(), Retire), g_old.end());
     ed::Session* s = g_session;
     if (!s) return;
     const bool gone = Gone(s->instance);
     if (s->closing || gone) {
         if (gone && s->wnd) PostMessageA(s->wnd, WM_CLOSE, 0, 0);
-        if (!s->closing || QueuedFor(s->eff)) return;
-        if (!gone) DisposeEffect(s->eff);  // the reference of a deleted effect is not touched (P0)
-        Log("editor: session closed (instance %llu%s)", (unsigned long long)s->instance, gone ? ", gone" : "");
-        delete s;
+        if (!s->closing) return;
         g_session = nullptr;
+        if (!Retire(s)) g_old.push_back(s);
         return;
     }
     if (QueuedFor(s->eff)) return;  // our own write comes first
@@ -170,10 +182,14 @@ ed::Session* Open(PF_InData* in_data)
         if (g_session->wnd) SetForegroundWindow(g_session->wnd);
         return g_session;
     }
-    if (g_session && !g_session->closing && g_session->wnd) {
-        DestroyWindow(g_session->wnd);  // one editor at a time: the other instance's closes
+    if (g_session) {
+        // one editor at a time: the other instance's closes (its queued writes are still done, then it lets go)
+        if (g_session->wnd) DestroyWindow(g_session->wnd);
+        g_session->wnd = nullptr;
+        g_session->closing = true;
+        g_old.push_back(g_session);
+        g_session = nullptr;
     }
-    if (g_session) return nullptr;  // still closing (its writes go first): try again
     Suite<AEGP_PFInterfaceSuite1> pfi(in_data->pica_basicP, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
     AEGP_EffectRefH eff = nullptr;
     if (!pfi || pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) || !eff) {
@@ -216,12 +232,11 @@ void Commit(const char* why, const std::vector<dxg::MacroWrite>& macros)
 
 void RequestUndo(bool redo) { g_undo += redo ? -1 : 1; }
 
-void WindowGone()
+void WindowGone(Session* s)
 {
-    if (g_session) {
-        g_session->wnd = nullptr;
-        g_session->closing = true;
-    }
+    if (!s) return;
+    s->wnd = nullptr;
+    s->closing = true;
 }
 
 }  // namespace ed
@@ -262,13 +277,20 @@ A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep)
         g_undo = 0;
     }
     TendSession();
+    // tests: DUPLIX2_IDLE_LOG=1 logs that AE's main loop is alive (once every 2 s)
+    static auto lastBeat = std::chrono::steady_clock::now();
+    static const bool beat = GetEnvironmentVariableA("DUPLIX2_IDLE_LOG", nullptr, 0) > 0;
+    if (beat && std::chrono::steady_clock::now() - lastBeat > std::chrono::seconds(2)) {
+        lastBeat = std::chrono::steady_clock::now();
+        Log("idle: alive (editor %s)", g_session ? (g_session->wnd ? "open" : "closing") : "none");
+    }
     if (g_session && max_sleep && *max_sleep > 6) *max_sleep = 6;  // the editor is open: come back soon (1/10 s)
     return A_Err_NONE;
 }
 
 void OpenEditor(PF_InData* in_data) { Open(in_data); }
 
-void MaybeRunTestScript(PF_InData* in_data, int changed)
+void MaybeRunTestScript(PF_InData* in_data, int changed, int seed)
 {
     char path[MAX_PATH] = {0};
     if (changed != P_SEED || !GetEnvironmentVariableA("DUPLIX2_TEST_SCRIPT", path, sizeof(path))) return;
@@ -276,7 +298,15 @@ void MaybeRunTestScript(PF_InData* in_data, int changed)
     if (!f) return;
     std::stringstream buf;
     buf << f.rdbuf();
-    const std::string script = buf.str();
+    std::string script = buf.str();
+    const std::string mark = "== seed " + std::to_string(seed) + " ==";
+    if (script.find("== seed ") != std::string::npos) {  // one script per seed value
+        const size_t a = script.find(mark);
+        if (a == std::string::npos) return;
+        const size_t from = script.find('\n', a);
+        const size_t to = script.find("\n== seed ", from == std::string::npos ? a : from);
+        script = from == std::string::npos ? "" : script.substr(from + 1, to == std::string::npos ? std::string::npos : to - from - 1);
+    }
     const A_u_longlong inst = InstanceId(in_data);
     static std::set<std::pair<A_u_longlong, size_t>> done;  // main thread only
     const auto key = std::make_pair(inst, std::hash<std::string>()(script));

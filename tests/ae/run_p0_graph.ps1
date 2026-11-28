@@ -29,18 +29,10 @@ Remove-Item env:DUPLIX_LOG, env:DUPLIX_P0_AUTO, env:DUPLIX_P0_PAYLOAD, env:DUPLI
 
 function Send-Step([string]$step, [int]$sec) {
     Set-Content -Encoding utf8NoBOM (Join-Path $out "step.txt") $step
-    $done = Join-Path $out "step_done_$step.txt"
-    for ($k = 1; $k -le 3; $k++) {
-        $s = Start-AeHidden -Exe $exe -Arguments "-r $jsx"
-        $null = $s.WaitForExit(30000)
-        $deadline = (Get-Date).AddSeconds($sec)
-        while (-not (Test-Path $done) -and (Get-Date) -lt $deadline -and -not $ae.HasExited) { Start-Sleep -Milliseconds 300 }
-        if (Test-Path $done) { return }
-        if ($ae.HasExited) { throw "AE exited (step $step)" }
-        foreach ($d in Get-AeHiddenDialogs) { Write-Host ("  dialog: {0} [{1}] {2}" -f $d.Process, $d.Title, $d.Text) }
-        Write-Host "step $step did not finish (try $k)"
-    }
-    throw "step $step did not run"
+    # AE refuses a script while it still counts the previous one as running: Send-AeScript closes that warning and
+    # sends again (spike/tools/ae_bg.ps1)
+    $tries = Send-AeScript -Ae $ae -Exe $exe -Jsx $jsx -Done (Join-Path $out "step_done_$step.txt") -TimeoutSec $sec
+    if ($tries -gt 1) { Write-Host "  step $step ran on try $tries" }
 }
 try {
     $ready = $false

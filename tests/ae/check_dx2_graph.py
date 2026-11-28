@@ -42,6 +42,17 @@ def graph_of(script: str, tmp: Path) -> Path:
     return g
 
 
+def script_for(seed: int) -> str:
+    """the part of dx2_graph_script.txt under "== seed <n> ==" (as the effect picks it)"""
+    out, on = [], False
+    for line in SCRIPT.read_text(encoding="utf-8").splitlines():
+        if line.startswith("== seed "):
+            on = line.strip() == f"== seed {seed} =="
+        elif on:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
 def expected(graph: Path, t: float, macros: dict) -> list:
     args = [str(GRAPH_TEST), "eval", str(graph), f"{t}"] + [f"m{k}={v}" for k, v in macros.items()]
     r = subprocess.run(args, capture_output=True, text=True)
@@ -78,7 +89,15 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         default = graph_of("", tmp)
-        circle = graph_of(SCRIPT.read_text(encoding="utf-8"), tmp)
+        circle = graph_of(script_for(1), tmp)
+        grid_z = graph_of(script_for(2), tmp)
+        # C: Spacing Z exposed to Macro 4 (hidden until then) at 80; Macro 1-3 at their defaults
+        want = expected(grid_z, 0, {4: 80})
+        got = b.get((20, 20, 0.0)) or []
+        check("C Macro 4 = 80 in the render (Expose to a hidden row)", any(g == want for g in got),
+              f"({want[0]}; {len(got)} blocks)")
+        jl = (d / "jsx.log").read_text(encoding="utf-8", errors="replace")
+        check("C Macro 4 = 80 in AE", "c macro4 Macro 4 = 80 " in jl)
         # A: Count 2 -> 4, Spacing 60 -> 100 over 0..2 s
         for t in (0, 1, 2):
             want = expected(default, t, {1: 2 + t, 2: 60 + 20 * t, 3: 100})
@@ -98,7 +117,10 @@ def main() -> int:
             check(f"B t={t} elements", hit, f"({want[0]})")
 
     # pixels (comp 400 x 300, the layers at its centre (200, 150); outside the copies: transparent)
-    red, green_half, clear = (255, 0, 0, 255), (0, 255, 0, 128), (0, 0, 0, 0)
+    # the colours as saveFrameToPng writes AE's own solids at this depth (at 32 bpc it is not 255 for 1.0)
+    red, clear = px(d, "ref_red", 200, 150), (0, 0, 0, 0)
+    green = px(d, "ref_green", 200, 150)
+    print(f"references: red {red}, green {green}, half {px(d, 'ref_half', 200, 150)}")
     # A t=0: 2 x 2 at spacing 60: copies centred at (170,120) (230,120) (170,180) (230,180), 40 px
     check("a_0 copy", near(px(d, "a_0", 170, 120), red), str(px(d, "a_0", 170, 120)))
     check("a_0 gap", near(px(d, "a_0", 200, 150), clear), str(px(d, "a_0", 200, 150)))
@@ -116,7 +138,7 @@ def main() -> int:
     check("b_2 centre clear", near(px(d, "b_2", 200, 150), clear), str(px(d, "b_2", 200, 150)))
     # after the undos: the default 5 x 5 grid (spacing 100, Count 5): a copy at the centre, opaque
     v = px(d, "b_undo", 200, 150)
-    check("b_undo default grid", v is not None and v[1] > 250 and v[3] > 250, str(v))
+    check("b_undo default grid", near(v, green, 1), f"{v} want {green}")
     # the editor (plugin.log): opened on B, reloaded after AE's undo, closed when B's effect went away
     log = (d / "plugin.log").read_text(encoding="utf-8", errors="replace") if (d / "plugin.log").exists() else ""
     check("editor opened", "dx2: editor: opened on instance" in log)

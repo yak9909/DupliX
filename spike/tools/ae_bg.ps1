@@ -89,6 +89,79 @@ public class AeBg {
 "@
 }
 
+# The text of a window's children through WM_GETTEXT (AE's own untitled #32770 warnings are drawn by AE but keep
+# their text there: 11/26 "a second script while one is running was not run").
+if (-not ("AeText" -as [type])) {
+Add-Type @"
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
+public static class AeText {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w,
+        StringBuilder l, uint flags, uint ms, out IntPtr r);
+    public static List<string> Texts(IntPtr p) {
+        var list = new List<string>();
+        EnumChildWindows(p, (h, l) => { var c = new StringBuilder(256); var t = new StringBuilder(8192); IntPtr r;
+            GetClassName(h, c, 256);
+            SendMessageTimeout(h, 0x000D /* WM_GETTEXT */, (IntPtr)8192, t, 2 /* SMTO_ABORTIFHUNG */, 1000, out r);
+            if (t.Length > 0) list.Add(c + " [" + t.ToString().Replace("\r", " ").Replace("\n", " ") + "]");
+            return true; }, IntPtr.Zero);
+        return list;
+    }
+}
+"@
+}
+
+# Every visible #32770 of a process, titled or not, with its children's text: what is blocking AE when a script it
+# was sent does not run. Saves each as <Dir>\window_<n>.png when -Dir is given.
+function Get-AeModalWindows([int]$ProcessId, [string]$Dir = "") {
+    $k = 0
+    foreach ($w in Get-AeHiddenWindows -ProcessId $ProcessId | Where-Object { $_.Visible -and $_.Class -eq "#32770" }) {
+        $texts = [AeText]::Texts([IntPtr]$w.Hwnd)
+        if ($Dir) { $null = Save-AeWindowImage -Hwnd $w.Hwnd -Path (Join-Path $Dir "window_$k.png"); $k++ }
+        [pscustomobject]@{ Hwnd = $w.Hwnd; Title = $w.Title; W = $w.W; H = $w.H; Text = ($texts -join " / ") }
+    }
+}
+
+# Sends a script to an AE that is already running (AfterFX.exe -r) and waits for the file the script writes last.
+# AE refuses a script while it still counts the previous one as running, for a few seconds after that script's last
+# line (more when the GPU is busy), and says so in an untitled #32770 that blocks AE: "1 つのスクリプトを実行中のときに
+# 2 つめのスクリプトを実行しようとしたため、2 つめのスクリプトは実行されませんでした" (11/26, 11/28). That warning is closed and
+# the script sent again; any other modal window is reported at once (it would block every later script too).
+function Send-AeScript([System.Diagnostics.Process]$Ae, [string]$Exe, [string]$Jsx, [string]$Done, [int]$TimeoutSec = 120,
+                       [int]$Tries = 5) {
+    for ($k = 1; $k -le $Tries; $k++) {
+        $s = Start-AeHidden -Exe $Exe -Arguments "-r $Jsx"
+        $null = $s.WaitForExit(30000)
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        $refused = $false
+        while (-not (Test-Path $Done) -and (Get-Date) -lt $deadline -and -not $Ae.HasExited) {
+            Start-Sleep -Milliseconds 500
+            # AE's titled #32770 windows are its progress and panels ("スクリプト ... を実行中..." while a script runs):
+            # not blocking. Its untitled ones are its alerts; a Win32 message box (Get-AeHiddenDialogs) also blocks.
+            foreach ($m in Get-AeModalWindows -ProcessId $Ae.Id | Where-Object { -not $_.Title }) {
+                if ($m.Text -match "2 つめのスクリプト|second script") {
+                    $null = [AeBg]::PostMessage([IntPtr]$m.Hwnd, 0x0010, [IntPtr]0, [IntPtr]0)  # WM_CLOSE
+                    $refused = $true
+                } else {
+                    throw ("an AE alert blocks AE while sending {0}: {1}" -f (Split-Path $Jsx -Leaf), $m.Text)
+                }
+            }
+            foreach ($d in Get-AeHiddenDialogs | Where-Object Blocking) {
+                throw ("a message box blocks AE while sending {0}: {1} [{2}] {3}" -f (Split-Path $Jsx -Leaf), $d.Process, $d.Title, $d.Text)
+            }
+            if ($refused) { break }
+        }
+        if (Test-Path $Done) { return $k }
+        if ($Ae.HasExited) { throw "AE exited while sending $(Split-Path $Jsx -Leaf)" }
+        if (-not $refused) { throw "$(Split-Path $Jsx -Leaf) did not finish in $TimeoutSec s (no window blocks AE)" }
+        Write-Host ("  {0}: AE was still running the previous script (try {1}): sent again" -f (Split-Path $Jsx -Leaf), $k)
+        Start-Sleep -Seconds 2
+    }
+    throw "$(Split-Path $Jsx -Leaf): refused $Tries times (AE kept counting the previous script as running)"
+}
+
 function Start-AeHidden([string]$Exe, [string]$Arguments) {
     $id = [AeBg]::Start($Exe, $Arguments, (Split-Path $Exe))
     Get-Process -Id $id

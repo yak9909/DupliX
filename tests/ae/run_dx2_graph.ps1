@@ -2,8 +2,8 @@
 # (tests/ae/dx2_graph.jsx). AE runs hidden and stays open; the steps are sent as scripts to the running instance,
 # so AE's main loop (and its idle hook) runs between them. Then check_dx2_graph.py compares the effect's dump with
 # graph_test.exe eval and reads the pixels.
-#   pwsh tests/ae/run_dx2_graph.ps1 [-WaitSec 5]
-param([int]$WaitSec = 5)
+#   pwsh tests/ae/run_dx2_graph.ps1 [-WaitSec 5] [-Bpc 8|16|32]
+param([int]$WaitSec = 5, [ValidateSet(8, 16, 32)][int]$Bpc = 8)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $out = Join-Path $root "build\test\dx2_graph"
@@ -21,23 +21,15 @@ $env:DUPLIX_TEST_DIR = $out -replace '\\', '/'
 $env:DUPLIX_LOG = Join-Path $out "plugin.log"
 $env:DUPLIX2_DUMP = Join-Path $out "dump.txt"
 $env:DUPLIX2_TEST_SCRIPT = Join-Path $PSScriptRoot "dx2_graph_script.txt"
+$env:DUPLIX_DX2_BPC = "$Bpc"
+$env:DUPLIX2_IDLE_LOG = "1"
 $ae = Start-AeHidden -Exe $exe -Arguments ""
-Remove-Item env:DUPLIX_LOG, env:DUPLIX2_DUMP, env:DUPLIX2_TEST_SCRIPT -ErrorAction SilentlyContinue
+Remove-Item env:DUPLIX_LOG, env:DUPLIX2_DUMP, env:DUPLIX2_TEST_SCRIPT, env:DUPLIX_DX2_BPC, env:DUPLIX2_IDLE_LOG -ErrorAction SilentlyContinue
 
 function Send-Step([string]$step, [int]$sec) {
     Set-Content -Encoding utf8NoBOM (Join-Path $out "step.txt") $step
-    $done = Join-Path $out "step_done_$step.txt"
-    for ($k = 1; $k -le 3; $k++) {
-        $s = Start-AeHidden -Exe $exe -Arguments "-r $jsx"
-        $null = $s.WaitForExit(30000)
-        $deadline = (Get-Date).AddSeconds($sec)
-        while (-not (Test-Path $done) -and (Get-Date) -lt $deadline -and -not $ae.HasExited) { Start-Sleep -Milliseconds 300 }
-        if (Test-Path $done) { return }
-        if ($ae.HasExited) { throw "AE exited (step $step)" }
-        foreach ($d in Get-AeHiddenDialogs) { Write-Host ("  dialog: {0} [{1}] {2}" -f $d.Process, $d.Title, $d.Text) }
-        Write-Host "step $step did not finish (try $k)"
-    }
-    throw "step $step did not run"
+    $tries = Send-AeScript -Ae $ae -Exe $exe -Jsx $jsx -Done (Join-Path $out "step_done_$step.txt") -TimeoutSec $sec
+    if ($tries -gt 1) { Write-Host "  step $step ran on try $tries" }
 }
 try {
     $ready = $false

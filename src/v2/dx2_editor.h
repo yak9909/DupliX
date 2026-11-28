@@ -21,8 +21,8 @@ Session* Current();  // nullptr if no editor is open
 void Commit(const char* why, const std::vector<dxg::MacroWrite>& macros = {});
 // AE's Undo / Redo, from the editor's Ctrl+Z / Ctrl+Shift+Z (run by the idle hook).
 void RequestUndo(bool redo);
-// The window was destroyed (WM_DESTROY).
-void WindowGone();
+// The window of `s` was destroyed (WM_DESTROY).
+void WindowGone(Session* s);
 
 // ---- the window (dx2_editor_win.cpp) ----
 HWND CreateEditorWindow(Session* s);

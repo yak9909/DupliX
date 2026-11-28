@@ -8,7 +8,10 @@
   出力から入力へドラッグでつなぐ・値をクリックで入力 / 左右ドラッグ・値の右クリックで Expose to Macro → Effect Controls の Macro にキー。
   Overview の Grid / Circle でプリセット。気になる点（操作の感触、窓が前面に出ない、足りない操作）を聞く。
 - **残りの課題:** (1) エフェクトを消しても `SEQUENCE_SETDOWN` が来ないので、エディターはプロジェクトを閉じるまで開いたまま（消したエフェクトに書くとどうなるかは未確認）。
-  (2) 窓は前面に出さずに表示（`SW_SHOWNOACTIVATE`）。前面に出すと隠したデスクトップの試験で AE が次の台本を受け付けなかった。
+  (2) （解決、12:50）「動いている AE に送った台本がたまたま届かない」の原因は AE の警告「2 つめのスクリプトは実行されませんでした」
+  （題名のない `#32770`。前の台本の最後の行から数秒たっても AE が実行中と数えている。GPU が混むと起きやすい）。共通の `Send-AeScript`
+  （`spike/tools/ae_bg.ps1`）が警告を閉じて送り直し、ほかの警告は待たずに中身を出して止める。**動いている AE に台本を送る試験は必ずこれを使う。**
+  再現には `tools/gpu_load.ps1`（GPU を埋める）。窓は前面に出して開く（`SW_SHOWNORMAL`）。
   (3) P1 は Fast だけで描く（Render Mode の 3D Layers も同じ絵。P6）。描く範囲はコピーの外接箱（Canvas は後）。
 - **次の 1 手:** 試用の結果を直す → P2（Morph・Merge・Instance、Polar・Sphere・Path・Fibonacci・Scatter・Point）。
 - **気を付けること:** 試験の書き込み（`DUPLIX2_TEST_SCRIPT`）は 1.5 秒待つ（台本の実行中に書くと `AEGP_SetStreamValue` が戻らない）。SmartRender はレイヤーの画素を出力より先に取り出す。

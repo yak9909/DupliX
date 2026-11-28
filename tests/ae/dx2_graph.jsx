@@ -15,6 +15,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
     var logFile = new File(outDir + "/jsx.log");
     logFile.encoding = "UTF-8";
     function log(s) { logFile.open("a"); logFile.writeln(s); logFile.close(); }
+    log("jsx start " + new Date().toTimeString());  // the script reached AE (before anything else)
     var stepFile = new File(outDir + "/step.txt");
     stepFile.open("r");
     var step = stepFile.readln().replace(/^﻿/, "").replace(/\s+$/, "");
@@ -40,6 +41,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
         log("step " + step);
         if (step == "setup") {
             app.newProject();
+            app.project.bitsPerChannel = parseInt($.getenv("DUPLIX_DX2_BPC") || "8", 10);
             var a = app.project.items.addComp("A", 400, 300, 1, 3, 30);
             var ra = a.layers.addSolid([1, 0, 0], "RedA", 40, 40, 1, 3);
             var fa = ra.property("ADBE Effect Parade").addProperty("DupliX2");
@@ -56,26 +58,41 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var b = app.project.items.addComp("B", 400, 300, 1, 3, 30);
             var gb = b.layers.addSolid([0, 1, 0], "GreenB", 30, 30, 1, 3);
             var fb = gb.property("ADBE Effect Parade").addProperty("DupliX2");
-            fb.property(dx2(SEED)).setValue(1);  // runs the editor script (DUPLIX2_TEST_SCRIPT)
-            log("setup ok");
+            fb.property(dx2(SEED)).setValue(1);  // runs the editor script for seed 1 (DUPLIX2_TEST_SCRIPT)
+
+            // C: Expose on the default grid lands on Macro 4, a row hidden until then; opening the editor on C
+            // also closes B's (whose write is still queued)
+            var c = app.project.items.addComp("C", 400, 300, 1, 3, 30);
+            var bc = c.layers.addSolid([0, 0, 1], "BlueC", 20, 20, 1, 3);
+            var fc = bc.property("ADBE Effect Parade").addProperty("DupliX2");
+            fc.property(dx2(SEED)).setValue(2);  // the script for seed 2
+            log("setup ok (" + app.project.bitsPerChannel + " bpc)");
         } else if (step == "check") {
-            var a = find("A"), b = find("B");
+            var a = find("A"), b = find("B"), c = find("C");
             png(a, 0, "a_0"); png(a, 1, "a_1"); png(a, 2, "a_2");
+            var fc = c.layer(1).property("ADBE Effect Parade").property(1);
+            log("c macro4 " + fc.property(dx2(8)).name + " = " + fc.property(dx2(8)).value + " (Expose sets 80)");
+            png(c, 0, "c_0");
             var fb = b.layer(1).property("ADBE Effect Parade").property(1);
             var m1 = fb.property(dx2(MACRO1));
             log("b macro1 " + m1.name + " = " + m1.value + " (the write sets 300)");
             png(b, 0, "b_before");
             m1.setValueAtTime(0, 50); m1.setValueAtTime(2, 150);
             png(b, 0, "b_0"); png(b, 1, "b_1"); png(b, 2, "b_2");
-            // undo takes back the two keys, then the editor's write (one step): the default grid again
-            app.executeCommand(16); app.executeCommand(16); app.executeCommand(16);
-            log("b after 3 undos: macro1 = " + m1.value + " keys " + m1.numKeys);
+            // undo takes back the two keys, C's write, then B's write (one step each): B's default grid again
+            app.executeCommand(16); app.executeCommand(16); app.executeCommand(16); app.executeCommand(16);
+            log("b after 4 undos: macro1 = " + m1.value + " keys " + m1.numKeys);
             png(b, 0, "b_undo");
             // the answer for a copy at 50%: AE's own green solid at 50% opacity, as saveFrameToPng writes it
             var r = app.project.items.addComp("Ref", 400, 300, 1, 1, 30);
             var rs = r.layers.addSolid([0, 1, 0], "Half", 400, 300, 1, 1);
             rs.property("ADBE Transform Group").property("ADBE Opacity").setValue(50);
             png(r, 0, "ref_half");
+            // and opaque ones (how saveFrameToPng writes this depth)
+            rs.property("ADBE Transform Group").property("ADBE Opacity").setValue(100);
+            png(r, 0, "ref_green");
+            var rr = r.layers.addSolid([1, 0, 0], "Red", 400, 300, 1, 1);
+            png(r, 0, "ref_red");
         } else if (step == "close") {
             // B's effect deleted (it stays in the undo history), then the project closed: the editor closes and
             // lets its reference go at SEQUENCE_SETDOWN (P0: AE crashed when a reference was used after app.open)
