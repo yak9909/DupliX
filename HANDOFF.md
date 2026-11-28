@@ -6,9 +6,15 @@
 - **(a) 済み（`3bedd07`）:** `src/graph`（graph・eval・edit。AE も Win32 も含まない）、`tests/graph/graph_test`（`pwsh tools/build.ps1 -Target graph`、176 件 PASS）。
   `graph_test.exe eval <graph> <t> m1=..` は評価の結果を、効果の書き出し（`DUPLIX2_DUMP`、これから作る）と同じ形（`FormatElements`）で出す。
   `graph_test.exe script <script> <out>` はエディターの操作の台本（`RunScript`）を流す。パラメータの表・マッチ名・グラフデータの形は設計書 v4 の 8.1 節で固定した。
-- **次の 1 手 (b):** `src/v2` を v4 のパラメータ（8.1 節の表、69 個）に作り直す。PiPL と GlobalSetup のフラグは 1 つのヘッダーの `#define` から取り、`static_assert` で照らす
-  （今回のダイアログの再発防止）。Arbitrary Data は P0 の `HandleArb` を移す。描画はハリボテの `dx2_render.cpp` を、回転を扱える逆アフィンの標本化にする（P1 は Fast だけ）。
-  評価は PreRender で、MFR では読むだけ（グローバルな可変の状態を持たない）。試験: jsx でマクロにキーを打って数フレーム描き、`DUPLIX2_DUMP` と `graph_test eval` を比べる＋画素の確認 1 つ。
+- **(b) 済み（`672490e` と次の commit）:** `src/v2` を v4 のパラメータ 69 個に作り直した（`dx2_flags.h` を PiPL と C++ で共有、`static_assert`）。描画は逆アフィン
+  （AE の画素は straight alpha、中で premultiplied）。Overview に配置の図・使っているマクロ・Open Editor（まだ何もしない）・プリセット Grid / Circle。
+  試験 `pwsh tests/ae/run_dx2_graph.ps1` → **DX2 GRAPH PASS**（PreRender ごとの書き出しが `graph_test eval` と一致、画素は AE 自身の 50% の平面と一致、取り消しで既定の格子に戻る）。
+  ハリボテで保存した aep は v4 で「ファイルのデータが見つかりません」と出て開かない（落ちない。設計書 8.1 節）。
+- **途中で分かったこと（トラブル表に書く）:** (1) 書き込みを queue した jsx がまだ動いている間に Idle Hook が `AEGP_SetStreamValue` を呼ぶと戻らない
+  （試験の書き込みは 1.5 秒待つ。エディターの書き込みは利用者の操作なので台本と重ならない）。(2) SmartRender で `checkout_output` を先にすると、入力の
+  `checkout_layer_pixels` が `PF_Err_BAD_CALLBACK_PARAM`（516）になる（レイヤーを先に取り出す）。
+- **次の 1 手 (c):** エディターの窓（`dx2_editor.cpp` の `OpenEditor`）。Win32 で、ノードの箱・つなぎ・値の編集・マクロに出す・ノードの追加と削除。
+  操作は `graph/edit.h` の関数だけを呼ぶ。書き込みは今の queue（`g_queue`）。版の番号の同期と `SEQUENCE_SETDOWN` で閉じる。
 - **(c) の予定:** P0 の Idle Hook の書き込み・`PF_RefreshAllWindows`・版の番号の同期・`SEQUENCE_SETDOWN` で閉じる、を移す。試験はエディターの操作の層を台本で動かし（`DUPLIX2_TEST_SCRIPT`）、結果のグラフデータを確かめる。
 - **古い試験:** `v2_sources.jsx`・`check_v2_sources.py`・`check_ui.py` は 409 個のハリボテ用。作り直しに合わせて消すか書き直す。
 - **気を付けること:** 作業ツリーの改行コードだけの 11 ファイルは触らない（`git add` はファイルを指定する）。
