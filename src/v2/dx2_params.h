@@ -1,180 +1,46 @@
-// DupliX 2 (prototype): the parameter layout of docs/design/複製プラグイン設計案_v2.md as Effect Controls.
-// Only the Sources (several layers) and a plain grid are drawn so far; the rest of the controls are a mock-up
-// (docs/design/2026-11-27-v2-effect-controls.md lists what each will do).
+// DupliX 2 (design v4, 8.1): the Effect Controls. Everything else is in the graph data (the Graph parameter),
+// edited in the editor; the macros are what After Effects keys and drives with expressions.
 //
-// The index of a parameter is also its Disk ID (uu.id) and its AEGP effect stream index. Projects save them:
-// once this effect ships, never insert, remove or reorder; only append before P_NUM.
+// The index of a parameter is also its Disk ID (uu.id) and its AEGP effect stream index. AE names a parameter's
+// match name after its Disk ID ("DupliX2-0005" is Macro 1) and expressions refer to it: never insert, remove or
+// reorder; only append before P_NUM.
 #pragma once
+
+#include "graph/graph.h"
 
 namespace dx2 {
 
-constexpr int kSourceSlots = 8;    // Sources: layer parameters (the count cannot change after PARAMS_SETUP)
-constexpr int kModifierSlots = 8;  // Modifiers: slots shown one by one with "+ Add Modifier"
-
-// one modifier slot (offsets from the slot's first parameter)
-enum ModParam {
-    M_TOPIC = 0,   // group "Modifier n"
-    M_TYPE,        // None / Wave / Noise / Random / Stagger / Map / Constant (None = the slot is unused, hidden)
-    // driver (shown by Type)
-    M_ALONG,       // Wave
-    M_FREQUENCY,   // Wave
-    M_PHASE,       // Wave
-    M_SPEED,       // Wave, Noise
-    M_NOISE_SCALE, // Noise
-    M_EVOLUTION,   // Noise
-    M_SEED,        // Random
-    M_PROGRESS,    // Stagger
-    M_ORDER,       // Stagger
-    M_SOFTNESS,    // Stagger
-    M_MAP_LAYER,   // Map
-    M_MAP_SAMPLE,  // Map
-    M_MAP_CHANNEL, // Map
-    // mask (shown by Mask)
-    M_MASK,        // All / Index Range / Every N / Field / Age Range
-    M_INDEX_FROM,
-    M_INDEX_TO,
-    M_EVERY_N,
-    M_FIELD_CENTER,
-    M_FIELD_RADIUS,
-    M_FIELD_SOFTNESS,
-    M_AGE_FROM,
-    M_AGE_TO,
-    // amounts (0 = not driven)
-    M_POS_T,
-    M_POS_N,
-    M_POS_B,
-    M_SHIFT_A,
-    M_SHIFT_B,
-    M_ROTATION,
-    M_SCALE,
-    M_OPACITY,
-    M_TINT,
-    M_TINT_AMOUNT,
-    M_TIME_OFFSET,
-    M_SOURCE_SHIFT,
-    M_MORPH,
-    M_STRENGTH,
-    M_TOPIC_END,
-    M_COUNT
-};
+constexpr int kMacros = dxg::kNumMacros;            // 32
+constexpr int kColorMacros = dxg::kNumColorMacros;  // 8
+constexpr int kPointMacros = dxg::kNumPointMacros;  // 8
+constexpr int kLayers = dxg::kNumLayers;            // 8
 
 enum Param {
     P_INPUT = 0,
-    P_HEADER,          // custom UI: name, a picture of the layout, the summary
-    P_SHAPE,           // Grid / Polar / Sphere / Path
-    P_COUNT_A,
-    P_COUNT_B,
-    P_COUNT_C,
-    P_SAMPLING,        // Regular / Scatter
-    P_SEED,
-    P_COPY_SCALE,      // the copies' size (% of the Source's own size); the Shape sets only where they go
-
-    P_SHAPE_TOPIC,     // "Shape Settings" (the rows of the chosen Shape only)
-    P_GRID_SIZE_X,
-    P_GRID_SIZE_Y,
-    P_GRID_SIZE_Z,
-    P_GRID_BRICK,
-    P_POLAR_INNER,
-    P_POLAR_OUTER,
-    P_POLAR_ANGLE,
-    P_POLAR_SIDES,
-    P_POLAR_TWIST,
-    P_POLAR_HEIGHT,
-    P_SPHERE_RADIUS,
-    P_SPHERE_SHELL,
-    P_SPHERE_LATITUDE,
-    P_PATH_MASK,
-    P_PATH_ROW_SPACING,
-    P_PATH_EVEN,
-    P_SHAPE_TOPIC_END,
-
-    P_FLOW_TOPIC,      // "Flow"
-    P_FLOW_OFFSET_A,
-    P_FLOW_SPEED_A,
-    P_FLOW_VARIANCE_A,
-    P_FLOW_STEP_A,
-    P_FLOW_OFFSET_B,
-    P_FLOW_SPEED_B,
-    P_FLOW_VARIANCE_B,
-    P_FLOW_STEP_B,
-    P_FLOW_BOUNDARY,
-    P_FLOW_EDGE_FADE,
-    P_FLOW_TOPIC_END,
-
-    P_MORPH_TOPIC,     // "Morph"
-    P_MORPH_AMOUNT,
-    P_MORPH_TARGET,
-    P_MORPH_TARGET_SIZE,
-    P_MORPH_TOPIC_END,
-
-    P_EMIT_TOPIC,      // "Emission"
-    P_EMIT_ON,
-    P_EMIT_START,
-    P_EMIT_DURATION,
-    P_EMIT_RATE,
-    P_EMIT_JITTER,
-    P_EMIT_LIFE,
-    P_EMIT_LIFE_RANDOM,
-    P_EMIT_LOOP,
-    P_EMIT_VELOCITY,
-    P_EMIT_VELOCITY_RANDOM,
-    P_EMIT_DIRECTION,
-    P_EMIT_SPREAD,
-    P_EMIT_GRAVITY,
-    P_EMIT_WIND_X,
-    P_EMIT_WIND_Y,
-    P_EMIT_WIND_Z,
-    P_EMIT_DRAG,
-    P_EMIT_TURB_AMOUNT,
-    P_EMIT_TURB_SCALE,
-    P_EMIT_TURB_COMPLEXITY,
-    P_EMIT_TURB_EVOLUTION,
-    P_EMIT_TURB_FLOW,
-    P_EMIT_TURB_RAMP,
-    P_EMIT_TOPIC_END,
-
-    P_MOD_TOPIC,       // "Modifiers"
-    P_MOD_LIST,        // custom UI: the slots in use, "+ Add Modifier"
-    P_MOD_BASE,
-    P_MOD_TOPIC_END = P_MOD_BASE + kModifierSlots * M_COUNT,
-
-    P_SRC_TOPIC,       // "Sources"
-    P_SRC_LIST,        // custom UI: the layers in use, "+ Add Source"
-    P_SRC_LAYER,       // Source 1 .. kSourceSlots
-    P_SRC_ASSIGN = P_SRC_LAYER + kSourceSlots,
-    P_SRC_TIME_MODE,
-    P_SRC_TIME_OFFSET,
-    P_SRC_QUANTIZE,
-    P_SRC_TOPIC_END,
-
-    P_RENDER_TOPIC,    // "Render"
-    P_RENDER_BILLBOARD,
-    P_RENDER_DEPTH_SORT,
-    P_RENDER_DEPTH_FADE,
-    P_RENDER_POSITION,
-    P_RENDER_ROT_X,
-    P_RENDER_ROT_Y,
-    P_RENDER_ROT_Z,
-    P_RENDER_SCALE,
-    P_RENDER_TOPIC_END,
-
+    P_OVERVIEW = 1,        // custom UI: Open Editor, a picture of the layout, the macros in use, the presets
+    P_RENDER_MODE = 2,     // 3D Layers / Fast (2D)
+    P_SEED = 3,
+    P_MACRO_TOPIC = 4,
+    P_MACRO = 5,           // Macro 1..32
+    P_MACRO_TOPIC_END = P_MACRO + kMacros,                 // 37
+    P_COLOR_TOPIC = P_MACRO_TOPIC_END + 1,                 // 38
+    P_COLOR = P_COLOR_TOPIC + 1,                           // 39: Color Macro 1..8
+    P_COLOR_TOPIC_END = P_COLOR + kColorMacros,            // 47
+    P_POINT_TOPIC = P_COLOR_TOPIC_END + 1,                 // 48
+    P_POINT = P_POINT_TOPIC + 1,                           // 49: Point Macro 1..8
+    P_POINT_TOPIC_END = P_POINT + kPointMacros,            // 57
+    P_LAYER_TOPIC = P_POINT_TOPIC_END + 1,                 // 58
+    P_LAYER = P_LAYER_TOPIC + 1,                           // 59: Layer 1..8
+    P_LAYER_TOPIC_END = P_LAYER + kLayers,                 // 67
+    P_GRAPH = P_LAYER_TOPIC_END + 1,                       // 68: the graph data (Arbitrary Data)
     P_NUM
 };
+static_assert(P_MACRO == 5 && P_MACRO + kMacros - 1 == 36, "Macro 1..32 are DupliX2-0005..0036 (design v4 8.1)");
+static_assert(P_GRAPH == 68 && P_NUM == 69, "the parameter table of design v4 8.1");
 
-inline int ModIndex(int slot, int m) { return P_MOD_BASE + slot * M_COUNT + m; }
-
-// popup values (1-based)
-enum Shape { SHAPE_GRID = 1, SHAPE_POLAR, SHAPE_SPHERE, SHAPE_PATH };
-enum ModType { MT_NONE = 1, MT_WAVE, MT_NOISE, MT_RANDOM, MT_STAGGER, MT_MAP, MT_CONSTANT };
-enum ModMask { MM_ALL = 1, MM_INDEX_RANGE, MM_EVERY_N, MM_FIELD, MM_AGE_RANGE };
-enum Assign { AS_SEQUENTIAL = 1, AS_RANDOM, AS_BY_A, AS_BY_B };
-
-constexpr const char* kShapeItems = "Grid|Polar|Sphere|Path";
-constexpr const char* kModTypeItems = "None|Wave|Noise|Random|Stagger|Map|Constant";
-constexpr const char* kModMaskItems = "All|Index Range|Every N|Field|Age Range";
-constexpr const char* kAssignItems = "Sequential|Random|By A|By B";
+enum RenderMode { RM_3D_LAYERS = 1, RM_FAST = 2 };
+constexpr const char* kRenderModeItems = "3D Layers|Fast (2D)";
 
 }  // namespace dx2
 
 #define DUPLIX2_MATCH_NAME "DupliX2"
-constexpr int kDupliX2Version[3] = {0, 1, 0};  // PF_VERSION(0,1,0,DEVELOP,1) = 32769 (the PiPL's AE_Effect_Version)

@@ -66,13 +66,14 @@
   <ItemGroup>
     <CustomBuild Include="DupliX2PiPL.r">
       <Message>Compiling the PiPL</Message>
-      <Command>cl /nologo /I "$(AESDK)\Headers" /EP "%(FullPath)" &gt; "$(IntDir)%(Filename).rr"
+      <Command>cl /nologo /I "$(AESDK)\Headers" /I "$(ProjectDir)." /EP "%(FullPath)" &gt; "$(IntDir)%(Filename).rr"
 pushd "$(IntDir)"
 "$(AESDK)\Resources\PiPLTool" %(Filename).rr %(Filename).rrc
 popd
 cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filename).rc"
 </Command>
       <Outputs>$(IntDir)%(Filename).rc;%(Outputs)</Outputs>
+      <AdditionalInputs>$(ProjectDir)dx2_flags.h;%(AdditionalInputs)</AdditionalInputs>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
@@ -83,6 +84,7 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="*.cpp" />
+    <ClCompile Include="..\graph\*.cpp" />
     <ClCompile Include="$(AESDK)\Util\AEFX_SuiteHelper.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

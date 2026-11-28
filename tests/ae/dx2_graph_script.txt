@@ -1,0 +1,11 @@
+# the editor script of tests/ae/dx2_graph.jsx (comp B), run by the effect through the editor's write
+clear
+add Circle 40 60 as c
+add Modify 200 60 as m
+add Output 360 60 as o
+wire c m
+wire m o
+set c count 6
+expose c radius
+set m rotZ 45
+set m opacity -50
