@@ -1,8 +1,11 @@
 // DupliX 2 (design v5, 6.1 and 12): the built-in groups. Their inputs (names, types, defaults: P1's values, design
 // v4 8.1) are declared here; their definitions in code and the C++ that stands in for them come with Task 7.
+#include "dxg5/eval_internal.h"
 #include "dxg5/nodes.h"
 
 namespace dx5 {
+
+bool NativeGroup(Evaluator&, const Node&, Geometry*) { return false; }
 
 namespace {
 
