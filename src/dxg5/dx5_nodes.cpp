@@ -120,25 +120,13 @@ std::vector<NodeDef> Base()
         d.push_back(e);
     }
 
-    // math (one node per operation; the Expression node holds a whole formula)
-    for (const char* n : {"add", "sub", "mul", "div", "floordiv", "mod", "pow", "min", "max", "atan2", "dot", "cross"})
-        d.push_back(Math((std::string("math_") + n).c_str(), n, 2));
-    for (const char* n : {"eq", "ne", "lt", "le", "gt", "ge", "and", "or"})
-        d.push_back(Math((std::string("math_") + n).c_str(), n, 2, Type::Bool));
-    d.push_back(Math("math_not", "not", 1, Type::Bool));
-    for (const char* n : {"neg", "sin", "cos", "tan", "asin", "acos", "sqrt", "abs", "floor", "ceil", "round", "normalize"})
-        d.push_back(Math((std::string("math_") + n).c_str(), n, 1));
-    d.push_back(Math("math_len", "len", 1, Type::Float));
-    for (const char* n : {"clamp", "mix", "smoothstep"}) d.push_back(Math((std::string("math_") + n).c_str(), n, 3));
-    d.push_back(Math("math_switch", "switch", 3));
-    d.push_back(Math("math_vec", "vec", 3, Type::Vector));
-    d.push_back(Math("math_sep_x", "sep_x", 1, Type::Float));
-    d.push_back(Math("math_sep_y", "sep_y", 1, Type::Float));
-    d.push_back(Math("math_sep_z", "sep_z", 1, Type::Float));
-    d.push_back(Math("math_rot", "rot", 3, Type::Rotation));
-    d.push_back(Math("math_rot_mul", "rot_mul", 2, Type::Rotation));
-    d.push_back(Math("math_rot_apply", "rot_apply", 2, Type::Vector));
-    d.push_back(Math("math_inverse", "inverse", 1, Type::Rotation));
+    // math: five families, the operator chosen on the node (design v5 6.2; the Expression node holds a formula)
+    for (const auto& f : std::vector<std::pair<const char*, const char*>>{
+             {"math", "Math"}, {"vmath", "Vector Math"}, {"compare", "Compare"}, {"boolmath", "Boolean Math"}, {"rotate", "Rotate"}}) {
+        NodeDef m = Math(f.first, f.second, 3);
+        m.text = "op";
+        d.push_back(m);
+    }
 
     // reading other elements and the whole list (design v5 5, 6.2)
     d.push_back(Def("at", "Sample Index", "Utility",
@@ -169,7 +157,102 @@ std::vector<NodeDef> Base()
     return d;
 }
 
+const std::vector<MathOpDef>& Ops()
+{
+    static const std::vector<MathOpDef> ops = [] {
+        std::vector<MathOpDef> o;
+        const Type A = Type::Any, F = Type::Float, V = Type::Vector, R = Type::Rotation, B = Type::Bool;
+        auto add = [&](const char* fam, const char* op, std::vector<Type> in, Type out, const char* impl = nullptr) {
+            MathOpDef m;
+            m.family = fam, m.op = op, m.arity = (int)in.size(), m.inTypes = in, m.out = out, m.impl = impl ? impl : op;
+            o.push_back(m);
+        };
+        for (const char* n : {"add", "sub", "mul", "div", "floordiv", "mod", "pow", "min", "max", "atan2"}) add("math", n, {A, A}, A);
+        for (const char* n : {"neg", "sin", "cos", "tan", "asin", "acos", "sqrt", "abs", "floor", "ceil", "round"})
+            add("math", n, {A}, A);
+        for (const char* n : {"clamp", "mix", "smoothstep", "switch"}) add("math", n, {A, A, A}, A);
+        add("vmath", "add", {V, V}, V);
+        add("vmath", "sub", {V, V}, V);
+        add("vmath", "mul", {V, V}, V);
+        add("vmath", "scale", {V, F}, V, "mul");
+        add("vmath", "len", {V}, F);
+        add("vmath", "normalize", {V}, V);
+        add("vmath", "dot", {V, V}, F);
+        add("vmath", "cross", {V, V}, V);
+        add("vmath", "vec", {F, F, F}, V);
+        add("vmath", "sep_x", {V}, F);
+        add("vmath", "sep_y", {V}, F);
+        add("vmath", "sep_z", {V}, F);
+        for (const char* n : {"eq", "ne", "lt", "le", "gt", "ge"}) add("compare", n, {A, A}, B);
+        add("boolmath", "and", {B, B}, B);
+        add("boolmath", "or", {B, B}, B);
+        add("boolmath", "not", {B}, B);
+        add("rotate", "rot", {F, F, F}, R);
+        add("rotate", "rot_mul", {R, R}, R);
+        add("rotate", "rot_apply", {R, V}, V);
+        add("rotate", "inverse", {R}, R);
+        return o;
+    }();
+    return ops;
+}
+
+// one def per operation, under its code name and (for the older code) math_<op>
+const std::vector<NodeDef>& OpDefs()
+{
+    static const std::vector<NodeDef> defs = [] {
+        std::vector<NodeDef> d;
+        for (const MathOpDef& m : Ops()) {
+            NodeDef n = Math(m.CodeName().c_str(), m.op.c_str(), m.arity, m.out);
+            n.category = "Hidden";
+            d.push_back(n);
+        }
+        return d;
+    }();
+    return defs;
+}
+
 }  // namespace
+
+bool IsMathFamily(const std::string& t)
+{
+    return t == "math" || t == "vmath" || t == "compare" || t == "boolmath" || t == "rotate";
+}
+
+const MathOpDef* FindMathOp(const std::string& family, const std::string& op)
+{
+    for (const MathOpDef& m : Ops())
+        if (m.family == family && m.op == op) return &m;
+    return nullptr;
+}
+
+const MathOpDef* FindMathOpByCodeName(const std::string& name)
+{
+    const size_t u = name.find('_');
+    if (u == std::string::npos) return nullptr;
+    const std::string fam = name.substr(0, u), op = name.substr(u + 1);
+    if (!IsMathFamily(fam)) return nullptr;
+    if (const MathOpDef* m = FindMathOp(fam, op)) return m;
+    if (fam != "math") return nullptr;
+    for (const MathOpDef& m : Ops())  // the older math_<op> of the other families
+        if (m.op == op) return &m;
+    return nullptr;
+}
+
+std::vector<const MathOpDef*> MathOps(const std::string& family)
+{
+    std::vector<const MathOpDef*> r;
+    for (const MathOpDef& m : Ops())
+        if (m.family == family) r.push_back(&m);
+    return r;
+}
+
+std::string DefaultMathOp(const std::string& family)
+{
+    if (family == "compare") return "lt";
+    if (family == "boolmath") return "and";
+    if (family == "rotate") return "rot";
+    return "add";
+}
 
 int NodeDef::Input(const std::string& n) const
 {
@@ -198,6 +281,11 @@ const NodeDef* FindDef(const std::string& name)
 {
     for (const NodeDef& d : AllDefs())
         if (d.name == name) return &d;
+    if (const MathOpDef* m = FindMathOpByCodeName(name)) {
+        const std::string code = m->CodeName();
+        for (const NodeDef& d : OpDefs())
+            if (d.name == code) return &d;
+    }
     return nullptr;
 }
 

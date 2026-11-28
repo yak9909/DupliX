@@ -92,7 +92,7 @@ TEST(expression_vs_math)
     Graph a;
     CHECK(Read("g = points(2)\ng = set_position(g, math_add(position, vec(1, 0, 0)))\nh = set_position(g, position + vec(1, 0, 0))\noutput(h)\n", &a));
     const Node* m = a.FindKey("g_2.position");
-    CHECK(m && m->type == "math_add");
+    CHECK(m && m->type == "math" && m->text == "add");
     const Node* e = a.FindKey("h.position");
     CHECK(e && e->type == "expr");
     const std::string code = GraphToCode(a);

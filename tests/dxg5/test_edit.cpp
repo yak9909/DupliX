@@ -91,16 +91,16 @@ TEST(expand_collapse)
     if (!e) return;
     CHECK(ExpandExpression(g, e->id));
     int math = 0, exprs = 0;
-    for (const Node& n : g.nodes) math += n.type.rfind("math_", 0) == 0, exprs += n.type == "expr";
+    for (const Node& n : g.nodes) math += IsMathFamily(n.type), exprs += n.type == "expr";
     CHECK(math == 3 && exprs == 0);  // vec, add, mul
     const auto mid = Evaluate(g, Ctx());
     CHECK(mid.elements.size() == 3 && mid.elements[2].pos[0] == before.elements[2].pos[0] && mid.elements[2].pos[1] == 100);
     std::vector<uint32_t> sel;
     for (const Node& n : g.nodes)
-        if (n.type.rfind("math_", 0) == 0 || n.type == "index") sel.push_back(n.id);
+        if (IsMathFamily(n.type) || n.type == "index") sel.push_back(n.id);
     CHECK(CollapseToExpression(g, sel));
     exprs = 0, math = 0;
-    for (const Node& n : g.nodes) math += n.type.rfind("math_", 0) == 0, exprs += n.type == "expr";
+    for (const Node& n : g.nodes) math += IsMathFamily(n.type), exprs += n.type == "expr";
     CHECK(math == 0 && exprs == 1);
     const auto after = Evaluate(g, Ctx());
     CHECK(after.elements.size() == 3 && after.elements[2].pos[0] == before.elements[2].pos[0]);

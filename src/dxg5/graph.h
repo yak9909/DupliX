@@ -68,7 +68,19 @@ struct Graph {
 std::string UniqueKey(const Graph& g, const std::string& want);
 // A node of `type` with its inputs at their defaults (an unknown type: no inputs). An empty key becomes
 // <type><n> (the smallest n from 1 that is free). Returns its id.
+// A math operation's code name ("math_add", "vmath_dot") is made a node of its family with the operator as text.
 uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, double x, double y);
+// "math_add" (P1.5's stored type, or a code name) -> type "math", text "add". True if the node is a math node.
+bool NormalizeMath(Node& n);
+// A math node's operation (nullptr for other nodes or an unknown operator).
+const MathOpDef* MathOpOf(const Node& n);
+// The type an output gives (a math node's comes from its operator).
+Type OutputType(const Graph& g, const Node& n, int output);
+// Is input k drawn? (A math node hides the inputs its operator does not use: design v5 6.2.)
+bool InputVisible(const Graph& g, const Node& n, int k);
+// Does the wire into input k count? Not on a hidden input, nor when the output's type does not fit the operator's
+// input (drawn red). Such a wire is kept; evaluation uses the input's own value instead. True when unwired.
+bool LinkActive(const Graph& g, const Node& n, int k);
 
 std::string Serialize(const Graph& g);
 // Reads version 2, and version 1 (converted: design v5 7). False only when the text is not a DupliX graph.

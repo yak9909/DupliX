@@ -43,8 +43,29 @@ struct NodeDef {
     int Output(const std::string& n) const;  // index or -1
 };
 
+// The table holds the five math families (math, vmath, compare, boolmath, rotate: design v5 6.2); FindDef also
+// answers a math operation's code name ("math_add", "vmath_dot", and the older "math_vec") with a def of that
+// operation's inputs, so the reader can call it like any node.
 const NodeDef* FindDef(const std::string& name);
 const std::vector<NodeDef>& AllDefs();
+
+// ---- the math nodes: a family and an operator (the node's text) ----
+struct MathOpDef {
+    std::string family;          // math, vmath, compare, boolmath, rotate
+    std::string op;              // add, sin, dot, lt, and, rot_mul, ...
+    int arity = 2;               // inputs a, b, c used (the rest are hidden)
+    std::vector<Type> inTypes;   // per used input (Any: whatever comes)
+    Type out = Type::Any;
+    std::string impl;            // the MathOp name that computes it
+    std::string CodeName() const { return family + "_" + op; }
+};
+bool IsMathFamily(const std::string& type);
+const MathOpDef* FindMathOp(const std::string& family, const std::string& op);
+// "math_add" -> math/add, "vmath_dot" -> vmath/dot; the older "math_<op>" of any family ("math_vec", "math_eq")
+const MathOpDef* FindMathOpByCodeName(const std::string& name);
+std::vector<const MathOpDef*> MathOps(const std::string& family);
+// the operator a new node of the family starts with
+std::string DefaultMathOp(const std::string& family);
 // The built-in groups' definitions (dx5_groups.cpp), part of AllDefs.
 std::vector<NodeDef> GroupDefs();
 

@@ -31,6 +31,8 @@ bool SetConst(Graph& g, uint32_t id, const std::string& input, double v);
 // A value typed in the editor (design v5 8.3): a number or a formula of numbers is set as the value; any other
 // formula becomes an Expression node wired into the input. Refused with why.
 bool SetExpression(Graph& g, uint32_t id, const std::string& input, const std::string& text, std::string* why);
+// A math node's operator (design v5 6.2). Its wires stay; those on inputs the operator does not use stop counting.
+bool SetMathOp(Graph& g, uint32_t id, const std::string& op, std::string* why);
 // Wires Macro k+1 (or Int Macro k+1) into the input (one Macro node per macro, shared).
 bool LinkMacro(Graph& g, uint32_t id, const std::string& input, bool isInt, int k);
 // "Expose" (design v4 3): a free macro (an Int Macro for an Int input) takes the input's value now (returned in

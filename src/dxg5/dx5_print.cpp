@@ -220,11 +220,12 @@ private:
             Substitute(*e, n, ctx, lambda);
             return PrintExpr(*e);
         }
-        if (t.rfind("math_", 0) == 0) {
-            const NodeDef* d = FindDef(t);
-            std::string s = t + "(";
-            for (size_t k = 0; d && k < d->inputs.size(); k++) {
-                const InputSlot* in = n.In(d->inputs[k].name);
+        if (IsMathFamily(t)) {
+            const MathOpDef* m = MathOpOf(n);
+            if (!m) return "0";
+            std::string s = m->CodeName() + "(";
+            for (int k = 0; k < m->arity; k++) {
+                const InputSlot* in = k < (int)n.inputs.size() ? &n.inputs[k] : nullptr;
                 s += (k ? ", " : "") + (in ? Arg(n, *in, ctx, lambda) : std::string("0"));
             }
             return s + ")";
@@ -315,12 +316,14 @@ private:
             walk(*e);
             return f;
         }
-        if (t.rfind("math_", 0) == 0) {
-            for (const InputSlot& s : n.inputs)
-                if (s.link.from && g_.Find(s.link.from)) {
+        if (IsMathFamily(t)) {
+            for (int k = 0; k < (int)n.inputs.size(); k++) {
+                const InputSlot& s = n.inputs[k];
+                if (s.link.from && LinkActive(g_, n, k) && g_.Find(s.link.from)) {
                     const Node& m = *g_.Find(s.link.from);
                     if (FieldNode(m) || m.type == "capture") return true;
                 }
+            }
             return false;
         }
         return false;
@@ -424,7 +427,7 @@ private:
         int used = 0;
         for (const auto& kv : uses_)
             if (kv.first.first == n.id) used = kv.first.second;
-        const bool formula = t == "expr" || IsReaderType(t) || t == "attr" || t.rfind("math_", 0) == 0;
+        const bool formula = t == "expr" || IsReaderType(t) || t == "attr" || IsMathFamily(t);
         if (formula && FieldNode(n)) return n.key + " = (e) => " + InlineText(n, used, {0, 0}, "e") + "\n";
         return n.key + " = " + InlineText(n, used, {0, 0}, "") + "\n";
     }
@@ -467,7 +470,7 @@ private:
                     if (!w || !w->link.from) break;
                     const Node* wn = g_.Find(w->link.from);
                     const bool then = w->link.from == n.id && w->link.output == 1;
-                    const bool other = wn && wn->type == "math_not" && wn->In("a") && wn->In("a")->link.from == n.id;
+                    const bool other = wn && wn->type == "boolmath" && wn->text == "not" && wn->In("a") && wn->In("a")->link.from == n.id;
                     if (!then && !other) break;
                     (then ? thenPart : elsePart) += "    " + InnerLine(m, c2);
                     c2 = {m.id, 0};

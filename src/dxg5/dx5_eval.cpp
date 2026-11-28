@@ -264,17 +264,23 @@ Column Evaluator::FieldUncached(const Node& n, int output, const GeoPtr& ctx)
         Warn(n.key + ": a group's input outside a group");
         return MakeColumn(Type::Float, cnt, Value::F(0));
     }
-    if (t.rfind("math_", 0) == 0) {
-        const NodeDef* d = FindDef(t);
-        const int na = d ? (int)d->inputs.size() : 0;
+    if (IsMathFamily(t)) {
+        const MathOpDef* m = MathOpOf(n);
+        if (!m) {
+            Warn(n.key + ": no operation " + n.text);
+            return MakeColumn(Type::Float, cnt, Value::F(0));
+        }
+        const int na = std::min<int>(m->arity, (int)n.inputs.size());
         Column in[3];
         size_t size = 1;
         for (int k = 0; k < na && k < 3; k++) {
-            in[k] = Input(n, d->inputs[k].name, ctx);
+            // a wire that does not fit the operator's input is kept but not read (design v5 6.2)
+            if (LinkActive(g_, n, k)) in[k] = Input(n, n.inputs[k].name, ctx);
+            else in[k] = MakeColumn(n.inputs[k].value.type, 1, n.inputs[k].value);
             if (in[k].size() != 1) size = cnt;
         }
         std::vector<Value> out(size);
-        const std::string op = t.substr(5);
+        const std::string op = m->impl;
         for (size_t e = 0; e < size; e++) {
             Value a[3];
             for (int k = 0; k < na && k < 3; k++) a[k] = in[k].Get(e);

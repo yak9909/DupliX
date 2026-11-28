@@ -344,9 +344,55 @@ uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, doub
         n.key = UniqueKey(g, key);
     }
     n.x = x, n.y = y;
+    NormalizeMath(n);
+    if (IsMathFamily(n.type) && n.text.empty()) n.text = DefaultMathOp(n.type);
     FillInputs(n);
     g.nodes.push_back(n);
     return n.id;
+}
+
+const MathOpDef* MathOpOf(const Node& n) { return IsMathFamily(n.type) ? FindMathOp(n.type, n.text) : nullptr; }
+
+Type OutputType(const Graph&, const Node& n, int output)
+{
+    if (const MathOpDef* m = MathOpOf(n)) return m->out;
+    const NodeDef* d = FindDef(n.type);
+    return d && output >= 0 && output < (int)d->outputs.size() ? d->outputs[output].type : Type::Any;
+}
+
+bool InputVisible(const Graph&, const Node& n, int k)
+{
+    if (!IsMathFamily(n.type)) return true;
+    const MathOpDef* m = MathOpOf(n);
+    return m && k < m->arity;
+}
+
+bool LinkActive(const Graph& g, const Node& n, int k)
+{
+    if (k < 0 || k >= (int)n.inputs.size()) return false;
+    const InputSlot& s = n.inputs[k];
+    if (!s.link.from) return true;
+    if (!IsMathFamily(n.type)) return true;
+    const MathOpDef* m = MathOpOf(n);
+    if (!m || k >= m->arity) return false;
+    const Node* f = g.Find(s.link.from);
+    if (!f) return false;
+    const Type it = m->inTypes[k], ot = OutputType(g, *f, s.link.output);
+    if (it == Type::Any || ot == Type::Any || it == ot) return true;
+    const bool scalar = ot == Type::Float || ot == Type::Int || ot == Type::Bool;
+    if (it == Type::Float || it == Type::Int || it == Type::Bool) return scalar;
+    if (it == Type::Vector) return ot == Type::Float || ot == Type::Int;
+    return false;
+}
+
+bool NormalizeMath(Node& n)
+{
+    if (IsMathFamily(n.type)) return true;
+    const MathOpDef* m = FindMathOpByCodeName(n.type);
+    if (!m) return false;
+    n.type = m->family;
+    n.text = m->op;
+    return true;
 }
 
 std::string MacroLabel(const Graph& g, bool isInt, int k)
@@ -382,6 +428,8 @@ std::string Serialize(const Graph& g)
             s += std::string(" salt=") + b;
         }
         if (n.setting) s += " setting=" + std::to_string(n.setting);
+        const bool math = IsMathFamily(n.type);
+        if (math) s += " op=" + n.text;
         s += "\n";
         for (const InputSlot& in : n.inputs) {
             if (in.link.from) {
@@ -392,7 +440,7 @@ std::string Serialize(const Graph& g)
                 if (!v.empty()) s += "in " + std::to_string(n.id) + " " + in.name + " const " + v + "\n";
             }
         }
-        if (!n.text.empty()) s += "text " + std::to_string(n.id) + " " + n.text + "\n";
+        if (!n.text.empty() && !math) s += "text " + std::to_string(n.id) + " " + n.text + "\n";
     }
     for (const std::string& l : g.unknownLines) s += l + "\n";
     return s;
@@ -455,10 +503,12 @@ bool Parse(const std::string& text, Graph* out, std::string* error)
             n.type = t[2];
             n.key = t[5];
             if (ParseInt(t[1], &n.id) && n.id && ParseNum(t[3], &n.x) && ParseNum(t[4], &n.y) && !g.Find(n.id) && !g.FindKey(n.key)) {
+                NormalizeMath(n);  // P1.5's math_add -> math, op add
                 FillInputs(n);
                 for (size_t k = 6; k < t.size(); k++) {
                     const std::string& o = t[k];
-                    if (o.rfind("legacy=", 0) == 0) ParseInt(o.substr(7), &n.legacyId);
+                    if (o.rfind("op=", 0) == 0 && IsMathFamily(n.type)) n.text = o.substr(3);
+                    else if (o.rfind("legacy=", 0) == 0) ParseInt(o.substr(7), &n.legacyId);
                     else if (o.rfind("zone=", 0) == 0) ParseInt(o.substr(5), &n.zone);
                     else if (o.rfind("salt=", 0) == 0) ParseInt(o.substr(5), &n.salt, 16);
                     else if (o.rfind("setting=", 0) == 0) ParseInt(o.substr(8), &n.setting);

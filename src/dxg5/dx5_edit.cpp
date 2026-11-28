@@ -154,9 +154,11 @@ bool IsField(const Graph& g, uint32_t node, int output)
         }
         return false;
     }
-    if (t.rfind("math_", 0) == 0) {
-        for (const InputSlot& s : n->inputs)
-            if (s.link.from && IsField(g, s.link.from, s.link.output)) return true;
+    if (IsMathFamily(t)) {
+        for (int k = 0; k < (int)n->inputs.size(); k++) {
+            const InputSlot& s = n->inputs[k];
+            if (s.link.from && LinkActive(g, *n, k) && IsField(g, s.link.from, s.link.output)) return true;
+        }
         return false;
     }
     return false;
@@ -219,6 +221,21 @@ bool Connect(Graph& g, uint32_t from, int output, uint32_t to, const std::string
         return no(input + " cannot vary per element");
     if (Feeds(g, to, from)) return no("that would make a loop");
     slot->link = {from, output};
+    return true;
+}
+
+bool SetMathOp(Graph& g, uint32_t id, const std::string& op, std::string* why)
+{
+    Node* n = g.Find(id);
+    if (!n || !IsMathFamily(n->type)) {
+        if (why) *why = "not a math node";
+        return false;
+    }
+    if (!FindMathOp(n->type, op)) {
+        if (why) *why = n->type + " has no operation " + op;
+        return false;
+    }
+    n->text = op;
     return true;
 }
 
@@ -541,7 +558,7 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
         const Node* n = g.Find(id);
         if (!n) return false;
         const std::string& t = n->type;
-        if (!(t.rfind("math_", 0) == 0 || t == "expr" || IsReaderName(t) || t == "attr")) return false;
+        if (!(IsMathFamily(t) || t == "expr" || IsReaderName(t) || t == "attr")) return false;
     }
     // the one output used outside the set
     uint32_t exit = 0;
@@ -581,10 +598,11 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
             sub(*e);
             return "(" + PrintExpr(*e) + ")";
         }
-        const std::string op = t.substr(5);
-        const NodeDef* d = FindDef(t);
+        const MathOpDef* m = MathOpOf(n);
+        if (!m) return "0";
+        const std::string op = m->impl;
         std::vector<std::string> a;
-        for (size_t k = 0; d && k < d->inputs.size(); k++) a.push_back(slot(*n.In(d->inputs[k].name)));
+        for (int k = 0; k < m->arity && k < (int)n.inputs.size(); k++) a.push_back(slot(n.inputs[k]));
         auto it = ops.find(op);
         if (it != ops.end() && a.size() == 2) return "(" + a[0] + " " + it->second + " " + a[1] + ")";
         if (op == "neg") return "(-" + a[0] + ")";
