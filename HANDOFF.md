@@ -1,4 +1,17 @@
-# 引き継ぎメモ（最新: 2026-11-28 10 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-28 11 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-28 11 時台、P1 を進めている。利用者の指示: P1 に着手してよい）
+
+- **進め方（助言役と合意）:** 区切りは (a) 核と単体テスト → (b) パラメータと描画（既定のプリセット）と jsx の試験 → (c) エディター。各区切りで commit・push・このメモ。
+- **(a) 済み（`3bedd07`）:** `src/graph`（graph・eval・edit。AE も Win32 も含まない）、`tests/graph/graph_test`（`pwsh tools/build.ps1 -Target graph`、176 件 PASS）。
+  `graph_test.exe eval <graph> <t> m1=..` は評価の結果を、効果の書き出し（`DUPLIX2_DUMP`、これから作る）と同じ形（`FormatElements`）で出す。
+  `graph_test.exe script <script> <out>` はエディターの操作の台本（`RunScript`）を流す。パラメータの表・マッチ名・グラフデータの形は設計書 v4 の 8.1 節で固定した。
+- **次の 1 手 (b):** `src/v2` を v4 のパラメータ（8.1 節の表、69 個）に作り直す。PiPL と GlobalSetup のフラグは 1 つのヘッダーの `#define` から取り、`static_assert` で照らす
+  （今回のダイアログの再発防止）。Arbitrary Data は P0 の `HandleArb` を移す。描画はハリボテの `dx2_render.cpp` を、回転を扱える逆アフィンの標本化にする（P1 は Fast だけ）。
+  評価は PreRender で、MFR では読むだけ（グローバルな可変の状態を持たない）。試験: jsx でマクロにキーを打って数フレーム描き、`DUPLIX2_DUMP` と `graph_test eval` を比べる＋画素の確認 1 つ。
+- **(c) の予定:** P0 の Idle Hook の書き込み・`PF_RefreshAllWindows`・版の番号の同期・`SEQUENCE_SETDOWN` で閉じる、を移す。試験はエディターの操作の層を台本で動かし（`DUPLIX2_TEST_SCRIPT`）、結果のグラフデータを確かめる。
+- **古い試験:** `v2_sources.jsx`・`check_v2_sources.py`・`check_ui.py` は 409 個のハリボテ用。作り直しに合わせて消すか書き直す。
+- **気を付けること:** 作業ツリーの改行コードだけの 11 ファイルは触らない（`git add` はファイルを指定する）。
 
 ## 再開の手順（2026-11-28 10 時台、P0 完了・未決 5 も回答済み。次は P1）
 
