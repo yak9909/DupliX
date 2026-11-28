@@ -445,6 +445,18 @@ private:
                 return true;
             }
         }
+        if (rw->kind == Expr::Name && f.inputs.empty()) {
+            // (e) => e.position is the Position node; (e) => e.ix reads the attribute
+            if (IsReader(rw->text)) return ReaderNode(rw->text, key, r);
+            bool isInt = false;
+            int mk = 0;
+            if (!MacroName(rw->text, &isInt, &mk) && rw->text != "true" && rw->text != "false") {
+                r->node = NewNode("attr", key);
+                g_.Find(r->node)->text = rw->text;
+                r->type = t, r->field = true, r->fromFormula = true;
+                return true;
+            }
+        }
         r->node = NewNode("expr", key);
         Node* n = g_.Find(r->node);
         n->text = PrintExpr(*rw);
@@ -808,6 +820,7 @@ private:
             if (FindBuiltin(name) || (a.count(name) && !z.locals.count(name))) return SetAttr(name, *s.value, s.pos);
             Ref r;
             if (!CaptureHere(*s.value, &r)) return false;
+            g_.Find(r.node)->text = name;  // the local's name (written back by the printer)
             z.locals[name] = r;
             return true;
         }

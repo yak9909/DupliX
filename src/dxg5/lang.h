@@ -16,6 +16,15 @@ namespace dx5 {
 bool CodeToGraph(const std::string& code, const Graph& previous, Graph* out, std::vector<Diag>* errors,
                  std::vector<Diag>* notes);
 
+// The graph as code (design v5 8.2): the same graph always gives the same text, and reading it back gives the
+// same graph (SameGraph). Nodes the code cannot say are written as comments.
+std::string GraphToCode(const Graph& g);
+// A value output written as an expression (the stack view's fields).
+std::string ExprText(const Graph& g, uint32_t node, int output);
+// Design v5 13's "the same": node types and keys, Expression formulas (in one written form; an Expression feeding
+// its only user folded into it), wires, unwired values, zones. Positions and ids are not compared.
+bool SameGraph(const Graph& a, const Graph& b, std::string* why);
+
 // ---- shared by the reader, the printer and the Expression node (dx5_exprtext.cpp) ----
 // The expression as text with the fewest parentheses that keep its meaning ("a + b * c", "-(a + b)").
 std::string PrintExpr(const Expr& e);
