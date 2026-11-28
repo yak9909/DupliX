@@ -50,12 +50,15 @@ try {
     Send-Step "setup" 60
     Start-Sleep -Seconds $WaitSec  # the idle hook writes the editor script meanwhile
     Send-Step "check" 120
+    Start-Sleep -Seconds 3  # the editor notices the undo meanwhile
+    Send-Step "close" 60
+    Start-Sleep -Seconds 3  # the editor closes meanwhile
 } finally {
     foreach ($d in Get-AeHiddenDialogs) { Write-Host ("dialog: {0} [{1}] {2}" -f $d.Process, $d.Title, $d.Text) }
     if (-not $ae.HasExited) { $null = Stop-AeHidden -Process $ae -TimeoutSec 20 }
     $null = Repair-AeCrashState
 }
 Get-Content (Join-Path $out "jsx.log") | Where-Object { $_ -notmatch '^ #' }
-Select-String -Path (Join-Path $out "plugin.log") -Pattern "dx2: (write|test script|preset|GlobalSetup|graph:|arb:)" | ForEach-Object { $_.Line }
+Select-String -Path (Join-Path $out "plugin.log") -Pattern "dx2: (write|test script|preset|GlobalSetup|graph:|arb:|editor)" | ForEach-Object { $_.Line }
 & (Join-Path $root "spike\.venv\Scripts\python.exe") -I (Join-Path $PSScriptRoot "check_dx2_graph.py") $out
 exit $LASTEXITCODE

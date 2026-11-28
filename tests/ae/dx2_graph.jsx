@@ -2,10 +2,11 @@
 // open between them so the idle hook writes). Two 400x300 comps, 3 s at 30 fps:
 //   A  a 40x40 red solid with DupliX 2 as it comes (the 5 x 5 grid preset): Macro 1 (Count) keyed 2 -> 4 and
 //      Macro 2 (Spacing) keyed 60 -> 100 over 0..2 s. Frames a_0, a_1, a_2.
-//   B  a 30x30 green solid; the step "setup" sets Random Seed, which runs the editor script in DUPLIX2_TEST_SCRIPT
-//      (a circle of 6 with its Radius exposed to Macro 1, turned 45 degrees and at 50% opacity) through the
-//      editor's write. The step "check" renders b_before (Macro 1 as the write set it: 300), then keys Macro 1
-//      50 -> 150 over 0..2 s and renders b_0, b_1, b_2.
+//   B  a 30x30 green solid; the step "setup" sets Random Seed, which opens the editor on it and runs the editor
+//      script in DUPLIX2_TEST_SCRIPT (a circle of 6 with its Radius exposed to Macro 1, turned 45 degrees and at
+//      50% opacity) as an edit. The step "check" renders b_before (Macro 1 as the write set it: 300), then keys
+//      Macro 1 50 -> 150 over 0..2 s and renders b_0, b_1, b_2, then undoes three times (the editor reloads).
+//      The step "close" removes B's effect (the editor closes).
 // The effect dumps the elements of every PreRender (DUPLIX2_DUMP); check_dx2_graph.py compares them with
 // graph_test.exe eval and reads the pixels.
 function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter by its index (= Disk ID)
@@ -75,10 +76,19 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var rs = r.layers.addSolid([0, 1, 0], "Half", 400, 300, 1, 1);
             rs.property("ADBE Transform Group").property("ADBE Opacity").setValue(50);
             png(r, 0, "ref_half");
+        } else if (step == "close") {
+            // B's effect deleted (it stays in the undo history), then the project closed: the editor closes and
+            // lets its reference go at SEQUENCE_SETDOWN (P0: AE crashed when a reference was used after app.open)
+            var b = find("B");
+            b.layer(1).property("ADBE Effect Parade").property(1).remove();
+            log("b's effect removed");
+            $.sleep(500);
+            app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);
+            log("project closed");
         }
         log("step " + step + " end");
         done();
-        if (step == "check") log("done");
+        if (step == "close") log("done");
     } catch (e) {
         var msg = "?";
         try { msg = String(e.message) + " (line " + String(e.line) + ")"; } catch (e2) { msg = "unprintable"; }

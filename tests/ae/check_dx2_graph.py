@@ -117,6 +117,11 @@ def main() -> int:
     # after the undos: the default 5 x 5 grid (spacing 100, Count 5): a copy at the centre, opaque
     v = px(d, "b_undo", 200, 150)
     check("b_undo default grid", v is not None and v[1] > 250 and v[3] > 250, str(v))
+    # the editor (plugin.log): opened on B, reloaded after AE's undo, closed when B's effect went away
+    log = (d / "plugin.log").read_text(encoding="utf-8", errors="replace") if (d / "plugin.log").exists() else ""
+    check("editor opened", "dx2: editor: opened on instance" in log)
+    check("editor reloaded after the undo", "dx2: editor: the graph changed outside the editor" in log)
+    check("editor closed with its instance", "dx2: editor: session closed" in log and ", gone)" in log)
     print("DX2 GRAPH PASS" if ok else "DX2 GRAPH FAIL")
     return 0 if ok else 1
 
