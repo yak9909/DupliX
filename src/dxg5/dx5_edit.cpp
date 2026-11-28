@@ -566,6 +566,19 @@ bool ExpandExpression(Graph& g, uint32_t exprNode)
             out->link = {id, 0};
             return true;
         }
+        if (x.kind == Expr::Call && x.text == "attr" && x.args.size() == 1 && x.args[0]->kind == Expr::Str) {
+            const uint32_t id = node("attr");
+            g.Find(id)->text = x.args[0]->text;
+            out->link = {id, 0};
+            return true;
+        }
+        if (x.kind == Expr::Call && x.text == "random" && x.args.empty()) {
+            const uint32_t id = node("random");
+            for (const auto& a : x.named)
+                if (a.first == "salt") g.Find(id)->salt = (uint64_t)AsInt(NumberValue(a.second->text));
+            out->link = {id, 0};
+            return true;
+        }
         std::string op;
         if (x.kind == Expr::Unary || x.kind == Expr::Binary) op = OpName(x.text, x.kind == Expr::Unary);
         else if (x.kind == Expr::Cond) op = "switch";
@@ -615,7 +628,7 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
         const Node* n = g.Find(id);
         if (!n) return false;
         const std::string& t = n->type;
-        if (!(IsMathFamily(t) || t == "expr" || IsReaderName(t) || t == "attr")) return false;
+        if (!(IsMathFamily(t) || t == "expr" || IsReaderName(t) || t == "attr" || t == "random")) return false;
     }
     // the outputs used outside the set, in order (one line of the formula each)
     std::vector<uint32_t> exits;
@@ -648,7 +661,13 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
     std::function<std::string(const Node&)> text = [&](const Node& n) -> std::string {
         const std::string& t = n.type;
         if (IsReaderName(t)) return t;
-        if (t == "attr") return n.text.rfind("parent.", 0) == 0 ? n.text : n.text;
+        // a named attribute is read as attr("...") in a formula (design v5 16 4)
+        if (t == "attr") return n.text.rfind("parent.", 0) == 0 ? n.text : "attr(\"" + n.text + "\")";
+        if (t == "random") {
+            char b[48];
+            std::snprintf(b, sizeof(b), "random(salt: 0x%llx)", (unsigned long long)n.salt);
+            return n.salt ? std::string(b) : std::string("random()");
+        }
         if (t == "expr") {
             std::unique_ptr<Expr> e;
             Diag d;

@@ -80,6 +80,17 @@ bool UngroupNode(Graph& g, uint32_t node);
 // "Make Group" on an Expression node: a group of its own holding it.
 bool ExpressionToGroup(Graph& g, uint32_t exprNode, std::string* name);
 
+// ---- editing inside (design v5 8.3, 12.1): Tab opens an Expression node or a group ----
+// The inside of an Expression node: a param node per input, the formula's lines as math and input nodes, a
+// group_output node whose inputs are its outputs (by name). Only formula nodes may be added inside.
+bool OpenExpression(const Graph& g, uint32_t exprNode, Graph* inside);
+// The inside written back as the node's formula (SetFormula: its wires kept by name). False (why) when the inside
+// holds a node a formula cannot say.
+bool CloseExpression(Graph& g, uint32_t exprNode, const Graph& inside, std::string* why);
+// A user's group's body replaced (its inputs and outputs found again; its nodes' inputs follow by name). False for a
+// built-in group or a body that has no group_output.
+bool SetGroupBody(Graph& g, const std::string& name, const Graph& body, std::string* why);
+
 // The code view's Apply: the graph read from `code` (keys kept from `g`). On failure `g` is untouched.
 bool ApplyCode(Graph& g, const std::string& code, std::vector<Diag>* errors, std::vector<Diag>* notes);
 

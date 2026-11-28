@@ -314,6 +314,234 @@ bool ExpressionToGroup(Graph& g, uint32_t exprNode, std::string* name)
     return true;
 }
 
+namespace {
+
+bool FormulaNode(const std::string& t)
+{
+    return IsMathFamily(t) || t == "expr" || t == "attr" || t == "random" || t == "index" || t == "id" || t == "count" ||
+           t == "time" || t == "seed" || t == "position" || t == "rotation" || t == "scale" || t == "opacity" || t == "source" ||
+           t == "visible" || t == "weight" || t == "q" || t == "s";
+}
+
+std::string ConstFormula(const Value& v)
+{
+    switch (v.type) {
+    case Type::Int: return std::to_string(v.i);
+    case Type::Bool: return v.i ? "true" : "false";
+    case Type::Vector: return "vec(" + Num(v.v.x) + ", " + Num(v.v.y) + ", " + Num(v.v.z) + ")";
+    default: return Num(AsFloat(v));
+    }
+}
+
+// the names in a formula's expression renamed (parent.* is left alone)
+std::string Renamed(const Expr& e0, const std::map<std::string, std::string>& to)
+{
+    std::unique_ptr<Expr> e;
+    Diag d;
+    if (!ParseExpr(PrintExpr(e0), &e, &d)) return PrintExpr(e0);
+    std::function<void(Expr&)> walk = [&](Expr& x) {
+        if (x.kind == Expr::Name) {
+            auto it = to.find(x.text);
+            if (it != to.end()) x.text = it->second;
+        }
+        if (x.kind == Expr::Member && x.args[0]->kind == Expr::Name && x.args[0]->text == "parent") return;
+        for (auto& a : x.args) walk(*a);
+        for (auto& a : x.named) walk(*a.second);
+    };
+    walk(*e);
+    return PrintExpr(*e);
+}
+
+// the groups each body may use (the ones before it), and the nodes of a changed group following its inputs by name
+void RefreshGroups(Graph& g, const std::string& changed)
+{
+    auto follow = [&](Graph& x) {
+        const UserGroup* u = FindUserGroup(g, changed);
+        if (!u) return;
+        for (Node& n : x.nodes) {
+            if (n.type != changed) continue;
+            std::vector<InputSlot> ins;
+            for (const InputDef& d : u->def.inputs) {
+                InputSlot s;
+                s.name = d.name, s.value = d.dflt;
+                if (const InputSlot* have = n.In(d.name)) s = *have;
+                ins.push_back(s);
+            }
+            n.inputs = ins;
+        }
+        const int outs = (int)u->def.outputs.size();
+        for (Node& n : x.nodes)
+            for (InputSlot& s : n.inputs)
+                if (s.link.from) {
+                    const Node* f = x.Find(s.link.from);
+                    if (f && f->type == changed && s.link.output >= outs) s.link = {};
+                }
+    };
+    follow(g);
+    for (size_t k = 0; k < g.groups.size(); k++) {
+        if (!g.groups[k].body) continue;
+        auto b = std::make_shared<Graph>(*g.groups[k].body);
+        b->groups.assign(g.groups.begin(), g.groups.begin() + (long)k);
+        follow(*b);
+        g.groups[k].body = b;
+    }
+}
+
+}  // namespace
+
+bool OpenExpression(const Graph& g, uint32_t exprNode, Graph* inside)
+{
+    const Node* e = g.Find(exprNode);
+    if (!e || e->type != "expr") return false;
+    std::vector<FormulaLine> lines;
+    Diag d;
+    if (!ParseFormula(e->text, &lines, &d)) return false;
+    Graph in;
+    std::map<std::string, uint32_t> pn;
+    double y = 0;
+    for (const InputSlot& s : e->inputs) {
+        const uint32_t id = AddNode(in, "param", s.name, -500, y);
+        in.Find(id)->text = s.name;
+        pn[s.name] = id;
+        y += 70;
+    }
+    const uint32_t ret = AddNode(in, "group_output", "return", 400, 0);
+    std::map<std::string, std::string> earlier;  // a line's name -> its formula (earlier lines are written in)
+    double ly = 0;
+    for (const FormulaLine& l : lines) {
+        std::unique_ptr<Expr> x;
+        if (!ParseExpr(PrintExpr(*l.expr), &x, &d)) return false;
+        std::function<void(Expr&)> sub = [&](Expr& z) {
+            if (z.kind == Expr::Name) {
+                auto it = earlier.find(z.text);
+                if (it != earlier.end()) {
+                    std::unique_ptr<Expr> r;
+                    if (ParseExpr(it->second, &r, &d)) z = std::move(*r);
+                    return;
+                }
+            }
+            if (z.kind == Expr::Member && z.args[0]->kind == Expr::Name && z.args[0]->text == "parent") return;
+            for (auto& a : z.args) sub(*a);
+            for (auto& a : z.named) sub(*a.second);
+        };
+        sub(*x);
+        const std::string text = "(" + PrintExpr(*x) + ")";
+        earlier[l.name] = text;
+        if (l.name[0] == '_') continue;
+        const uint32_t t = AddNode(in, "expr", "line_" + l.name, 0, ly);
+        ly += 150;
+        Node* tn = in.Find(t);
+        tn->text = PrintExpr(*x);
+        for (const std::string& name : ReadFormula(tn->text).inputs) {
+            InputSlot s;
+            s.name = name;
+            auto it = pn.find(name);
+            if (it != pn.end()) s.link = {it->second, 0};
+            tn->inputs.push_back(s);
+        }
+        InputSlot o;
+        o.name = l.name;
+        o.link = {t, 0};
+        in.Find(ret)->inputs.push_back(o);
+        if (!ExpandExpression(in, t)) return false;
+    }
+    *inside = in;
+    return true;
+}
+
+bool CloseExpression(Graph& g, uint32_t exprNode, const Graph& inside, std::string* why)
+{
+    auto no = [&](const std::string& w) {
+        if (why) *why = w;
+        return false;
+    };
+    const Node* e = g.Find(exprNode);
+    if (!e || e->type != "expr") return no("not an Expression node");
+    Graph in = inside;
+    std::vector<uint32_t> S;
+    const Node* ret0 = nullptr;
+    for (const Node& n : in.nodes) {
+        if (n.type == "param" || n.type == "group_output" || n.type == "macro" || n.type == "int_macro") {
+            if (n.type == "group_output") ret0 = &n;
+            continue;  // a macro is written by its name (m2)
+        }
+        if (!FormulaNode(n.type)) return no(n.type + " cannot be in a formula");
+        S.push_back(n.id);
+    }
+    if (!ret0) return no("the Expression's outputs are gone");
+    const uint32_t retId = ret0->id;
+    // the nodes become one formula (one line per output used)
+    uint32_t X = 0;
+    bool used = false;
+    for (const InputSlot& s : ret0->inputs)
+        if (s.link.from && std::find(S.begin(), S.end(), s.link.from) != S.end()) used = true;
+    if (used) {
+        if (!CollapseToExpression(in, S)) return no("the nodes inside do not make a formula");
+        for (const InputSlot& s : in.Find(retId)->inputs)
+            if (s.link.from && in.Find(s.link.from) && in.Find(s.link.from)->type == "expr") X = s.link.from;
+    }
+    std::vector<FormulaLine> xl;
+    std::map<std::string, std::string> to;  // the collapsed node's inputs -> the parameters they read
+    if (X) {
+        Diag d;
+        if (!ParseFormula(in.Find(X)->text, &xl, &d)) return no(d.msg);
+        for (const InputSlot& s : in.Find(X)->inputs) {
+            const Node* p = s.link.from ? in.Find(s.link.from) : nullptr;
+            if (p && p->type == "param") to[s.name] = p->text;
+        }
+    }
+    const Node* ret = in.Find(retId);
+    std::vector<std::pair<std::string, std::string>> outs;
+    for (const InputSlot& s : ret->inputs) {
+        std::string f;
+        const Node* src = s.link.from ? in.Find(s.link.from) : nullptr;
+        if (src && src->id == X && s.link.output < (int)xl.size()) f = Renamed(*xl[s.link.output].expr, to);
+        else if (src && src->type == "param") f = src->text;
+        else f = ConstFormula(s.value);
+        outs.push_back({s.name, f});
+    }
+    if (outs.empty()) return no("an Expression needs an output");
+    std::string text;
+    if (outs.size() == 1 && outs[0].first == "value") text = outs[0].second;
+    else
+        for (const auto& o : outs) text += (text.empty() ? "" : "\n") + o.first + " = " + o.second;
+    return SetFormula(g, exprNode, text, why);
+}
+
+bool SetGroupBody(Graph& g, const std::string& name, const Graph& body, std::string* why)
+{
+    auto no = [&](const std::string& w) {
+        if (why) *why = w;
+        return false;
+    };
+    size_t i = 0;
+    while (i < g.groups.size() && g.groups[i].name != name) i++;
+    if (i == g.groups.size()) return no("a built-in group cannot be changed: Copy for Myself first");
+    bool hasRet = false;
+    for (const Node& n : body.nodes) hasRet |= n.type == "group_output";
+    if (!hasRet) return no("a group needs its output");
+    const NodeDef old = g.groups[i].def;
+    std::vector<InputDef> params;
+    for (const Node& n : body.nodes) {
+        if (n.type != "param" && n.type != "param_geo") continue;
+        const int k = old.Input(n.text);
+        InputDef p;
+        if (k >= 0) p = old.inputs[k];
+        else {
+            p.name = n.text, p.softMin = 0, p.softMax = 100;
+            p.type = n.type == "param_geo" ? Type::Geometry : Type::Float;
+            p.dflt = n.type == "param_geo" ? Value{} : Value::F(0);
+        }
+        params.push_back(p);
+    }
+    auto b = std::make_shared<Graph>(body);
+    b->groups.assign(g.groups.begin(), g.groups.begin() + (long)i);
+    g.groups[i].def = DefFromBody(name, *b, params);
+    g.groups[i].body = b;
+    RefreshGroups(g, name);
+    return true;
+}
+
 std::vector<int> UnusedNamedMacros(const Graph& g, bool isInt)
 {
     const uint32_t used = isInt ? UsedIntMacros(g) : UsedMacros(g);
