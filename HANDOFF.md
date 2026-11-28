@@ -1,5 +1,19 @@
 # 引き継ぎメモ（最新: 2026-11-28 17 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
 
+## 再開の手順（2026-11-28 夜、計画 P1.5e の Task 1〜4 済み。利用者の指示「一旦中断してください」で止めた）
+
+- **計画:** `docs/superpowers/plans/2026-11-28-dx5-review-e.md`（7 タスク）。台帳 `.superpowers/sdd/2026-11-28-dx5-review-e/progress.md`
+  （git には入らない。`Task N: complete` の行と `Ruling:` の行がある）。実行は superpowers:executing-plans（自分で実装）。利用者は計画を承認済み（「進めてください」）。
+- **済み（commit）:** Task 1 `d4ef3cf`（演算のノードは 5 つの種類＋演算子 `op=`、旧 `math_add` の読み替え、効かない線は残す）、
+  Task 2 `3a60a0d`（Expression の式: 複数の出口・`_` の行・入口は知らない名前・`SetFormula`・`random()` の塩・`attr("ix")`、入力欄は定数だけ `SetConstText`・`ConnectExpression`）、
+  Task 3 `c92b741`（コード: `expr(k: 3) { … }`・`w.x`・`math_sin(x, _b: y)`・式の中の名前付きの属性は `attr()`・`SameGraph` は値のノードの key と入口の名前を比べない）、
+  Task 4 `fc93464`（利用者のグループ: コードの `group`・`return (a: x, b: y)`・`r.a`・保存 `group <name> 0 … end`・評価・構造の入力の自動判定）。
+  **試験: `build\dxg5\dxg5_test.exe` ALL PASS（566 件）。v2（`tools/build.ps1 -Target v2`）もビルドが通る。** AE の試験はまだ回していない（Task 6 で回す）。
+- **次の 1 手: Task 5**（編集の操作: `CopyGroupForSelf`・`GroupSelection`（Ctrl+G）・`UngroupNode`・`ExpressionToGroup`・`CollapseToExpression` の複数の出口・
+  `UnusedNamedMacros`・`ExposeRefusal`・台本の命令 `op`/`formula`/`connectexpr`/`copygroup`/`group`/`ungroup`）。その後 Task 6（エディター・AE 試験）、Task 7（全体の試験・最終レビュー）。
+- **気を付けること:** グループの本体は「それより前のグループ」を持つ（台帳の Task 4 の Ruling）。Task 5 でグループを足し替えるときは本体を作り直す。
+  前の計画の Task 12（積み重ね表示）は G->G（v5 16 節の 3）の答えが出るまで止める。
+
 ## 再開の手順（2026-11-28 18 時台、設計の見直しを利用者が承認。計画 P1.5e を書いた。利用者の確認待ち）
 
 - **利用者が v5 の見直しを承認（「これで進めてください」）。** 計画: `docs/superpowers/plans/2026-11-28-dx5-review-e.md`（7 タスク: 演算子を選ぶ演算のノード →
