@@ -96,11 +96,13 @@ def main() -> int:
         got = b.get((20, 20, 0.0)) or []
         check("C Macro 1 = 80 in the render (Expose to a hidden row)", any(g == want for g in got),
               f"({want[0]}; {len(got)} blocks)")
-        # D: the mouse wired the circle into the Output and typed 9 into its Count
-        mouse = graph_of(script_for(3) + "wire circle1 out\nset circle1 count 9\n", tmp)
+        # D: the mouse wired the circle into the Output and typed 9 into its Count; then the Code view refused
+        # "x = nope" and applied a circle of 6 (radius 80, copy scale 50)
+        mouse = graph_of(script_for(3) + "wire circle1 out\nset circle1 count 9\n"
+                         "code\nc = circle(count: 6, radius: 80)\noutput(c, copy_scale: 50)\nend\n", tmp)
         want = expected(mouse, 0, {})
         got = b.get((25, 25, 0.0)) or []
-        check("D wired and typed with the mouse (a circle of 9)", any(g == want for g in got),
+        check("D wired and typed with the mouse, then code applied (a circle of 6)", any(g == want for g in got),
               f"({want[0]}; got {[g[0] for g in got]})")
         # E: the Overview's Circle button: the circle graph with its macros (Int Macro 1 = 12, Macro 2 = 300, Macro 3 = 100)
         preset = graph_of("preset Circle\n", tmp)
@@ -154,6 +156,8 @@ def main() -> int:
     # the editor (plugin.log): opened on B, reloaded after AE's undo, closed when B's effect went away
     log = (d / "plugin.log").read_text(encoding="utf-8", errors="replace") if (d / "plugin.log").exists() else ""
     check("editor opened", "dx2: editor: opened on instance" in log)
+    check("code view refused code that does not read", "dx2: editor: code refused: line 1 col 5: unknown name 'nope'" in log)
+    check("code view applied code", "dx2: write (apply code)" in log)
     check("editor reloaded after the undo", "dx2: editor: the graph changed outside the editor" in log)
     check("editor closed with its instance", "dx2: editor: session closed" in log and ", gone)" in log)
     print("DX2 GRAPH PASS" if ok else "DX2 GRAPH FAIL")

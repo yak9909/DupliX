@@ -107,6 +107,15 @@ public static class AeText {
             if (c.ToString() == cls) { found = h; return false; } return true; }, IntPtr.Zero);
         return found;
     }
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    // the first child of a class whose style has these bits (DupliX 2's Code view: the multi-line EDIT)
+    public static IntPtr FindChildByStyle(IntPtr p, string cls, int bits) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(p, (h, l) => { var c = new StringBuilder(256); GetClassName(h, c, 256);
+            if (c.ToString() == cls && (GetWindowLong(h, -16 /* GWL_STYLE */) & bits) == bits) { found = h; return false; }
+            return true; }, IntPtr.Zero);
+        return found;
+    }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, string l);
     public static void SetText(IntPtr h, string s) { SendMessage(h, 0x000C /* WM_SETTEXT */, IntPtr.Zero, s); }
     public static List<string> Texts(IntPtr p) {

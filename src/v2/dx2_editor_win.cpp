@@ -55,6 +55,8 @@ struct HitInfo {
 };
 
 enum class Drag { None, Move, Wire, Scrub, Pan };
+enum class View { Nodes, Stack, Code };
+constexpr int kApplyId = 9001;
 
 struct MacroRowInfo {
     bool isInt;
@@ -81,6 +83,12 @@ struct Win {
     WNDPROC editProc = nullptr;
     std::vector<MacroRowInfo> macroRows;  // the macros listed in the panel, top to bottom
     std::string status;                   // the last refusal (shown at the bottom)
+    // the views (design v5 8.4, 14)
+    View view = View::Nodes;
+    HWND code = nullptr, apply = nullptr, codeMsg = nullptr;
+    HFONT mono = nullptr;
+    WNDPROC codeProc = nullptr;
+    bool codeError = false;
 } g_win;
 
 std::wstring W(const std::string& u8)
@@ -289,10 +297,48 @@ dx5::Type OutType(const dx5::Graph& g, uint32_t node, int out)
     return d && out < (int)d->outputs.size() ? d->outputs[out].type : dx5::Type::Float;
 }
 
+RECT TabRect(View v)
+{
+    const int i = (int)v;
+    return {8 + i * 80, 0, 8 + i * 80 + 72, kTabH};
+}
+
+void PaintTabs(HDC dc, const RECT& client)
+{
+    RECT tabs = {client.left, client.top, client.right, client.top + kTabH};
+    FillRect(dc, tabs, kTabC);
+    const char* names[3] = {"Nodes", "Stack", "Code"};
+    for (int i = 0; i < 3; i++) {
+        RECT t = TabRect((View)i);
+        const bool on = (int)g_win.view == i;
+        if (on) FillRect(dc, {t.left, t.top + 3, t.right, t.bottom}, kBg);
+        SelectObject(dc, on ? g_win.bold : g_win.font);
+        Text(dc, names[i], t, on ? kText : kDim, DT_CENTER);
+    }
+    SelectObject(dc, g_win.font);
+}
+
+void PaintNodes(HDC dc, const RECT& client);
+void PaintPanel(HDC dc, const RECT& client);
+
 void Paint(HDC dc, const RECT& client)
 {
-    Session* s = g_win.s;
     FillRect(dc, client, kBg);
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, g_win.font);
+    if (g_win.view == View::Nodes) PaintNodes(dc, client);
+    else if (g_win.view == View::Stack) {
+        const RECT c = CanvasRect();
+        RECT m = {c.left + 16, c.top + 16, c.right - 16, c.top + 40};
+        Text(dc, "The stack view comes with the next build.", m, kDim, DT_LEFT);
+    }
+    PaintPanel(dc, client);
+    PaintTabs(dc, client);
+}
+
+void PaintNodes(HDC dc, const RECT& client)
+{
+    Session* s = g_win.s;
     const RECT c = CanvasRect();
     // a grid that moves with the view
     HPEN gp = CreatePen(PS_SOLID, 1, kGridC);
@@ -362,18 +408,19 @@ void Paint(HDC dc, const RECT& client)
         Text(dc, "No Output node: right-click to add one", m, kWarn, DT_LEFT);
     }
 
-    // the tabs (the Stack and Code views come later) and the status line
-    RECT tabs = {client.left, client.top, client.right, client.top + kTabH};
-    FillRect(dc, tabs, kTabC);
-    RECT t1 = {8, 0, 80, kTabH};
-    SelectObject(dc, g_win.bold);
-    Text(dc, "Nodes", t1, kText, DT_LEFT);
-    SelectObject(dc, g_win.font);
+    // the status line
     RECT st = {client.left + 8, client.bottom - kStatusH, client.right - kPanelW, client.bottom};
     FillRect(dc, {client.left, client.bottom - kStatusH, client.right - kPanelW, client.bottom}, kTabC);
     Text(dc, g_win.status, st, kWarn, DT_LEFT);
+}
 
-    // the macros panel
+// the macros panel (right; every view)
+void PaintPanel(HDC dc, const RECT& client)
+{
+    Session* s = g_win.s;
+    if (!s) return;
+    const dx5::Graph& g = s->graph;
+    const RECT c = CanvasRect();
     RECT p = {c.right, kTabH, client.right, client.bottom};
     FillRect(dc, p, kPanelC);
     SelectObject(dc, g_win.bold);
@@ -417,6 +464,135 @@ void Redraw() { InvalidateRect(g_win.wnd, nullptr, FALSE); }
 void Refused(const std::string& why)
 {
     g_win.status = why;
+    Redraw();
+}
+
+// ---- the code view (design v5 8.4) ----
+std::wstring ToEdit(const std::string& s)
+{
+    std::string t;
+    for (char c : s) {
+        if (c == '\n') t += '\r';
+        t += c;
+    }
+    return W(t);
+}
+
+void CodeMessage(const std::string& m, bool error)
+{
+    g_win.codeError = error;
+    if (g_win.codeMsg) SetWindowTextW(g_win.codeMsg, W(m).c_str());
+}
+
+void LayoutCode()
+{
+    if (!g_win.code) return;
+    const RECT c = CanvasRect();
+    const int barY = c.bottom - 30;
+    MoveWindow(g_win.code, c.left + 4, c.top + 4, c.right - c.left - 8, barY - c.top - 8, TRUE);
+    MoveWindow(g_win.apply, c.left + 4, barY, 150, 24, TRUE);
+    MoveWindow(g_win.codeMsg, c.left + 162, barY + 4, c.right - c.left - 170, 20, TRUE);
+}
+
+void FillCode()
+{
+    if (!g_win.code || !g_win.s) return;
+    SetWindowTextW(g_win.code, ToEdit(dx5::GraphToCode(g_win.s->graph)).c_str());
+    SendMessageW(g_win.code, EM_SETMODIFY, FALSE, 0);
+}
+
+void SelectLine(int line)
+{
+    const LRESULT a = SendMessageW(g_win.code, EM_LINEINDEX, (WPARAM)std::max(0, line - 1), 0);
+    if (a < 0) return;
+    const LRESULT len = SendMessageW(g_win.code, EM_LINELENGTH, (WPARAM)a, 0);
+    SendMessageW(g_win.code, EM_SETSEL, (WPARAM)a, (LPARAM)(a + len));
+    SendMessageW(g_win.code, EM_SCROLLCARET, 0, 0);
+    SetFocus(g_win.code);
+}
+
+void ApplyCodeNow()
+{
+    Session* s = g_win.s;
+    if (!s || !g_win.code) return;
+    const int n = GetWindowTextLengthW(g_win.code);
+    std::wstring w((size_t)n + 1, L'\0');
+    GetWindowTextW(g_win.code, &w[0], n + 1);
+    w.resize((size_t)n);
+    std::string code;
+    for (char c : U8(w))
+        if (c != '\r') code += c;
+    std::vector<dx5::Diag> errs, notes;
+    if (!dx5::ApplyCode(s->graph, code, &errs, &notes)) {
+        const dx5::Diag d = errs.empty() ? dx5::Diag{} : errs[0];
+        char b[64];
+        snprintf(b, sizeof(b), "line %d col %d: ", d.pos.line, d.pos.col);
+        const std::string m = std::string(b) + (errs.empty() ? "cannot read the code" : d.msg);
+        Log("editor: code refused: %s", m.c_str());
+        CodeMessage(m, true);
+        SelectLine(d.pos.line);
+        return;
+    }
+    Commit("apply code");
+    std::string m = "Applied.";
+    if (!notes.empty()) m = notes[0].msg;
+    CodeMessage(m, false);
+    FillCode();
+}
+
+LRESULT CALLBACK CodeProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_KEYDOWN && w == VK_RETURN && GetKeyState(VK_CONTROL) < 0) {
+        ApplyCodeNow();
+        return 0;
+    }
+    if (m == WM_CHAR && w == '\n') return 0;  // Ctrl+Enter's character
+    if (m == WM_CHAR && w == '\t') {
+        SendMessageW(h, EM_REPLACESEL, TRUE, (LPARAM)L"    ");
+        return 0;
+    }
+    if (m == WM_KEYDOWN && w == 'A' && GetKeyState(VK_CONTROL) < 0) {
+        SendMessageW(h, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    if (m == WM_KEYDOWN && w == 'R' && GetKeyState(VK_CONTROL) < 0) {  // take the graph as it is now
+        FillCode();
+        CodeMessage("", false);
+        return 0;
+    }
+    if (m == WM_CHAR && (w == 1 || w == 18)) return 0;  // Ctrl+A / Ctrl+R: no beep
+    return CallWindowProcW(g_win.codeProc, h, m, w, l);
+}
+
+void SetView(View v)
+{
+    if (g_win.edit) SetFocus(g_win.wnd);  // ends a value's edit box
+    g_win.view = v;
+    if (v == View::Code) {
+        if (!g_win.code) {
+            g_win.code = CreateWindowExW(0, L"EDIT", L"",
+                                         WS_CHILD | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL |
+                                             ES_WANTRETURN | ES_NOHIDESEL,
+                                         0, 0, 10, 10, g_win.wnd, nullptr, nullptr, nullptr);
+            g_win.apply = CreateWindowExW(0, L"BUTTON", L"Apply (Ctrl+Enter)", WS_CHILD | BS_PUSHBUTTON, 0, 0, 10, 10, g_win.wnd,
+                                          (HMENU)(INT_PTR)kApplyId, nullptr, nullptr);
+            g_win.codeMsg = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFTNOWORDWRAP, 0, 0, 10, 10, g_win.wnd, nullptr, nullptr, nullptr);
+            SendMessageW(g_win.code, WM_SETFONT, (WPARAM)g_win.mono, TRUE);
+            SendMessageW(g_win.code, EM_SETLIMITTEXT, 0, 0);
+            SendMessageW(g_win.apply, WM_SETFONT, (WPARAM)g_win.font, TRUE);
+            SendMessageW(g_win.codeMsg, WM_SETFONT, (WPARAM)g_win.font, TRUE);
+            g_win.codeProc = (WNDPROC)SetWindowLongPtrW(g_win.code, GWLP_WNDPROC, (LONG_PTR)CodeProc);
+        }
+        LayoutCode();
+        FillCode();
+        CodeMessage("", false);
+        for (HWND c : {g_win.code, g_win.apply, g_win.codeMsg}) ShowWindow(c, SW_SHOW);
+        SetFocus(g_win.code);
+    } else {
+        for (HWND c : {g_win.code, g_win.apply, g_win.codeMsg})
+            if (c) ShowWindow(c, SW_HIDE);
+        SetFocus(g_win.wnd);
+    }
     Redraw();
 }
 
@@ -641,11 +817,31 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_ERASEBKGND: return 1;
-    case WM_SIZE: Redraw(); return 0;
+    case WM_SIZE:
+        LayoutCode();
+        Redraw();
+        return 0;
+    case WM_COMMAND:
+        if (LOWORD(w) == kApplyId && HIWORD(w) == BN_CLICKED) ApplyCodeNow();
+        return 0;
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)l == g_win.codeMsg) {
+            static HBRUSH bg = CreateSolidBrush(kBg);
+            SetTextColor((HDC)w, g_win.codeError ? RGB(250, 110, 90) : kDim);
+            SetBkColor((HDC)w, kBg);
+            return (LRESULT)bg;
+        }
+        break;
     case WM_LBUTTONDOWN: {
         if (!s) return 0;
-        SetFocus(h);
         const POINT p = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+        if (p.y < kTabH) {
+            for (int i = 0; i < 3; i++)
+                if (In(TabRect((View)i), p) && g_win.view != (View)i) SetView((View)i);
+            return 0;
+        }
+        if (g_win.view != View::Nodes) return 0;
+        SetFocus(h);
         const HitInfo hi = HitTest(p);
         g_win.start = g_win.now = p;
         g_win.moved = false;
@@ -756,7 +952,7 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         return 0;
     case WM_RBUTTONUP: {
-        if (!s) return 0;
+        if (!s || g_win.view != View::Nodes) return 0;
         const POINT p = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         const HitInfo hi = HitTest(p);
         if (hi.what == Hit::Canvas) AddMenu(p);
@@ -793,7 +989,7 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     case WM_KEYDOWN:
         if (!s) return 0;
-        if (w == VK_DELETE && g_win.selected) {
+        if (w == VK_DELETE && g_win.selected && g_win.view == View::Nodes) {
             if (dx5::RemoveNode(s->graph, g_win.selected)) Commit("remove node");
             g_win.selected = 0;
             Redraw();
@@ -835,6 +1031,7 @@ HWND CreateEditorWindow(Session* s)
     }
     static HFONT font = CreateFontW(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     static HFONT bold = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    static HFONT mono = CreateFontW(-14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
     // owned by AE's main window: it stays above it and goes with it
     void* owner = nullptr;
     Suite<AEGP_UtilitySuite6> util(g_pica, kAEGPUtilitySuite, kAEGPUtilitySuiteVersion6);
@@ -843,6 +1040,7 @@ HWND CreateEditorWindow(Session* s)
     g_win.s = s;
     g_win.font = font;
     g_win.bold = bold;
+    g_win.mono = mono;
     HWND wnd = CreateWindowExW(0, L"DupliX2Editor", L"DupliX 2 Editor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                960, 600, (HWND)owner, nullptr, inst, nullptr);
     g_win.wnd = wnd;
@@ -854,6 +1052,11 @@ void GraphReloaded(HWND wnd)
 {
     if (wnd != g_win.wnd) return;
     if (g_win.selected && g_win.s && !g_win.s->graph.Find(g_win.selected)) g_win.selected = 0;
+    if (g_win.view == View::Code && g_win.code) {
+        // the code as the user left it stays; untouched code follows the graph
+        if (SendMessageW(g_win.code, EM_GETMODIFY, 0, 0)) CodeMessage("The graph changed in After Effects: Ctrl+R takes it (your edit is lost), Apply replaces it.", true);
+        else FillCode();
+    }
     Redraw();
 }
 

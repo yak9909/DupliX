@@ -56,6 +56,21 @@ function Send-Mouse {
         $null = [AeBg]::PostMessage($e, 0x100, [IntPtr]0x0D, [IntPtr]0)  # WM_KEYDOWN Enter
     }
     Start-Sleep -Seconds 3  # the idle hook writes meanwhile
+    # the Code view (design v5 8.4): code that does not read is refused (the graph stays), then a circle of 6 applied
+    Msg $DOWN 200 13 $MK_L                           # the Code tab
+    Msg $UP 200 13 0
+    Start-Sleep -Milliseconds 500
+    $code = [AeText]::FindChildByStyle($h, "Edit", 0x4)   # ES_MULTILINE
+    $apply = [AeText]::FindChild($h, "Button")
+    Write-Host ("code: edit {0}, apply {1}" -f [long]$code, [long]$apply)
+    if ($code -ne [IntPtr]::Zero -and $apply -ne [IntPtr]::Zero) {
+        [AeText]::SetText($code, "x = nope`r`n")
+        $null = [AeBg]::PostMessage($apply, 0x00F5, [IntPtr]0, [IntPtr]0)  # BM_CLICK
+        Start-Sleep -Seconds 1
+        [AeText]::SetText($code, "c = circle(count: 6, radius: 80)`r`noutput(c, copy_scale: 50)`r`n")
+        $null = [AeBg]::PostMessage($apply, 0x00F5, [IntPtr]0, [IntPtr]0)
+        Start-Sleep -Seconds 3  # the idle hook writes meanwhile
+    }
 }
 try {
     $ready = $false
