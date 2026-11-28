@@ -17,3 +17,11 @@ set m opacity -50
 set 1 countZ 2
 set 1 spacingZ 80
 expose 1 spacingZ
+== seed 3 ==
+# comp D: a circle of 7 not wired. run_dx2_graph.ps1 then drives the editor's window with the mouse: drags from the
+# circle's output (260, 291) to the Output's input (330, 101), clicks the circle's Count (200, 312) and types 9
+add Circle 40 250 as c
+set c count 7
+== seed 4 ==
+# comp E: what the Overview's Circle button does (the same function), not an editor script
+uipreset Circle

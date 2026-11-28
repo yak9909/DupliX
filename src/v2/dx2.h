@@ -83,6 +83,10 @@ void LayerNames(PF_InData* in_data, std::string out[kLayers]);
 
 // ---- the editor (dx2_editor.cpp) ----
 void OpenEditor(PF_InData* in_data);
+// The Overview's preset buttons: the preset's graph and its macros written through the idle hook, one undo step
+// (a UI event's in-place change of the Arbitrary Data was not taken by AE: only the macros changed, 11/28).
+// `delayMs` holds the write back (tests: the script that asked is still running).
+void QueuePreset(PF_InData* in_data, int index, int delayMs = 0);
 // SEQUENCE_SETDOWN of an instance (any thread): its editor closes.
 void EditorInstanceGone(A_u_longlong instance);
 // The idle hook (registered at GLOBAL_SETUP).

@@ -96,6 +96,18 @@ def main() -> int:
         got = b.get((20, 20, 0.0)) or []
         check("C Macro 4 = 80 in the render (Expose to a hidden row)", any(g == want for g in got),
               f"({want[0]}; {len(got)} blocks)")
+        # D: the mouse wired the circle (node 3) into the Output and typed 9 into its Count
+        mouse = graph_of(script_for(3) + "wire 3 2 0\nset 3 count 9\n", tmp)
+        want = expected(mouse, 0, {})
+        got = b.get((25, 25, 0.0)) or []
+        check("D wired and typed with the mouse (a circle of 9)", any(g == want for g in got),
+              f"({want[0]}; got {[g[0] for g in got]})")
+        # E: the Overview's Circle button: the circle graph with its macros (12, 300, 100)
+        preset = graph_of("preset Circle\n", tmp)
+        want = expected(preset, 0, {1: 12, 2: 300, 3: 100})
+        got = b.get((35, 35, 0.0)) or []
+        check("E Circle preset: the graph changed too", any(g == want for g in got),
+              f"({want[0]}; got {[g[0] for g in got]})")
         jl = (d / "jsx.log").read_text(encoding="utf-8", errors="replace")
         check("C Macro 4 = 80 in AE", "c macro4 Macro 4 = 80 " in jl)
         # A: Count 2 -> 4, Spacing 60 -> 100 over 0..2 s

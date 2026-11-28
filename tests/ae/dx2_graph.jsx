@@ -66,6 +66,15 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var bc = c.layers.addSolid([0, 0, 1], "BlueC", 20, 20, 1, 3);
             var fc = bc.property("ADBE Effect Parade").addProperty("DupliX2");
             fc.property(dx2(SEED)).setValue(2);  // the script for seed 2
+
+            // E: the Overview's Circle preset button (the same function, seed 4); D: the editor driven by the mouse
+            // (seed 3, opened last so its editor is the one open when run_dx2_graph.ps1 sends the mouse)
+            var e = app.project.items.addComp("E", 400, 300, 1, 3, 30);
+            var we = e.layers.addSolid([1, 1, 0], "YellowE", 35, 35, 1, 3);
+            we.property("ADBE Effect Parade").addProperty("DupliX2").property(dx2(SEED)).setValue(4);
+            var dd = app.project.items.addComp("D", 400, 300, 1, 3, 30);
+            var wd = dd.layers.addSolid([1, 1, 1], "WhiteD", 25, 25, 1, 3);
+            wd.property("ADBE Effect Parade").addProperty("DupliX2").property(dx2(SEED)).setValue(3);
             log("setup ok (" + app.project.bitsPerChannel + " bpc)");
         } else if (step == "check") {
             var a = find("A"), b = find("B"), c = find("C");
@@ -73,15 +82,19 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var fc = c.layer(1).property("ADBE Effect Parade").property(1);
             log("c macro4 " + fc.property(dx2(8)).name + " = " + fc.property(dx2(8)).value + " (Expose sets 80)");
             png(c, 0, "c_0");
+            png(find("D"), 0, "d_0");
+            png(find("E"), 0, "e_0");
             var fb = b.layer(1).property("ADBE Effect Parade").property(1);
             var m1 = fb.property(dx2(MACRO1));
             log("b macro1 " + m1.name + " = " + m1.value + " (the write sets 300)");
             png(b, 0, "b_before");
             m1.setValueAtTime(0, 50); m1.setValueAtTime(2, 150);
             png(b, 0, "b_0"); png(b, 1, "b_1"); png(b, 2, "b_2");
-            // undo takes back the two keys, C's write, then B's write (one step each): B's default grid again
-            app.executeCommand(16); app.executeCommand(16); app.executeCommand(16); app.executeCommand(16);
-            log("b after 4 undos: macro1 = " + m1.value + " keys " + m1.numKeys);
+            // undo step by step (the two keys, the later writes of the other comps, then B's write) until B's Macro 1
+            // is back where the write found it (5, no keys): B's default grid again
+            var undos = 0;
+            while ((m1.numKeys > 0 || Math.abs(m1.value - 5) > 1e-6) && undos < 20) { app.executeCommand(16); undos++; }
+            log("b after " + undos + " undos: macro1 = " + m1.value + " keys " + m1.numKeys);
             png(b, 0, "b_undo");
             // the answer for a copy at 50%: AE's own green solid at 50% opacity, as saveFrameToPng writes it
             var r = app.project.items.addComp("Ref", 400, 300, 1, 1, 30);

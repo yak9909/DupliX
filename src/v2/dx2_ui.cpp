@@ -289,26 +289,6 @@ PF_Err Draw(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_
     return PF_Err_NONE;
 }
 
-// A preset replaces the graph (in place, so AE's undo takes it back) and sets its macros, in one event: one undo step.
-void ApplyPreset(PF_InData* in_data, PF_ParamDef* params[], int index)
-{
-    const dxg::PresetInfo& info = dxg::Presets()[index];
-    dxg::Preset p = info.make();
-    const std::shared_ptr<const dxg::Graph> old = GraphOf(params[P_GRAPH]->u.arb_d.value);
-    p.graph.revision = old->revision + 1;  // an open editor sees the change
-    if (!SetGraphHandle(&params[P_GRAPH]->u.arb_d.value, dxg::Serialize(p.graph))) {
-        Log("preset %s: cannot write the graph", info.name);
-        return;
-    }
-    params[P_GRAPH]->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
-    UpdateParamsUI(in_data, params);  // its macros shown first: AE ignores a new value of a hidden parameter
-    for (const dxg::MacroWrite& w : p.macros) {
-        params[P_MACRO + w.k]->u.fs_d.value = (PF_FpLong)w.value;
-        params[P_MACRO + w.k]->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
-    }
-    Log("preset %s applied (revision %u)", info.name, (unsigned)p.graph.revision);
-}
-
 PF_Err Click(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_EventExtra* ev)
 {
     if (ev->effect_win.area != PF_EA_CONTROL || ev->effect_win.index != P_OVERVIEW) return PF_Err_NONE;
@@ -317,7 +297,7 @@ PF_Err Click(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF
     for (const Button& b : Buttons(f)) {
         if (!b.r.Has(px, py)) continue;
         if (b.preset < 0) OpenEditor(in_data);
-        else ApplyPreset(in_data, params, b.preset);
+        else QueuePreset(in_data, b.preset);  // the graph and its macros, written by the idle hook
         out_data->out_flags |= PF_OutFlag_REFRESH_UI;
         ev->evt_out_flags = PF_EO_HANDLED_EVENT;
         break;

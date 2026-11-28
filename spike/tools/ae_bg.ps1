@@ -100,6 +100,15 @@ public static class AeText {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w,
         StringBuilder l, uint flags, uint ms, out IntPtr r);
+    // the first child window of a class (0 if none)
+    public static IntPtr FindChild(IntPtr p, string cls) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(p, (h, l) => { var c = new StringBuilder(256); GetClassName(h, c, 256);
+            if (c.ToString() == cls) { found = h; return false; } return true; }, IntPtr.Zero);
+        return found;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, string l);
+    public static void SetText(IntPtr h, string s) { SendMessage(h, 0x000C /* WM_SETTEXT */, IntPtr.Zero, s); }
     public static List<string> Texts(IntPtr p) {
         var list = new List<string>();
         EnumChildWindows(p, (h, l) => { var c = new StringBuilder(256); var t = new StringBuilder(8192); IntPtr r;

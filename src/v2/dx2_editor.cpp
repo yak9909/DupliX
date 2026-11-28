@@ -290,6 +290,34 @@ A_Err IdleHook(AEGP_GlobalRefcon, AEGP_IdleRefcon, A_long* max_sleep)
 
 void OpenEditor(PF_InData* in_data) { Open(in_data); }
 
+void QueuePreset(PF_InData* in_data, int index, int delayMs)
+{
+    if (index < 0 || index >= (int)dxg::Presets().size()) return;
+    const dxg::PresetInfo& info = dxg::Presets()[index];
+    Suite<AEGP_PFInterfaceSuite1> pfi(in_data->pica_basicP, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    AEGP_EffectRefH eff = nullptr;
+    if (!pfi || pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) || !eff) {
+        Log("preset %s: no effect reference", info.name);
+        return;
+    }
+    std::string text;
+    dxg::Graph old;
+    const uint32_t rev = ReadGraphText(eff, &text) && dxg::Parse(text, &old) ? old.revision : 0;
+    dxg::Preset p = info.make();
+    p.graph.revision = rev + 1;  // an open editor sees the change and reloads
+    Write w;
+    w.eff = eff;
+    w.ownsEff = true;
+    w.instance = InstanceId(in_data);
+    w.text = dxg::Serialize(p.graph);
+    w.macros = p.macros;
+    w.why = std::string("preset ") + info.name;
+    w.notBefore = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+    Log("preset %s: queued (revision %u)", info.name, (unsigned)p.graph.revision);
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_queue.push_back(std::move(w));
+}
+
 void MaybeRunTestScript(PF_InData* in_data, int changed, int seed)
 {
     char path[MAX_PATH] = {0};
@@ -312,6 +340,15 @@ void MaybeRunTestScript(PF_InData* in_data, int changed, int seed)
     const auto key = std::make_pair(inst, std::hash<std::string>()(script));
     if (!inst || done.count(key)) return;
     done.insert(key);
+    // "uipreset <name>": what the Overview's preset button does (the same function), no editor
+    const size_t up = script.find("uipreset ");
+    if (up != std::string::npos) {
+        std::string name = script.substr(up + 9);
+        name = name.substr(0, name.find_first_of("\r\n"));
+        for (int i = 0; i < (int)dxg::Presets().size(); i++)
+            if (name == dxg::Presets()[i].name) QueuePreset(in_data, i, 1500);
+        return;
+    }
     ed::Session* s = Open(in_data);
     if (!s) {
         Log("test script: the editor did not open");

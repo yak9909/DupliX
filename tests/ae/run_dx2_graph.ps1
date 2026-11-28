@@ -31,6 +31,32 @@ function Send-Step([string]$step, [int]$sec) {
     $tries = Send-AeScript -Ae $ae -Exe $exe -Jsx $jsx -Done (Join-Path $out "step_done_$step.txt") -TimeoutSec $sec
     if ($tries -gt 1) { Write-Host "  step $step ran on try $tries" }
 }
+# The editor's window (open on comp D) driven with the mouse as a user would (the messages its mouse handlers get):
+# drag from the circle's output to the Output's input, then click the circle's Count and type 9 (dx2_graph_script.txt).
+function Send-Mouse {
+    $w = Get-AeHiddenWindows -ProcessId $ae.Id | Where-Object { $_.Class -eq "DupliX2Editor" -and $_.Visible } | Select-Object -First 1
+    if (-not $w) { Write-Host "mouse: no editor window"; return }
+    $h = [IntPtr]$w.Hwnd
+    function Msg([int]$m, [int]$x, [int]$y, [int]$keys) {
+        $null = [AeBg]::PostMessage($h, $m, [IntPtr]$keys, [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)))
+        Start-Sleep -Milliseconds 150
+    }
+    $DOWN = 0x201; $UP = 0x202; $MOVE = 0x200; $MK_L = 1
+    Msg $DOWN 260 291 $MK_L                          # the circle's output
+    foreach ($t in 1..5) { Msg $MOVE (260 + 14 * $t) (291 - 38 * $t) $MK_L }
+    Msg $UP 330 101 0                                # the Output's input
+    Start-Sleep -Seconds 1
+    Msg $DOWN 200 312 $MK_L                          # the circle's Count
+    Msg $UP 200 312 0
+    Start-Sleep -Milliseconds 500
+    $e = [AeText]::FindChild($h, "Edit")
+    Write-Host ("mouse: editor {0}, edit box {1}" -f $w.Hwnd, [long]$e)
+    if ($e -ne [IntPtr]::Zero) {
+        [AeText]::SetText($e, "9")
+        $null = [AeBg]::PostMessage($e, 0x100, [IntPtr]0x0D, [IntPtr]0)  # WM_KEYDOWN Enter
+    }
+    Start-Sleep -Seconds 3  # the idle hook writes meanwhile
+}
 try {
     $ready = $false
     for ($j = 0; $j -lt 80 -and -not $ae.HasExited; $j++) {
@@ -41,6 +67,7 @@ try {
     Start-Sleep -Seconds 3
     Send-Step "setup" 60
     Start-Sleep -Seconds $WaitSec  # the idle hook writes the editor script meanwhile
+    Send-Mouse
     Send-Step "check" 120
     Start-Sleep -Seconds 3  # the editor notices the undo meanwhile
     Send-Step "close" 60

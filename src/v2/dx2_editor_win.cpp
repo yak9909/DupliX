@@ -534,9 +534,11 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     case WM_LBUTTONUP: {
         if (!s) return 0;
-        ReleaseCapture();
+        // the drag is taken and ended before ReleaseCapture: it sends WM_CAPTURECHANGED at once, which would read
+        // a drag still going as one cut short and end it (11/28: no wire ever connected, a click opened no edit box)
         const Drag d = g_win.drag;
         g_win.drag = Drag::None;
+        ReleaseCapture();
         const POINT p = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         if (d == Drag::Move && g_win.moved) {
             Commit("move node");
@@ -561,8 +563,8 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_MBUTTONUP:
+        g_win.drag = Drag::None;  // first (see WM_LBUTTONUP)
         ReleaseCapture();
-        g_win.drag = Drag::None;
         return 0;
     case WM_CAPTURECHANGED:
         if (g_win.drag != Drag::None && (HWND)l != h) {
