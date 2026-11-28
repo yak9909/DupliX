@@ -25,8 +25,8 @@ resource 'PiPL' (16000) {
 		/* PF_VERSION(0,1,0,PF_Stage_DEVELOP,1) */
 		AE_Effect_Version { 32769 },
 		AE_Effect_Info_Flags { 0 },
-		/* SEND_UPDATE_PARAMS_UI | CUSTOM_UI (must match GlobalSetup) */
-		AE_Effect_Global_OutFlags { 0x02008000 },
+		/* SEND_UPDATE_PARAMS_UI (1<<26) | CUSTOM_UI (1<<15) (must match GlobalSetup) */
+		AE_Effect_Global_OutFlags { 0x04008000 },
 		AE_Effect_Global_OutFlags_2 { 0x00000000 },
 		AE_Effect_Match_Name { "DupliXP0" },
 		AE_Reserved_Info { 0 },
