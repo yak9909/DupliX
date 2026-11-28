@@ -2,6 +2,7 @@
 // their keys; a value node used once whose key is the one the reader would give it is written inside the
 // expression that uses it, other value nodes are statements of their own (a formula over elements as (e) => ...).
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -101,10 +102,44 @@ private:
         return u;
     }
 
+    // expr(...) { ... }: an Expression node with several outputs, a named output, or an unwired input (design v5 8.2)
+    bool Block(const Node& n) const
+    {
+        if (n.type != "expr") return false;
+        const std::vector<OutputDef> outs = OutputsOf(g_, n);
+        if (outs.size() != 1 || outs[0].name != "value") return true;
+        std::vector<FormulaLine> lines;
+        Diag d;
+        if (!ParseFormula(n.text, &lines, &d) || lines.size() != 1 || lines[0].name != "value") return true;
+        if (n.text.find('=') != std::string::npos) {
+            // "value = ..." written out, or a private line: a block
+            for (const FormulaLine& l : lines)
+                if (l.name[0] == '_') return true;
+        }
+        for (const InputSlot& s : n.inputs)
+            if (!s.link.from) return true;
+        return false;
+    }
+
+    static bool Ident(const std::string& k)
+    {
+        if (k.empty() || !(std::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
+        for (char c : k)
+            if (!(std::isalnum((unsigned char)c) || c == '_')) return false;
+        return true;
+    }
+    static std::string IdentOf(std::string k)
+    {
+        for (char& c : k)
+            if (!(std::isalnum((unsigned char)c) || c == '_')) c = '_';
+        if (k.empty() || std::isdigit((unsigned char)k[0])) k = "e_" + k;
+        return k;
+    }
+
     // a value node written inside the expression that uses it
     bool Inlined(const Node& n) const
     {
-        if (IsGeoNode(n) || IsMacro(n) || n.type == "capture") return false;
+        if (IsGeoNode(n) || IsMacro(n) || n.type == "capture" || Block(n)) return false;
         auto c = consumers_.find(n.id);
         if (c == consumers_.end() || c->second.size() != 1) return false;
         const Node* user = g_.Find(c->second[0].first);
@@ -224,11 +259,22 @@ private:
             const MathOpDef* m = MathOpOf(n);
             if (!m) return "0";
             std::string s = m->CodeName() + "(";
-            for (int k = 0; k < m->arity; k++) {
-                const InputSlot* in = k < (int)n.inputs.size() ? &n.inputs[k] : nullptr;
-                s += (k ? ", " : "") + (in ? Arg(n, *in, ctx, lambda) : std::string("0"));
+            std::string extra;
+            for (int k = 0; k < (int)n.inputs.size(); k++) {
+                const InputSlot& in = n.inputs[k];
+                const bool active = LinkActive(g_, n, k);
+                if (k < m->arity) {
+                    InputSlot shown = in;
+                    if (!active) shown.link = {};
+                    s += (k ? ", " : "") + Arg(n, shown, ctx, lambda);
+                    if (!active) extra += ", _" + in.name + ": " + Arg(n, in, ctx, lambda);
+                } else if (in.link.from || !(in.value.type == Type::Float && in.value.f == 0)) {
+                    // a hidden input keeps its wire and value (design v5 6.2, 13)
+                    extra += ", _" + in.name + ": " + Arg(n, in, ctx, lambda);
+                }
             }
-            return s + ")";
+            if (m->arity == 0 && !extra.empty()) extra = extra.substr(2);
+            return s + extra + ")";
         }
         if (t == "random") {
             char b[48];
@@ -279,6 +325,20 @@ private:
             return;
         }
         if (e.kind == Expr::Member && e.args[0]->kind == Expr::Name && e.args[0]->text == "parent") return;
+        if (e.kind == Expr::Call && e.text == "attr" && e.args.size() == 1 && e.args[0]->kind == Expr::Str) {
+            const std::string name = e.args[0]->text;
+            if (!lambda.empty()) {
+                auto base = std::make_unique<Expr>();
+                base->kind = Expr::Name, base->text = lambda;
+                e.kind = Expr::Member, e.text = name;
+                e.args.clear();
+                e.args.push_back(std::move(base));
+            } else if (ctx.first && AttrsAt(ctx).count(name)) {
+                e.kind = Expr::Name, e.text = name;
+                e.args.clear();
+            }
+            return;
+        }
         for (auto& a : e.args) Substitute(*a, n, ctx, lambda);
         for (auto& a : e.named) Substitute(*a.second, n, ctx, lambda);
     }
@@ -311,6 +371,7 @@ private:
                     }
                 }
                 if (x.kind == Expr::Member && x.args[0]->kind == Expr::Name && x.args[0]->text == "parent") f = true;
+                if (x.kind == Expr::Call && (x.text == "attr" || x.text == "random")) f = true;
                 for (const auto& a : x.args) walk(*a);
             };
             walk(*e);
@@ -420,16 +481,34 @@ private:
             name_[{n.id, 0}] = n.key;
             return n.key + " = " + n.type + "(" + Args(n, FieldCtx(n)) + ")\n";
         }
+        if (Block(n)) {
+            const std::string name = Ident(n.key) ? n.key : IdentOf(n.key);
+            const std::vector<OutputDef> outs = OutputsOf(g_, n);
+            for (size_t k = 0; k < outs.size(); k++)
+                name_[{n.id, (int)k}] = outs.size() == 1 && outs[0].name == "value" ? name : name + "." + outs[k].name;
+            std::string args;
+            for (const InputSlot& s : n.inputs) args += (args.empty() ? "" : ", ") + s.name + ": " + Arg(n, s, {0, 0}, "");
+            std::vector<FormulaLine> lines;
+            Diag d;
+            std::string body;
+            if (ParseFormula(n.text, &lines, &d))
+                for (const FormulaLine& l : lines) body += "  " + l.name + " = " + PrintExpr(*l.expr) + "\n";
+            else
+                body = "  // " + n.text + "\n";
+            return name + " = expr" + (args.empty() ? std::string("") : "(" + args + ")") + " {\n" + body + "}\n";
+        }
         // a value statement
         const NodeDef* d = FindDef(t);
-        for (size_t k = 0; d && k < d->outputs.size(); k++) name_[{n.id, (int)k}] = n.key;
+        // a value node's key may be written as an identifier of its own (design v5 11: its key is not its ids')
+        const std::string nm = Ident(n.key) ? n.key : IdentOf(n.key);
+        for (size_t k = 0; d && k < d->outputs.size(); k++) name_[{n.id, (int)k}] = nm;
         // the output the variable names (bounds(...).center): the one used
         int used = 0;
         for (const auto& kv : uses_)
             if (kv.first.first == n.id) used = kv.first.second;
         const bool formula = t == "expr" || IsReaderType(t) || t == "attr" || IsMathFamily(t);
-        if (formula && FieldNode(n)) return n.key + " = (e) => " + InlineText(n, used, {0, 0}, "e") + "\n";
-        return n.key + " = " + InlineText(n, used, {0, 0}, "") + "\n";
+        if (formula && FieldNode(n)) return nm + " = (e) => " + InlineText(n, used, {0, 0}, "e") + "\n";
+        return nm + " = " + InlineText(n, used, {0, 0}, "") + "\n";
     }
 
     // ---- each ----
@@ -550,12 +629,111 @@ Graph Normalized(const Graph& in)
             if (changed) break;
         }
     }
+    // an input wired from a Macro or a Position-like node is that name in the formula (the writer writes m1, the
+    // reader reads it in place: design v5 13)
+    auto uses = [&](uint32_t id) {
+        int u = 0;
+        for (const Node& n : g.nodes)
+            for (const InputSlot& x : n.inputs) u += x.link.from == id;
+        return u;
+    };
+    auto rename = [](Node& n, const std::map<std::string, std::string>& to) {
+        std::vector<FormulaLine> lines;
+        Diag d;
+        if (!ParseFormula(n.text, &lines, &d)) return;
+        std::string text;
+        for (const FormulaLine& l : lines) {
+            std::unique_ptr<Expr> c;
+            ParseExpr(PrintExpr(*l.expr), &c, &d);
+            std::function<void(Expr&)> sub = [&](Expr& e) {
+                if (e.kind == Expr::Name) {
+                    auto it = to.find(e.text);
+                    if (it != to.end()) e.text = it->second;
+                }
+                if (e.kind == Expr::Member && e.args[0]->kind == Expr::Name && e.args[0]->text == "parent") return;
+                for (auto& a : e.args) sub(*a);
+                for (auto& a : e.named) sub(*a.second);
+            };
+            if (c) sub(*c);
+            if (!text.empty()) text += "\n";
+            const std::string body = c ? PrintExpr(*c) : PrintExpr(*l.expr);
+            text += lines.size() == 1 && l.name == "value" ? body : l.name + " = " + body;
+        }
+        n.text = text;
+    };
+    for (Node& n : g.nodes) {
+        if (n.type != "expr") continue;
+        std::map<std::string, std::string> to;
+        for (size_t k = 0; k < n.inputs.size();) {
+            const InputSlot& in = n.inputs[k];
+            const Node* src = in.link.from ? g.Find(in.link.from) : nullptr;
+            std::string name;
+            if (src && (src->type == "macro" || src->type == "int_macro")) name = std::string(src->type == "macro" ? "m" : "i") + std::to_string(src->setting);
+            else if (src && IsReaderType(src->type) && in.link.output == 0) name = src->type;
+            if (name.empty()) {
+                k++;
+                continue;
+            }
+            to[in.name] = name;
+            n.inputs.erase(n.inputs.begin() + (long)k);
+        }
+        if (!to.empty()) rename(n, to);
+    }
+    for (bool again = true; again;) {
+        again = false;
+        for (size_t k = 0; k < g.nodes.size(); k++) {
+            const Node& n = g.nodes[k];
+            if ((n.type == "macro" || n.type == "int_macro" || IsReaderType(n.type)) && !uses(n.id)) {
+                g.nodes.erase(g.nodes.begin() + (long)k);
+                again = true;
+                break;
+            }
+        }
+    }
+    // an Expression's inputs are named by where they first appear (their names are not compared)
+    for (Node& n : g.nodes) {
+        if (n.type != "expr") continue;
+        const FormulaSockets fs = ReadFormula(n.text);
+        std::map<std::string, std::string> to;
+        int k = 0;
+        for (const std::string& name : fs.inputs) to[name] = "_i" + std::to_string(++k);
+        for (InputSlot& in : n.inputs) {
+            auto it = to.find(in.name);
+            if (it != to.end()) in.name = it->second;
+        }
+        rename(n, to);
+    }
+    // value nodes are named by where they are used (their keys are not compared: design v5 13)
+    std::map<uint32_t, std::string> canon;
+    auto valueNode = [](const Node& n) { return !IsGeoNode(n) && n.type != "output" && n.type != "each"; };
+    for (const Node& n : g.nodes)
+        if (!valueNode(n)) canon[n.id] = n.key;
+    for (size_t round = 0; round <= g.nodes.size(); round++) {
+        bool changed = false;
+        for (const Node& user : g.nodes) {
+            auto cu = canon.find(user.id);
+            if (cu == canon.end()) continue;
+            for (const InputSlot& in : user.inputs) {
+                const Node* src = in.link.from ? g.Find(in.link.from) : nullptr;
+                if (!src || !valueNode(*src)) continue;
+                const std::string c = cu->second + "." + in.name;
+                auto have = canon.find(src->id);
+                if (have == canon.end() || c < have->second) {
+                    canon[src->id] = c;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+    for (Node& n : g.nodes) {
+        auto c = canon.find(n.id);
+        n.key = c != canon.end() ? c->second : "~" + n.key;
+    }
     // formulas in one written form
     for (Node& n : g.nodes) {
         if (n.type != "expr") continue;
-        std::unique_ptr<Expr> e;
-        Diag d;
-        if (ParseExpr(n.text, &e, &d)) n.text = PrintExpr(*e);
+        rename(n, {});
     }
     return g;
 }

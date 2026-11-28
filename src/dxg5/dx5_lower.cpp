@@ -1,6 +1,7 @@
 // DupliX 2 (design v5, 4.2, 5.1, 8, 9, 11): code -> graph. A call is a node, an argument a wire; an expression
 // made of operators, math functions and input values (attributes, macros, time, variables) is one Expression node.
 #include <algorithm>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <set>
@@ -73,6 +74,19 @@ Value Dummy(Type t)
     default: return Value::F(1);
     }
 }
+
+// attr("name"): how a formula reads a named attribute (design v5 8.3, 16 4)
+std::unique_ptr<Expr> AttrCall(const std::string& name, Pos p)
+{
+    auto c = std::make_unique<Expr>();
+    c->kind = Expr::Call, c->pos = p, c->text = "attr";
+    auto s = std::make_unique<Expr>();
+    s->kind = Expr::Str, s->pos = p, s->text = name;
+    c->args.push_back(std::move(s));
+    return c;
+}
+
+bool IsAttrCall(const Expr& e) { return e.kind == Expr::Call && e.text == "attr" && e.args.size() == 1 && e.args[0]->kind == Expr::Str && e.named.empty(); }
 
 std::unique_ptr<Expr> Clone(const Expr& e)
 {
@@ -294,6 +308,7 @@ private:
     // A part that is a node of its own (a node call, a member of one, a string, a lambda), not a formula to go into.
     bool Atomic(const Expr& e, const Env& env) const
     {
+        if (IsAttrCall(e)) return false;
         switch (e.kind) {
         case Expr::Num:
         case Expr::Name:
@@ -348,6 +363,12 @@ private:
             if (input) f.inputs[e.text] = *Var(e.text);
             if (e.text != "true" && e.text != "false") f.names = true;
             f.field |= field;
+            bool isInt = false;
+            int mk = 0;
+            if (!input && !IsReader(e.text) && !MacroName(e.text, &isInt, &mk) && e.text != "true" && e.text != "false") {
+                *out = AttrCall(e.text, e.pos);
+                return true;
+            }
             *out = std::move(c);
             return true;
         }
@@ -358,6 +379,10 @@ private:
                 bool field = true;
                 *type = IsReader(e.text) ? ReaderType(e.text, &field) : (env.attrs && env.attrs->count(e.text) ? env.attrs->at(e.text) : Type::Any);
                 f.field |= field, f.names = true;
+                if (!IsReader(e.text)) {
+                    *out = AttrCall(e.text, e.pos);
+                    return true;
+                }
                 c->kind = Expr::Name;
                 *out = std::move(c);
                 return true;
@@ -369,6 +394,19 @@ private:
                 *out = std::move(c);
                 return true;
             }
+            if (b.kind == Expr::Name) {
+                Ref o;
+                if (const Ref* v = Var(b.text))
+                    if (ExprOutput(*v, e.text, &o)) {
+                        const std::string in = b.text + "_" + e.text;
+                        f.inputs[in] = o;
+                        f.field |= o.field, f.names = true;
+                        *type = Type::Any;
+                        c->kind = Expr::Name, c->text = in;
+                        *out = std::move(c);
+                        return true;
+                    }
+            }
             std::unique_ptr<Expr> a;
             Type at;
             if (!Rewrite(b, env, key, f, &a, &at)) return false;
@@ -379,6 +417,12 @@ private:
             return true;
         }
         case Expr::Call:
+            if (IsAttrCall(e)) {
+                *type = env.attrs && env.attrs->count(e.args[0]->text) ? env.attrs->at(e.args[0]->text) : Type::Any;
+                f.field = true, f.names = true;
+                *out = Clone(e);
+                return true;
+            }
             if (!env.lambda.empty() && Var(e.text) && e.args.size() == 1 && e.args[0]->kind == Expr::Name && e.args[0]->text == env.lambda) {
                 // p(e): the function in p, read here
                 c->kind = Expr::Name;
@@ -407,6 +451,141 @@ private:
             return true;
         }
         }
+    }
+
+    // v.<name> where v is an Expression node with an output of that name (design v5 8.3)
+    bool ExprOutput(const Ref& v, const std::string& name, Ref* r) const
+    {
+        if (v.constant || !v.node) return false;
+        const Node* n = g_.Find(v.node);
+        if (!n || n->type != "expr") return false;
+        const std::vector<OutputDef> outs = OutputsOf(g_, *n);
+        for (size_t k = 0; k < outs.size(); k++)
+            if (outs[k].name == name) {
+                *r = v;
+                r->output = (int)k;
+                return true;
+            }
+        return false;
+    }
+
+    // expr(k: 3) { x = ...; y = ... }: one Expression node (design v5 8.3). The arguments are its inputs; names in the
+    // lines are the arguments, the fixed list, attr("..."), the earlier lines, the statements' variables (wired in
+    // as inputs) or the named attributes known here (read as attr("...")); anything else is an error.
+    bool ExprBlock(const Expr& e, const std::string& key, const Env& env, Ref* r)
+    {
+        const Expr* body = nullptr;
+        for (const auto& a : e.named)
+            if (a.first == "{}") body = a.second.get();
+        if (!body) return Err(e.pos, "expr(...) needs its formula: expr(...) { x = ... }");
+        if (!e.args.empty()) return Err(e.pos, "expr(...) takes its inputs by name: expr(k: 3) { ... }");
+        std::vector<FormulaLine> lines;
+        Diag d;
+        if (!ParseFormula(body->text, &lines, &d)) return Err(body->pos, d.msg);
+        const uint32_t id = NewNode("expr", key);
+        const std::string nkey = g_.Find(id)->key;
+        std::map<std::string, Ref> ins;
+        bool field = false;
+        for (const auto& a : e.named) {
+            if (a.first == "{}") continue;
+            Ref v;
+            if (!Value_(*a.second, nkey + "." + a.first, env, &v)) return false;
+            if (v.geo()) return Err(a.second->pos, "a geometry cannot be an Expression's input");
+            ins[a.first] = v;
+            field |= v.field;
+        }
+        std::set<std::string> earlier;
+        int randoms = 0;
+        std::function<bool(Expr&)> walk = [&](Expr& x) -> bool {
+            switch (x.kind) {
+            case Expr::Name: {
+                const std::string s = x.text;
+                if (ins.count(s) || earlier.count(s)) return true;
+                if (IsFormulaBuiltinName(s)) {
+                    bool isInt = false;
+                    int mk = 0;
+                    field |= !(s == "true" || s == "false" || s == "count" || s == "time" || s == "seed" || MacroName(s, &isInt, &mk));
+                    return true;
+                }
+                if (const Ref* v = Var(s)) {
+                    if (v->geo()) return Err(e.pos, "'" + s + "' is a geometry, not a value");
+                    ins[s] = *v;
+                    field |= v->field;
+                    return true;
+                }
+                bool known = env.attrs && env.attrs->count(s);
+                // a statement's own expr { } is read where it is used: a name some geometry above has is taken
+                if (!env.attrs)
+                    for (const auto& kv : geoAttrs_) known |= kv.second.count(s) > 0;
+                if (known) {
+                    x = std::move(*AttrCall(s, x.pos));
+                    field = true;
+                    return true;
+                }
+                return Err(e.pos, "unknown name '" + s + "' in expr { }");
+            }
+            case Expr::Member:
+                if (x.args[0]->kind == Expr::Name && x.args[0]->text == "parent") {
+                    field = true;
+                    return true;
+                }
+                return walk(*x.args[0]);
+            case Expr::Call:
+                if (IsAttrCall(x)) {
+                    field = true;
+                    return true;
+                }
+                if (x.text == "random" && x.args.empty()) {
+                    bool has = false;
+                    for (const auto& a : x.named) has |= a.first == "salt";
+                    if (!has) {
+                        char b[32];
+                        std::snprintf(b, sizeof(b), "0x%llx",
+                                      (unsigned long long)(((HashStr(nkey) + 0x9E3779B97F4A7C15ull * (uint64_t)++randoms) >> 20) & 0xffffffull));
+                        auto n = std::make_unique<Expr>();
+                        n->kind = Expr::Num, n->pos = x.pos, n->text = b;
+                        x.named.emplace_back("salt", std::move(n));
+                    }
+                    field = true;
+                    return true;
+                }
+                if (!IsMathFunction(x.text) || !x.named.empty()) return Err(e.pos, x.text + "() cannot be in a formula (use a node and wire it in)");
+                break;
+            case Expr::Str:
+            case Expr::Lambda:
+            case Expr::MemberExpr: return Err(e.pos, "not a formula");
+            default: break;
+            }
+            for (auto& a : x.args)
+                if (!walk(*a)) return false;
+            return true;
+        };
+        std::string text;
+        for (FormulaLine& l : lines) {
+            std::unique_ptr<Expr> c = Clone(*l.expr);
+            if (!walk(*c)) return false;
+            earlier.insert(l.name);
+            if (!text.empty()) text += "\n";
+            text += (lines.size() == 1 && l.name == "value") ? PrintExpr(*c) : l.name + " = " + PrintExpr(*c);
+        }
+        Node* n = g_.Find(id);
+        n->text = text;
+        const FormulaSockets fs = ReadFormula(text);
+        for (const std::string& name : fs.inputs) {
+            InputSlot s;
+            s.name = name;
+            s.value = Value::F(0);
+            auto it = ins.find(name);
+            if (it != ins.end()) {
+                if (it->second.constant) s.value = it->second.value;
+                else s.link = {it->second.node, it->second.output};
+            }
+            n->inputs.push_back(s);
+        }
+        for (const auto& kv : ins)
+            if (!n->In(kv.first)) Note(e.pos, "expr input '" + kv.first + "' is not used in its formula");
+        r->node = id, r->output = 0, r->type = Type::Any, r->field = field, r->fromFormula = false, r->constant = false;
+        return true;
     }
 
     bool ReaderNode(const std::string& s, const std::string& key, Ref* r)
@@ -453,6 +632,10 @@ private:
             }
             return Err(e.pos, "unknown name '" + s + "'");
         }
+        if (e.kind == Expr::Call && e.text == "expr") return ExprBlock(e, key, env, r);
+        if (e.kind == Expr::Member && e.args[0]->kind == Expr::Name)
+            if (const Ref* v = Var(e.args[0]->text))
+                if (ExprOutput(*v, e.text, r)) return true;
         if (e.kind == Expr::Call && !IsMathFunction(e.text) && FindDef(e.text)) return Call(e, key, env, r);
         if (e.kind == Expr::Member && e.args[0]->kind == Expr::Call && !IsMathFunction(e.args[0]->text)) {
             const Expr& call = *e.args[0];
@@ -482,6 +665,12 @@ private:
                 r->constant = true, r->value = v, r->type = v.type;
                 return true;
             }
+        }
+        if (IsAttrCall(*rw) && f.inputs.empty()) {
+            r->node = NewNode("attr", key);
+            g_.Find(r->node)->text = rw->args[0]->text;
+            r->type = t, r->field = true, r->fromFormula = true;
+            return true;
         }
         if (rw->kind == Expr::Name && f.inputs.empty()) {
             // (e) => e.position is the Position node; (e) => e.ix reads the attribute
@@ -530,6 +719,7 @@ private:
     // A node call. `atMember`: at(h, i).<name> reads <name> on h.
     bool Call(const Expr& e, const std::string& key, const Env& env, Ref* r, const std::string& atMember = "")
     {
+        if (e.text == "expr") return ExprBlock(e, key, env, r);
         const NodeDef* d = FindDef(e.text);
         if (!d) return Err(e.pos, "unknown function '" + e.text + "'");
         if (d->name == "output") {
@@ -548,7 +738,12 @@ private:
             if (pos >= d->inputs.size()) return Err(a->pos, e.text + "() takes " + std::to_string(d->inputs.size()) + " arguments");
             args.push_back({(int)pos++, a.get()});
         }
+        std::vector<std::pair<std::string, const Expr*>> disabled;
         for (const auto& a : e.named) {
+            if (a.first.size() > 1 && a.first[0] == '_' && IsMathFamily(g_.Find(id)->type)) {
+                disabled.push_back({a.first.substr(1), a.second.get()});
+                continue;
+            }
             if (a.first == "salt" && d->name == "random") {
                 Value v;
                 if (!EvalConst(*a.second, &v)) return Err(a.second->pos, "salt must be a number");
@@ -618,6 +813,14 @@ private:
             if (in.type == Type::Any && (d->name == "at" || d->name == "accumulate" || d->name == "capture" || d->name == "reduce") &&
                 in.name == "value")
                 outType = v.type;
+        }
+        for (const auto& x : disabled) {
+            InputSlot* s = g_.Find(id)->In(x.first);
+            if (!s) return Err(x.second->pos, e.text + "() has no input '" + x.first + "'");
+            Ref v;
+            if (!Value_(*x.second, nkey + "." + x.first, env, &v)) return false;
+            if (v.constant) s->value = v.value;
+            else s->link = {v.node, v.output};
         }
         if (d->name == "at" && !atMember.empty()) {
             // the attribute read over h

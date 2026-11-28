@@ -172,11 +172,16 @@ struct Parser {
         }
         if (k.kind == Token::Ident) {
             i++;
+            if (k.text == "expr" && IsOp("{")) {
+                auto e = Make(Expr::Call, k.pos, k.text);
+                return FormulaBody(std::move(e));
+            }
             if (!IsOp("(")) return Make(Expr::Name, k.pos, k.text);
             i++;
             auto e = Make(Expr::Call, k.pos, k.text);
             if (IsOp(")")) {
                 i++;
+                if (k.text == "expr" && IsOp("{")) return FormulaBody(std::move(e));
                 return e;
             }
             for (;;) {
@@ -200,6 +205,7 @@ struct Parser {
                     continue;
                 }
                 if (!Expect(")")) return nullptr;
+                if (k.text == "expr" && IsOp("{")) return FormulaBody(std::move(e));
                 return e;
             }
         }
@@ -220,6 +226,42 @@ struct Parser {
         }
         Fail("expected a value, found " + What(k));
         return nullptr;
+    }
+
+    // expr(...) { lines }: the Expression node's formula, kept as text (design v5 8.3) in the named argument "{}".
+    // The body's tokens are joined again (a newline or ; ends a line); its first token's position is kept.
+    std::unique_ptr<Expr> FormulaBody(std::unique_ptr<Expr> e)
+    {
+        const Pos open = Peek().pos;
+        i++;  // {
+        std::string body;
+        int depth = 0;
+        int line = -1;
+        for (;;) {
+            const Token& t = Peek();
+            if (t.kind == Token::End) {
+                Fail("expected '}' to close expr { ... }");
+                return nullptr;
+            }
+            if (t.kind == Token::Op && t.text == "}" && depth == 0) {
+                i++;
+                break;
+            }
+            if (t.kind == Token::Op && (t.text == "(" || t.text == "[" || t.text == "{")) depth++;
+            if (t.kind == Token::Op && (t.text == ")" || t.text == "]" || t.text == "}")) depth--;
+            if (t.kind == Token::Newline || (t.kind == Token::Op && t.text == ";")) {
+                if (!body.empty() && body.back() != '\n') body += "\n";
+            } else {
+                if (line >= 0 && t.pos.line != line && depth == 0 && !body.empty() && body.back() != '\n') body += "\n";
+                if (!body.empty() && body.back() != '\n') body += " ";
+                body += t.kind == Token::Str ? "\"" + t.text + "\"" : t.text;
+            }
+            line = t.pos.line;
+            i++;
+        }
+        auto s = Make(Expr::Str, open, body);
+        e->named.emplace_back("{}", std::move(s));
+        return e;
     }
 
     // ---- statements ----
