@@ -17,6 +17,13 @@ set m opacity -50
 set 1 countZ 2
 set 1 spacingZ 80
 expose 1 spacingZ
+# design v5 P1.5e: the grid copied for yourself (a group in the graph data), Spacing Y from an Expression node, a math
+# node with an operator (saved with op=); the render must still match dxg5_test's evaluation of this script
+copygroup g
+connectexpr g sy
+formula g.sy m2 / 2
+add math 0 0 as m
+op m sin
 == seed 3 ==
 # comp D: a circle of 7 not wired. run_dx2_graph.ps1 then drives the editor's window with the mouse: drags from the
 # circle's output (250, 418) to the Output's input (510, 148), clicks the circle's Count (200, 438) and types 9

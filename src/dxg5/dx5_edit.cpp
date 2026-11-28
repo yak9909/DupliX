@@ -417,6 +417,9 @@ uint32_t UsedMacros(const Graph& g)
             if (f && f->type == "macro" && f->setting >= 1 && f->setting <= 32) m |= 1u << (f->setting - 1);
         }
     }
+    // the user's groups read them too (their rows must show in the Effect Controls)
+    for (const UserGroup& u : g.groups)
+        if (u.body) m |= UsedMacros(*u.body);
     return m;
 }
 
@@ -435,6 +438,9 @@ uint32_t UsedIntMacros(const Graph& g)
             if (f && f->type == "int_macro" && f->setting >= 1 && f->setting <= 32) m |= 1u << (f->setting - 1);
         }
     }
+    // the user's groups read them too (their rows must show in the Effect Controls)
+    for (const UserGroup& u : g.groups)
+        if (u.body) m |= UsedIntMacros(*u.body);
     return m;
 }
 

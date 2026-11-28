@@ -206,3 +206,10 @@ TEST(script_new_commands)
     const InputSlot* sx = g.FindKey(gk)->In("sx");
     CHECK(sx && sx->link.from && g.Find(sx->link.from)->type == "expr");
 }
+
+TEST(used_macros_inside_groups)
+{
+    Graph g;
+    CHECK(ReadE("group sp(geometry: geometry) {\n  h = set_position(geometry, position * m5)\n  return h\n}\ng = points(2)\nh = sp(g)\noutput(h)\n", &g));
+    CHECK((UsedMacros(g) >> 4 & 1) == 1);
+}

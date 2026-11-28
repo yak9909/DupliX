@@ -42,6 +42,13 @@ function Send-Mouse {
         Start-Sleep -Milliseconds 150
     }
     $DOWN = 0x201; $UP = 0x202; $MOVE = 0x200; $MK_L = 1
+    # design v5 P1.5e: select the circle (its title) and open it with Tab (a built-in group: read only), Tab goes back
+    Msg $DOWN 120 396 $MK_L
+    Msg $UP 120 396 0
+    $null = [AeBg]::PostMessage($h, 0x100, [IntPtr]0x09, [IntPtr]0)  # WM_KEYDOWN Tab
+    Start-Sleep -Milliseconds 300
+    $null = [AeBg]::PostMessage($h, 0x100, [IntPtr]0x09, [IntPtr]0)
+    Start-Sleep -Milliseconds 300
     Msg $DOWN 250 418 $MK_L                          # the circle's output
     foreach ($t in 1..5) { Msg $MOVE (250 + 52 * $t) (418 - 54 * $t) $MK_L }
     Msg $UP 524 158 0                                # near the Output's input (510, 148): the wire snaps to it
@@ -51,6 +58,16 @@ function Send-Mouse {
     Start-Sleep -Milliseconds 500
     $e = [AeText]::FindChild($h, "Edit")
     Write-Host ("mouse: editor {0}, edit box {1}" -f $w.Hwnd, [long]$e)
+    if ($e -ne [IntPtr]::Zero) {
+        # a formula with names is refused in a value's field (design v5 8.3), then a number goes in
+        [AeText]::SetText($e, "m1 * 2")
+        $null = [AeBg]::PostMessage($e, 0x100, [IntPtr]0x0D, [IntPtr]0)  # WM_KEYDOWN Enter
+        Start-Sleep -Milliseconds 500
+        Msg $DOWN 200 438 $MK_L
+        Msg $UP 200 438 0
+        Start-Sleep -Milliseconds 500
+        $e = [AeText]::FindChild($h, "Edit")
+    }
     if ($e -ne [IntPtr]::Zero) {
         [AeText]::SetText($e, "9")
         $null = [AeBg]::PostMessage($e, 0x100, [IntPtr]0x0D, [IntPtr]0)  # WM_KEYDOWN Enter
