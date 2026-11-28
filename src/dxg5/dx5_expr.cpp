@@ -8,22 +8,25 @@
 
 #include "dxg5/eval_internal.h"
 #include "dxg5/lang.h"
+#include "graph/eval.h"
 
 namespace dx5 {
 
 namespace {
 
-std::shared_ptr<const Expr> Parsed(const std::string& text, std::string* err)
+using Lines = std::vector<FormulaLine>;
+
+std::shared_ptr<const Lines> Parsed(const std::string& text, std::string* err)
 {
     static std::mutex mu;
-    static std::unordered_map<std::string, std::shared_ptr<const Expr>> cache;
+    static std::unordered_map<std::string, std::shared_ptr<const Lines>> cache;
     std::lock_guard<std::mutex> lock(mu);
     auto it = cache.find(text);
     if (it != cache.end()) return it->second;
-    std::unique_ptr<Expr> e;
+    auto lines = std::make_shared<Lines>();
     Diag d;
-    std::shared_ptr<const Expr> r;
-    if (ParseExpr(text, &e, &d)) r = std::shared_ptr<const Expr>(std::move(e));
+    std::shared_ptr<const Lines> r;
+    if (ParseFormula(text, lines.get(), &d)) r = lines;
     else if (err) *err = d.msg;
     if (cache.size() > 4096) cache.clear();
     cache[text] = r;
@@ -49,6 +52,7 @@ struct ExprEval {
     Evaluator& ev;
     const Node& n;
     const GeoPtr& ctx;
+    std::map<std::string, Column> locals;  // the formula's earlier lines
 
     Column Values(const std::string& op, std::vector<Column>& in)
     {
@@ -75,6 +79,8 @@ struct ExprEval {
 
     Column Name(const std::string& s)
     {
+        auto l = locals.find(s);
+        if (l != locals.end()) return l->second;
         if (n.In(s)) return ev.Input(n, s, ctx);
         if (s == "true" || s == "false") return One(Value::B(s == "true"));
         const size_t cnt = ctx->count;
@@ -135,6 +141,22 @@ struct ExprEval {
                 for (const auto& a : e.args) in.push_back(Eval(*a));
                 return Values(e.text, in);
             }
+            if (e.text == "attr" && e.args.size() == 1 && e.args[0]->kind == Expr::Str) {
+                const size_t cnt = ctx->count;
+                auto a = ctx->attrs.find(e.args[0]->text);
+                if (a != ctx->attrs.end() && a->second.size() == cnt) return a->second;
+                if (cnt) ev.Warn(n.key + ": no attribute '" + e.args[0]->text + "'");
+                return MakeColumn(Type::Float, cnt, Value::F(0));
+            }
+            if (e.text == "random" && e.args.empty()) {
+                uint32_t salt = (uint32_t)HashStr(n.key);
+                for (const auto& a : e.named)
+                    if (a.first == "salt") salt = (uint32_t)AsInt(NumberValue(a.second->text));
+                const size_t cnt = ctx->count;
+                Column c = MakeColumn(Type::Float, cnt, Value::F(0));
+                for (size_t k = 0; k < cnt; k++) c.f[k] = dxg::Rand01(ctx->id[k], ev.Ctx().seed, salt);
+                return c;
+            }
             // a variable holding a function, called on the element: p(e)
             if (n.In(e.text)) return ev.Input(n, e.text, ctx);
             ev.Warn(n.key + ": " + e.text + "() is not a math function");
@@ -149,16 +171,27 @@ struct ExprEval {
 
 }  // namespace
 
-Column EvalExpressionNode(Evaluator& ev, const Node& n, const GeoPtr& ctx)
+Column EvalExpressionNode(Evaluator& ev, const Node& n, const GeoPtr& ctx, int output)
 {
     std::string err;
-    const std::shared_ptr<const Expr> e = Parsed(n.text, &err);
-    if (!e) {
+    const std::shared_ptr<const Lines> lines = Parsed(n.text, &err);
+    if (!lines) {
         ev.Warn(n.key + ": " + (err.empty() ? "cannot read the expression" : err));
         return MakeColumn(Type::Float, ctx->count, Value::F(0));
     }
-    ExprEval x{ev, n, ctx};
-    return x.Eval(*e);
+    // the lines in order up to the output asked for (`_` lines are not outputs)
+    ExprEval x{ev, n, ctx, {}};
+    int out = 0;
+    for (const FormulaLine& l : *lines) {
+        Column c = x.Eval(*l.expr);
+        if (l.name[0] != '_') {
+            if (out == output) return c;
+            out++;
+        }
+        x.locals[l.name] = std::move(c);
+    }
+    ev.Warn(n.key + ": no output " + std::to_string(output));
+    return MakeColumn(Type::Float, ctx->count, Value::F(0));
 }
 
 }  // namespace dx5

@@ -40,4 +40,25 @@ bool EvalConst(const Expr& e, Value* out);
 // A number token's value: Int unless it has a '.' or an exponent (hex is Int).
 Value NumberValue(const std::string& text);
 
+// ---- the Expression node's formula (design v5 8.3) ----
+// Lines split by newlines or `;` (outside parentheses): `name = formula`, or one line alone without a name (output
+// `value`). A line whose name starts with `_` is not an output (a value inside the formula only).
+struct FormulaLine {
+    std::string name;
+    std::shared_ptr<const Expr> expr;
+};
+bool ParseFormula(const std::string& text, std::vector<FormulaLine>* lines, Diag* err);
+// The sockets a formula gives the node view: outputs (the lines' names, `_` ones left out) and inputs (the names
+// it uses that are none of: the fixed list (built-in attributes, index, id, count, time, seed, true, false, the
+// macros, parent.*), attr("..."), an earlier line's name), in the order they are written. A call of anything but a
+// math function, attr() or random() is refused (geometry is read by nodes, not formulas).
+struct FormulaSockets {
+    bool ok = false;
+    Diag error;
+    std::vector<std::string> inputs, outputs;
+};
+FormulaSockets ReadFormula(const std::string& text);
+// The names the fixed list reads in place (not inputs).
+bool IsFormulaBuiltinName(const std::string& name);
+
 }  // namespace dx5

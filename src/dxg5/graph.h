@@ -72,6 +72,9 @@ std::string UniqueKey(const Graph& g, const std::string& want);
 uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, double x, double y);
 // "math_add" (P1.5's stored type, or a code name) -> type "math", text "add". True if the node is a math node.
 bool NormalizeMath(Node& n);
+// The node's outputs: an Expression node's come from its formula (design v5 8.3; `value` when it does not read),
+// the others' from the node table.
+std::vector<OutputDef> OutputsOf(const Graph& g, const Node& n);
 // A math node's operation (nullptr for other nodes or an unknown operator).
 const MathOpDef* MathOpOf(const Node& n);
 // The type an output gives (a math node's comes from its operator).

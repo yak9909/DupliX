@@ -66,7 +66,7 @@ bool GroupByDefinition(Evaluator& ev, const Node& n, Geometry* out);
 bool MathOp(const std::string& op, const Value* args, int n, Value* out, std::string* err);
 
 // The Expression node (dx5_expr.cpp): its formula over ctx.
-Column EvalExpressionNode(Evaluator& ev, const Node& n, const GeoPtr& ctx);
+Column EvalExpressionNode(Evaluator& ev, const Node& n, const GeoPtr& ctx, int output);
 // A built-in group computed in C++ (dx5_groups.cpp). False when it must be evaluated from its definition.
 bool NativeGroup(Evaluator& ev, const Node& n, Geometry* out);
 

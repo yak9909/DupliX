@@ -28,9 +28,16 @@ bool Connect(Graph& g, uint32_t from, int output, uint32_t to, const std::string
 bool Disconnect(Graph& g, uint32_t to, const std::string& input);
 // Sets an unwired value (the wire is taken off). Structural inputs are rounded, choices kept in range.
 bool SetConst(Graph& g, uint32_t id, const std::string& input, double v);
-// A value typed in the editor (design v5 8.3): a number or a formula of numbers is set as the value; any other
-// formula becomes an Expression node wired into the input. Refused with why.
-bool SetExpression(Graph& g, uint32_t id, const std::string& input, const std::string& text, std::string* why);
+// A value typed into an input field (design v5 8.3): a number or a formula of numbers only ("360 / 12") is set as
+// the value; a formula with names is refused ("a formula goes in an Expression node").
+bool SetConstText(Graph& g, uint32_t id, const std::string& input, const std::string& text, std::string* why);
+// An Expression node's formula, applied on commit (design v5 8.3). Refused (graph untouched, why = "line L col C:
+// ...") when it does not read. Inputs follow the formula's unknown names (kept by name with their wires and values,
+// the others go); wires from its outputs follow the outputs' names (an output that goes takes its wires); a
+// random() without a salt gets one written into the text.
+bool SetFormula(Graph& g, uint32_t exprNode, const std::string& text, std::string* why);
+// "Connect Expression": a new Expression node (formula 0) to the input's left, wired into it.
+bool ConnectExpression(Graph& g, uint32_t id, const std::string& input);
 // A math node's operator (design v5 6.2). Its wires stay; those on inputs the operator does not use stop counting.
 bool SetMathOp(Graph& g, uint32_t id, const std::string& op, std::string* why);
 // Wires Macro k+1 (or Int Macro k+1) into the input (one Macro node per macro, shared).

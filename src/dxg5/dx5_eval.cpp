@@ -258,7 +258,7 @@ Column Evaluator::FieldUncached(const Node& n, int output, const GeoPtr& ctx)
         if (a != ctx->attrs.end() && a->second.size() == cnt) return a->second;
         return MakeColumn(Type::Float, cnt, Value::F(0));
     }
-    if (t == "expr") return EvalExpressionNode(*this, n, ctx);
+    if (t == "expr") return EvalExpressionNode(*this, n, ctx, output);
     if (t == "param") {
         if (outer_) return outer_->Input(*outerNode_, n.text, ctx);
         Warn(n.key + ": a group's input outside a group");

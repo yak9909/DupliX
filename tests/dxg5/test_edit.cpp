@@ -65,21 +65,6 @@ TEST(expose_int_for_count)
     CHECK(UsedMacros(g) == 3u && UsedIntMacros(g) == 1u);
 }
 
-TEST(set_expression)
-{
-    Graph g;
-    const uint32_t c = AddNodeAt(g, "circle", 0, 0);
-    std::string why;
-    CHECK(SetExpression(g, c, "radius", "360 / 12", &why));
-    CHECK(g.Find(c)->In("radius")->link.from == 0 && g.Find(c)->In("radius")->value.f == 30);
-    CHECK(SetExpression(g, c, "radius", "m1 * 2 + index", &why));
-    const Node* e = g.Find(g.Find(c)->In("radius")->link.from);
-    CHECK(e && e->type == "expr" && e->text == "m1 * 2 + index");
-    CHECK(!SetExpression(g, c, "count", "index + 1", &why) && why.find("cannot vary per element") != std::string::npos);
-    CHECK(SetExpression(g, c, "count", "3 * 4", &why) && g.Find(c)->In("count")->value.i == 12);
-    CHECK(!SetExpression(g, c, "radius", "1 +", &why));
-}
-
 TEST(expand_collapse)
 {
     Graph g;

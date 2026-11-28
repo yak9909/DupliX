@@ -2,7 +2,9 @@
 #include "dxg5/edit.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -84,15 +86,19 @@ uint32_t MacroNode(Graph& g, bool isInt, int k, double nearX, double nearY)
 std::set<std::string> NamesIn(const std::string& text)
 {
     std::set<std::string> s;
-    std::unique_ptr<Expr> e;
+    std::vector<FormulaLine> lines;
     Diag d;
-    if (!ParseExpr(text, &e, &d)) return s;
+    if (!ParseFormula(text, &lines, &d)) return s;
+    std::set<std::string> local;
     std::function<void(const Expr&)> walk = [&](const Expr& x) {
-        if (x.kind == Expr::Name) s.insert(x.text);
+        if (x.kind == Expr::Name && !local.count(x.text)) s.insert(x.text);
         for (const auto& a : x.args) walk(*a);
         for (const auto& a : x.named) walk(*a.second);
     };
-    walk(*e);
+    for (const FormulaLine& l : lines) {
+        walk(*l.expr);
+        local.insert(l.name);
+    }
     return s;
 }
 
@@ -203,12 +209,12 @@ bool Connect(Graph& g, uint32_t from, int output, uint32_t to, const std::string
     const Node* a = g.Find(from);
     Node* b = g.Find(to);
     if (!a || !b || from == to) return no("no such node");
-    const NodeDef* da = FindDef(a->type);
+    const std::vector<OutputDef> outs = OutputsOf(g, *a);
     const InputDef* in = DefOf(g, to, input);
     InputSlot* slot = b->In(input);
     if (!slot) return no(b->key + " has no input " + input);
-    if (!da || output < 0 || output >= (int)da->outputs.size()) return no(a->key + " has no output " + std::to_string(output));
-    const Type ot = da->outputs[output].type;
+    if (output < 0 || output >= (int)outs.size()) return no(a->key + " has no output " + std::to_string(output));
+    const Type ot = OutputType(g, *a, output);
     const Type it = in ? in->type : Type::Any;
     if ((ot == Type::Geometry) != (it == Type::Geometry)) return no(std::string("type mismatch: ") + input + " wants " + TypeName(it));
     if (ot != Type::Geometry && it != Type::Any && ot != Type::Any && ot != it) {
@@ -272,7 +278,7 @@ bool SetConst(Graph& g, uint32_t id, const std::string& input, double v)
     return true;
 }
 
-bool SetExpression(Graph& g, uint32_t id, const std::string& input, const std::string& text, std::string* why)
+bool SetConstText(Graph& g, uint32_t id, const std::string& input, const std::string& text, std::string* why)
 {
     auto no = [&](const std::string& w) {
         if (why) *why = w;
@@ -284,52 +290,103 @@ bool SetExpression(Graph& g, uint32_t id, const std::string& input, const std::s
     Diag d;
     if (!ParseExpr(text, &e, &d)) return no("col " + std::to_string(d.pos.col) + ": " + d.msg);
     Value v;
-    if (EvalConst(*e, &v)) {
-        const InputDef* def = DefOf(g, id, input);
-        if (v.type == Type::Vector) {
-            InputSlot* s = n->In(input);
-            Value c;
-            if (def && !Convert(v, def->type, &c)) return no(std::string("type mismatch: ") + input + " wants " + TypeName(def->type));
-            s->value = def ? c : v;
-            s->link = {};
-            return true;
-        }
-        return SetConst(g, id, input, AsFloat(v)) || no("cannot set " + input);
-    }
-    // names: macros, attributes, index ...; node calls belong in the code view
-    bool field = false;
-    std::function<bool(const Expr&)> check = [&](const Expr& x) -> bool {
-        if (x.kind == Expr::Call && !IsMathFunction(x.text)) return no(x.text + "(): use the code view for node calls");
-        if (x.kind == Expr::Str || x.kind == Expr::Lambda || x.kind == Expr::MemberExpr) return no("not a formula");
-        if (x.kind == Expr::Name) {
-            bool isInt = false;
-            int k = 0;
-            const std::string& s = x.text;
-            if (!(s == "true" || s == "false" || s == "count" || s == "time" || s == "seed" || MacroName(s, &isInt, &k))) field = true;
-        }
-        for (const auto& a : x.args)
-            if (!check(*a)) return false;
-        return true;
-    };
-    if (!check(*e)) return false;
+    if (!EvalConst(*e, &v)) return no("a formula goes in an Expression node");
     const InputDef* def = DefOf(g, id, input);
-    if (field && def && (def->structural || !def->field)) return no(input + " cannot vary per element");
-    const std::string key = UniqueKey(g, n->key + "." + input);
-    const double x = n->x - 200, y = n->y;
-    const uint32_t ex = AddNode(g, "expr", key, x, y);
-    g.Find(ex)->text = PrintExpr(*e);
-    Node* m = g.Find(id);
-    InputSlot* s = m->In(input);
-    // the Expression node it replaces goes (it fed only this input)
-    const uint32_t old = s->link.from;
-    s->link = {ex, 0};
-    if (old) {
-        const Node* o = g.Find(old);
-        int uses = 0;
-        for (const Node& q : g.nodes)
-            for (const InputSlot& t : q.inputs) uses += t.link.from == old;
-        if (o && o->type == "expr" && !uses) RemoveNode(g, old);
+    if (v.type == Type::Vector) {
+        InputSlot* s = n->In(input);
+        Value c;
+        if (def && !Convert(v, def->type, &c)) return no(std::string("type mismatch: ") + input + " wants " + TypeName(def->type));
+        s->value = def ? c : v;
+        s->link = {};
+        return true;
     }
+    return SetConst(g, id, input, AsFloat(v)) || no("cannot set " + input);
+}
+
+namespace {
+
+// `random()` without a salt gets one (written into the text, so rewriting the formula keeps the numbers)
+std::string SaltRandoms(const std::string& text, uint64_t seed)
+{
+    std::string out;
+    size_t k = 0;
+    uint64_t h = seed;
+    while (k < text.size()) {
+        const size_t p = text.find("random", k);
+        if (p == std::string::npos) break;
+        size_t q = p + 6;
+        const bool word = (p == 0 || !(std::isalnum((unsigned char)text[p - 1]) || text[p - 1] == '_'));
+        while (q < text.size() && text[q] == ' ') q++;
+        size_t r = q < text.size() && text[q] == '(' ? q + 1 : std::string::npos;
+        if (word && r != std::string::npos) {
+            while (r < text.size() && text[r] == ' ') r++;
+            if (r < text.size() && text[r] == ')') {
+                h = h * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;
+                char b[48];
+                std::snprintf(b, sizeof(b), "random(salt: 0x%llx)", (unsigned long long)((h >> 20) & 0xffffffull));
+                out += text.substr(k, p - k) + b;
+                k = r + 1;
+                continue;
+            }
+        }
+        out += text.substr(k, p + 6 - k);
+        k = p + 6;
+    }
+    return out + text.substr(k);
+}
+
+}  // namespace
+
+bool SetFormula(Graph& g, uint32_t exprNode, const std::string& text, std::string* why)
+{
+    Node* n = g.Find(exprNode);
+    if (!n || n->type != "expr") {
+        if (why) *why = "not an Expression node";
+        return false;
+    }
+    const FormulaSockets s = ReadFormula(text);
+    if (!s.ok) {
+        if (why) *why = "line " + std::to_string(s.error.pos.line) + " col " + std::to_string(s.error.pos.col) + ": " + s.error.msg;
+        return false;
+    }
+    const std::string salted = SaltRandoms(text, HashStr(n->key) ^ (uint64_t)g.revision * 0x9E3779B97F4A7C15ull ^ (uint64_t)text.size());
+    const std::vector<OutputDef> before = OutputsOf(g, *n);
+    // inputs: kept by name (their wire and value), new ones unwired, the others go
+    std::vector<InputSlot> ins;
+    for (const std::string& name : s.inputs) {
+        if (const InputSlot* have = n->In(name)) ins.push_back(*have);
+        else {
+            InputSlot x;
+            x.name = name;
+            x.value = Value::F(0);
+            ins.push_back(x);
+        }
+    }
+    n->inputs = ins;
+    n->text = salted;
+    // the wires from its outputs follow the outputs' names
+    for (Node& m : g.nodes)
+        for (InputSlot& in : m.inputs) {
+            if (in.link.from != exprNode) continue;
+            const std::string name = in.link.output >= 0 && in.link.output < (int)before.size() ? before[in.link.output].name : "";
+            const auto it = std::find(s.outputs.begin(), s.outputs.end(), name);
+            if (it == s.outputs.end()) in.link = {};
+            else in.link.output = (int)(it - s.outputs.begin());
+        }
+    return true;
+}
+
+bool ConnectExpression(Graph& g, uint32_t id, const std::string& input)
+{
+    Node* n = g.Find(id);
+    if (!n || !n->In(input)) return false;
+    const InputDef* d = DefOf(g, id, input);
+    if (d && (d->type == Type::Geometry || !d->choices.empty())) return false;
+    const std::string key = UniqueKey(g, n->key + "." + input);
+    const double x = n->x - 220, y = n->y;
+    const uint32_t ex = AddNode(g, "expr", key, x, y);
+    g.Find(ex)->text = "0";
+    g.Find(id)->In(input)->link = {ex, 0};
     return true;
 }
 
@@ -827,7 +884,7 @@ bool RunScript(Graph& g, const std::string& script, std::vector<MacroWrite>* wri
         } else if (c == "set" && t.size() >= 4) {
             if (!node(t[1], &a) || !Num(t[3], &x) || !SetConst(g, a, input(a, t[2]), x)) return fail("bad set");
         } else if (c == "expr" && t.size() >= 4) {
-            if (!node(t[1], &a) || !SetExpression(g, a, input(a, t[2]), tail(3), &why)) return fail("bad expr: " + why);
+            if (!node(t[1], &a) || !SetConstText(g, a, input(a, t[2]), tail(3), &why)) return fail("bad expr: " + why);
         } else if (c == "link" && t.size() >= 4) {
             if (!node(t[1], &a) || !MacroName(t[3], &isInt, &k) || !LinkMacro(g, a, input(a, t[2]), isInt, k)) return fail("bad link");
         } else if (c == "unlink" && t.size() >= 3) {

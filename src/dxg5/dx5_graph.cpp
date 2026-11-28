@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "dxg5/lang.h"
 #include "graph/graph.h"
 
 namespace dx5 {
@@ -349,6 +350,20 @@ uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, doub
     FillInputs(n);
     g.nodes.push_back(n);
     return n.id;
+}
+
+std::vector<OutputDef> OutputsOf(const Graph&, const Node& n)
+{
+    if (n.type == "expr") {
+        const FormulaSockets s = ReadFormula(n.text);
+        std::vector<OutputDef> o;
+        for (const std::string& name : s.outputs) o.push_back({name, Type::Any, true});
+        if (o.empty()) o.push_back({"value", Type::Any, true});
+        return o;
+    }
+    if (const MathOpDef* m = MathOpOf(n)) return {{"value", m->out, true}};
+    const NodeDef* d = FindDef(n.type);
+    return d ? d->outputs : std::vector<OutputDef>{};
 }
 
 const MathOpDef* MathOpOf(const Node& n) { return IsMathFamily(n.type) ? FindMathOp(n.type, n.text) : nullptr; }

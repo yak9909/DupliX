@@ -812,7 +812,7 @@ void EndEdit(bool commit)
                 k = std::atoi(text.c_str() + 1) - 1;
             }
             Log("editor: %s.%s = '%s'", n->key.c_str(), key.c_str(), text.c_str());
-            if (k >= 0 && k < 32 ? dx5::LinkMacro(s->graph, n->id, key, isInt, k) : dx5::SetExpression(s->graph, n->id, key, text, &why)) {
+            if (k >= 0 && k < 32 ? dx5::LinkMacro(s->graph, n->id, key, isInt, k) : dx5::SetConstText(s->graph, n->id, key, text, &why)) {
                 g_win.status.clear();
                 Commit("set value");
             } else {
