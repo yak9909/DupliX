@@ -157,6 +157,15 @@ std::vector<NodeDef> Base()
         InputDef k = Struct("k", 1, 1, 8);
         d.push_back(Def("layer_set", "Layer Set", "Input", {k}, {Out("value", Type::Bool)}));
     }
+    // inside a group's definition: its inputs (text: the input's name)
+    {
+        NodeDef p = Def("param", "Group Input", "Hidden", {}, {Out("value", Type::Any, true)});
+        p.text = "name";
+        d.push_back(p);
+        NodeDef q = Def("param_geo", "Group Geometry", "Hidden", {}, {Out("geometry", Type::Geometry)});
+        q.text = "name";
+        d.push_back(q);
+    }
     return d;
 }
 

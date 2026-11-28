@@ -127,6 +127,43 @@ public:
         return true;
     }
 
+    // A group's definition (design v5 6.1, 12): its parameters are param / param_geo nodes, `return` feeds an
+    // output node.
+    bool RunGroup(const Program& p, Graph* out, std::string* name)
+    {
+        if (p.stmts.size() != 1 || p.stmts[0].kind != Stmt::Group) return Err(Pos{}, "a group's code is one group { }");
+        const Stmt& s = p.stmts[0];
+        *name = s.names[0];
+        inGroup_ = true;
+        const NodeDef* def = FindDef(*name);
+        for (const Param& prm : s.params) {
+            const bool geo = prm.type == "geometry";
+            // whether the parameter takes a field: the group's declared input (a structural one never does)
+            const int di = def ? def->Input(prm.name) : -1;
+            const bool field = di >= 0 ? def->inputs[di].field : !prm.structural;
+            const uint32_t id = NewNode(geo ? "param_geo" : "param", prm.name);
+            g_.Find(id)->text = prm.name;
+            Type t = Type::Float;
+            if (prm.type == "int") t = Type::Int;
+            else if (prm.type == "bool") t = Type::Bool;
+            else if (prm.type == "vector") t = Type::Vector;
+            else if (prm.type == "rotation") t = Type::Rotation;
+            if (geo) {
+                geoAttrs_[{id, 0}] = {};
+                Bind(prm.name, Ref{id, 0, Type::Geometry});
+            } else {
+                Ref r{id, 0, t, field};
+                Bind(prm.name, r);
+            }
+        }
+        for (const Stmt& b : s.body)
+            if (!Top(b)) return false;
+        if (!g_.OutputNode()) return Err(s.pos, "a group must return its geometry");
+        Finish();
+        *out = g_;
+        return true;
+    }
+
 private:
     const Graph& prev_;
     std::vector<Diag>* errs_;
@@ -136,6 +173,7 @@ private:
     std::map<std::pair<uint32_t, int>, Attrs> geoAttrs_;
     Zone* zone_ = nullptr;
     bool failed_ = false;
+    bool inGroup_ = false;
 
     bool Err(Pos p, const std::string& m)
     {
@@ -648,7 +686,14 @@ private:
         case Stmt::If: return Err(s.pos, "if is only inside each { }");
         case Stmt::Compound: return Err(s.pos, s.op + " is only inside each { }");
         case Stmt::Group: return Err(s.pos, "groups cannot be defined in a graph's code yet");
-        case Stmt::Return: return Err(s.pos, "return is only inside a group");
+        case Stmt::Return: {
+            if (!inGroup_) return Err(s.pos, "return is only inside a group");
+            Ref r;
+            if (!GeoArg(*s.value, "out_geometry", &r)) return false;
+            const uint32_t id = NewNode("output", "out");
+            g_.Find(id)->In("geometry")->link = {r.node, r.output};
+            return true;
+        }
         }
         return false;
     }
@@ -961,6 +1006,20 @@ bool CodeToGraph(const std::string& code, const Graph& previous, Graph* out, std
     if (!l.Run(p, &g)) return false;
     *out = g;
     return true;
+}
+
+bool GroupToGraph(const std::string& code, Graph* out, std::string* name, std::vector<Diag>* errors)
+{
+    Program p;
+    Diag d;
+    if (!ParseProgram(code, &p, &d)) {
+        if (errors) errors->push_back(d);
+        return false;
+    }
+    std::vector<Diag> notes;
+    Graph prev;
+    Lowerer l(prev, errors, &notes);
+    return l.RunGroup(p, out, name);
 }
 
 }  // namespace dx5

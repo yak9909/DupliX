@@ -188,6 +188,7 @@ void FromV1(const dxg::Graph& v1, Graph* out)
         m.id = n.id;
         m.legacyId = n.id;
         m.type = LowerName(n.typeName);
+        if (m.type == "source") m.type = "source_layers";  // `source` reads the element's attribute
         m.key = m.type + std::to_string(n.id);
         m.x = n.x, m.y = n.y;
         FillInputs(m);

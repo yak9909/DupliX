@@ -17,6 +17,7 @@ struct EvalContext {
     std::function<int64_t(int k, double t)> intMacro;  // Int Macro k+1
     uint32_t layersSet = 0;       // bit k: Layer k+1 has a layer chosen
     size_t maxElements = 100000;  // the most elements a graph may make (the rest are cut, with a warning)
+    bool groupsByDefinition = false;  // tests: evaluate built-in groups from their code, not their C++ stand-ins
 };
 
 dxg::EvalResult Evaluate(const Graph& g, const EvalContext& ctx);

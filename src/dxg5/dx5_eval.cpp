@@ -52,7 +52,19 @@ size_t Evaluator::Cap(size_t n)
 uint64_t Evaluator::ElementId(const Node& n, size_t i, const std::string& inner) const
 {
     if (n.legacyId) return dxg::MixId(n.legacyId, i);
-    return dxg::MixId(HashStr(inner.empty() ? n.key : n.key + "/" + inner), i);
+    // inside a group's definition: the group node's key, then the inner node's (a group from a version 1 graph
+    // keeps P1's ids for the points it makes)
+    if (outerLegacy_ && inner.empty() && n.key == "pts") return dxg::MixId(outerLegacy_, i);
+    std::string k = inner.empty() ? n.key : n.key + "/" + inner;
+    if (!idPrefix_.empty()) k = idPrefix_ + "/" + k;
+    return dxg::MixId(HashStr(k), i);
+}
+
+void Evaluator::BindGroup(Evaluator* outer, const Node* node)
+{
+    outer_ = outer, outerNode_ = node;
+    idPrefix_ = outer->idPrefix_.empty() ? node->key : outer->idPrefix_ + "/" + node->key;
+    outerLegacy_ = node->legacyId;
 }
 
 GeoPtr Evaluator::InputGeo(const Node& n, const std::string& input)
@@ -167,11 +179,17 @@ GeoPtr Evaluator::GeoUncached(const Node& n, int output)
         return g;
     }
     if (t == "each") return output == 1 ? InputGeo(n, "geometry") : InputGeo(n, "body");
+    if (t == "param_geo") {
+        if (outer_) return outer_->InputGeo(*outerNode_, n.text);
+        Warn(n.key + ": a group's input outside a group");
+        return std::make_shared<Geometry>(MakePoints(0));
+    }
     const NodeDef* d = FindDef(t);
     if (d && d->group) {
         Geometry out;
-        if (NativeGroup(*this, n, &out)) return std::make_shared<Geometry>(std::move(out));
-        Warn(n.key + ": " + t + " cannot be evaluated yet");
+        if (!ctx_.groupsByDefinition && NativeGroup(*this, n, &out)) return std::make_shared<Geometry>(std::move(out));
+        if (GroupByDefinition(*this, n, &out)) return std::make_shared<Geometry>(std::move(out));
+        Warn(n.key + ": " + t + " has no definition");
         return std::make_shared<Geometry>(MakePoints(0));
     }
     Warn(n.key + ": no geometry from " + t);
@@ -241,6 +259,11 @@ Column Evaluator::FieldUncached(const Node& n, int output, const GeoPtr& ctx)
         return MakeColumn(Type::Float, cnt, Value::F(0));
     }
     if (t == "expr") return EvalExpressionNode(*this, n, ctx);
+    if (t == "param") {
+        if (outer_) return outer_->Input(*outerNode_, n.text, ctx);
+        Warn(n.key + ": a group's input outside a group");
+        return MakeColumn(Type::Float, cnt, Value::F(0));
+    }
     if (t.rfind("math_", 0) == 0) {
         const NodeDef* d = FindDef(t);
         const int na = d ? (int)d->inputs.size() : 0;
