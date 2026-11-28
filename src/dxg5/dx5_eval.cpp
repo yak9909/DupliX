@@ -98,6 +98,9 @@ GeoPtr Evaluator::Geo(uint32_t node, int output)
     GeoPtr r;
     if (!n) {
         r = std::make_shared<Geometry>(MakePoints(0));
+    } else if (n->type == "each" && output == 1) {
+        // where the chain inside starts: the zone's input only (the zone itself is being evaluated)
+        r = InputGeo(*n, "geometry");
     } else if (std::find(stack_.begin(), stack_.end(), node) != stack_.end()) {
         Warn("a loop at " + n->key);
         r = std::make_shared<Geometry>(MakePoints(0));
