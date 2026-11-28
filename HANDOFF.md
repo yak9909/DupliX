@@ -1,4 +1,24 @@
-# 引き継ぎメモ（最新: 2026-11-28 16 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
+# 引き継ぎメモ（最新: 2026-11-28 17 時ごろ（PC の時計）。再開はこの冒頭の「再開の手順」から）
+
+## 再開の手順（2026-11-28 17 時ごろ、Task 11 済み・Task 12 の着手前。利用者の指示でセッションをクリア）
+
+- **計画と台帳は下の節と同じ**（`docs/superpowers/plans/2026-11-28-dx5-graph-code.md`、台帳 `.superpowers/sdd/2026-11-28-dx5-graph-code/progress.md`）。
+  台帳に `Task 11: complete (commits ec19b73..a371944)` がある。
+- **Task 11 済み（`a371944`、`src/v2/dx2_editor_win.cpp`）:** ホイールでカーソル中心に縮尺（0.3〜3、縮尺ごとにフォントを作り直す、Home で全体）、
+  線のスナップ（24 px 以内の型の合う入力）、つながった入力からドラッグで線を持ち上げる、Macros の欄の行を値へドラッグで LinkMacro、
+  欄は「I Int Macros」「M Macros」の見出しで分ける、追加メニューの先頭に Search...（打って Enter で絞った一覧、1 件ならそのまま追加）、
+  つながった入力は値の欄を出さない（式とマクロの名前だけ薄く）、Each の枠、グループの題名の ▸ で Code 表示のその行へ。
+  **AE 試験 `run_dx2_graph.ps1` は 8・16・32 bpc とも DX2 GRAPH PASS**（スナップと `editor: zoom 1.331` を含む）。`dxg5_test` 399 件 PASS。
+  持ち上げ・マクロのドラッグ・Search・Home・▸ は自動の試験で見ていない（台帳に Ruling。利用者の試用で確かめてもらう）。
+- **次の 1 手（Task 12、積み重ね表示）:** `src/dxg5/edit.h` の `StackRow`・`StackRows` は宣言だけ（`branches` は無く `depth` で枝を表す。
+  計画の `branches` は使わない、と台帳に Ruling を書く）。`dx5_edit.cpp` に実装: Output から geometry の入力をさかのぼり上流を先に並べる。
+  geometry の入力が 2 つ以上なら各枝を depth+1 で先に。ある出力を 2 か所以上の入力が使うノードから上は `collapsedGraph` の 1 行。
+  `each` は `geometry` の入力だけたどる（`body` はゾーンの中）。試験は `tests/dxg5/test_edit.cpp` の末尾に `TEST(stack_rows_default)`
+  （既定のプリセットは grid の key が `g`、Output が `out`。計画の `grid1` ではない → 型で確かめる）と `TEST(stack_rows_shared)`
+  （`g = grid(...)`、`a = transform(g)`、`b = delete(g)`、`output(a)` → 先頭が `g` の collapsed）。合流のノード（merge 等）は今は無い。
+  そのあと `src/v2/dx2_editor_stack.cpp`（または同じ窓のファイル。Task 10 の判断に合わせてよい）と AE 試験（Stack タブで grid の Spacing に 150）。
+  続けて Task 13（全体の試験・最終レビュー・利用者への報告）。
+- **気を付けること:** 下の節と同じ（v2 は `src/graph` と `src/dxg5` の両方をコンパイル、dxg5 の .cpp は `dx5_` で始める、作業ツリーの改行コードだけの変更は触らない）。
 
 ## 再開の手順（2026-11-28 16 時台、設計書 v5 の実装中。計画の Task 9 まで済み。利用者「aex で確認できるまで進めて」）
 
