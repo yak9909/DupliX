@@ -6,17 +6,20 @@
 // value when nothing is wired). Geometry wires are green, value wires grey (dashed when they carry a field).
 //   right-click empty space      add a node
 //   drag a node's title          move it            Delete: remove the selected node
-//   drag from an output          to an input to wire; right-click a wired input to unwire
+//   drag from an output          to an input to wire (it snaps to the nearest input that fits, 24 px); right-click
+//                                a wired input to unwire; drag from a wired input to lift its wire off (Blender)
 //   click a value                type a number or a formula; drag it left / right to change a number
 //   right-click a value          Expose to a macro, link to / unlink a macro, reset, expand a formula into nodes
-//   double-click a macro (right) rename it
+//   drag a macro (right) onto a value   link it;  double-click a macro: rename it
 //   Ctrl+Z / Ctrl+Shift+Z        AE's Undo / Redo
-//   middle-drag                  pan
+//   middle-drag                  pan;  wheel: zoom about the cursor;  Home: zoom to fit
+//   the ▸ of a group's title     its line in the Code view
 #include "v2/dx2_editor.h"
 
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -46,7 +49,7 @@ COLORREF TypeColor(dx5::Type t)
     }
 }
 
-enum class Hit { None, Canvas, Title, OutPort, InPort, Value, ExprText, Macro, Panel };
+enum class Hit { None, Canvas, Title, GroupOpen, OutPort, InPort, Value, ExprText, Macro, Panel };
 struct HitInfo {
     Hit what = Hit::None;
     uint32_t node = 0;
@@ -54,20 +57,39 @@ struct HitInfo {
     bool isInt = false;
 };
 
-enum class Drag { None, Move, Wire, Scrub, Pan };
+enum class Drag { None, Move, Wire, Scrub, Pan, MacroLink };
 enum class View { Nodes, Stack, Code };
 constexpr int kApplyId = 9001;
+constexpr double kZoomMin = 0.3, kZoomMax = 3, kSnap = 24;
 
 struct MacroRowInfo {
     bool isInt;
     int k;
+    bool header = false;  // the "Int Macros" / "Macros" heading
 };
 
 struct Win {
     Session* s = nullptr;
     HWND wnd = nullptr, edit = nullptr;
     HFONT font = nullptr, bold = nullptr;
-    double panX = 30, panY = 30;
+    // the node view: screen = world * zoom + pan (+ the tabs); its fonts are made again for each zoom
+    double panX = 30, panY = 30, zoom = 1;
+    HFONT zFont = nullptr, zBold = nullptr;
+    double fontZoom = 0;
+    // a wire being dragged: the input it snaps to; a wire lifted off an input (restored if the drag is cut short)
+    uint32_t snapNode = 0;
+    int snapInput = -1;
+    bool lifted = false;
+    uint32_t liftNode = 0;
+    std::string liftInput;
+    dx5::Link liftLink{};
+    dx5::Graph liftBefore;
+    // a macro dragged from the panel
+    bool macroDragInt = false;
+    int macroDragK = -1;
+    // the add menu's search
+    bool editSearch = false, enterPressed = false;
+    POINT searchAt{};
     uint32_t selected = 0;
     // a drag
     Drag drag = Drag::None;
@@ -141,26 +163,52 @@ RECT CanvasRect()
     return c;
 }
 int FirstInputRow(const dx5::Node& n) { return NumOutputs(n) + (HasTextRow(n) ? 1 : 0); }
+// a length of the node view on the screen
+int Z(double v) { return (int)std::lround(v * g_win.zoom); }
+int WorldH(const dx5::Node& n) { return kTitleH + (FirstInputRow(n) + (int)n.inputs.size()) * kRowH + 4; }
 RECT NodeRect(const dx5::Node& n)
 {
-    const int rows = FirstInputRow(n) + (int)n.inputs.size();
-    const int x = (int)std::lround(n.x + g_win.panX), y = (int)std::lround(n.y + g_win.panY) + kTabH;
-    return {x, y, x + kNodeW, y + kTitleH + rows * kRowH + 4};
+    const int x = (int)std::lround(n.x * g_win.zoom + g_win.panX), y = (int)std::lround(n.y * g_win.zoom + g_win.panY) + kTabH;
+    return {x, y, x + Z(kNodeW), y + Z(WorldH(n))};
 }
-int RowTop(const dx5::Node& n, int row) { return NodeRect(n).top + kTitleH + row * kRowH; }
-POINT OutPort(const dx5::Node& n, int out) { return {NodeRect(n).right, RowTop(n, out) + kRowH / 2}; }
-POINT InPort(const dx5::Node& n, int in) { return {NodeRect(n).left, RowTop(n, FirstInputRow(n) + in) + kRowH / 2}; }
+int RowTop(const dx5::Node& n, int row) { return NodeRect(n).top + Z(kTitleH + row * kRowH); }
+int RowMid(const dx5::Node& n, int row) { return NodeRect(n).top + Z(kTitleH + row * kRowH + kRowH / 2); }
+POINT OutPort(const dx5::Node& n, int out) { return {NodeRect(n).right, RowMid(n, out)}; }
+POINT InPort(const dx5::Node& n, int in) { return {NodeRect(n).left, RowMid(n, FirstInputRow(n) + in)}; }
 RECT ValueRect(const dx5::Node& n, int in)
 {
     const RECT r = NodeRect(n);
-    const int y = RowTop(n, FirstInputRow(n) + in) + 1;
-    return {r.left + kNodeW / 2, y, r.right - 6, y + kRowH - 2};
+    const int y = RowTop(n, FirstInputRow(n) + in);
+    return {r.left + Z(kNodeW / 2), y + 1, r.right - Z(6), y + Z(kRowH) - 1};
 }
 RECT TextRect(const dx5::Node& n)
 {
     const RECT r = NodeRect(n);
-    const int y = RowTop(n, NumOutputs(n)) + 1;
-    return {r.left + 8, y, r.right - 8, y + kRowH - 2};
+    const int y = RowTop(n, NumOutputs(n));
+    return {r.left + Z(8), y + 1, r.right - Z(8), y + Z(kRowH) - 1};
+}
+// the ▸ at the right of a group's title (design v5 6.1: opens its code)
+RECT GroupOpenRect(const dx5::Node& n)
+{
+    const RECT r = NodeRect(n);
+    return {r.right - Z(22), r.top, r.right, r.top + Z(kTitleH)};
+}
+bool IsGroup(const dx5::Node& n)
+{
+    const dx5::NodeDef* d = dx5::FindDef(n.type);
+    return d && d->group;
+}
+int PortR() { return std::max(2, Z(kPort)); }
+
+void ZoomFonts()
+{
+    if (g_win.fontZoom == g_win.zoom && g_win.zFont) return;
+    if (g_win.zFont) DeleteObject(g_win.zFont);
+    if (g_win.zBold) DeleteObject(g_win.zBold);
+    const int h = -std::max(4, Z(13));
+    g_win.zFont = CreateFontW(h, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_win.zBold = CreateFontW(h, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_win.fontZoom = g_win.zoom;
 }
 RECT MacroRow(int row)
 {
@@ -182,7 +230,7 @@ HitInfo HitTest(POINT p)
     const RECT c = CanvasRect();
     if (!In(c, p)) {
         for (size_t row = 0; row < g_win.macroRows.size(); row++)
-            if (In(MacroRow((int)row), p)) {
+            if (!g_win.macroRows[row].header && In(MacroRow((int)row), p)) {
                 HitInfo m{Hit::Macro, 0, g_win.macroRows[row].k};
                 m.isInt = g_win.macroRows[row].isInt;
                 return m;
@@ -192,12 +240,13 @@ HitInfo HitTest(POINT p)
     for (auto it = s->graph.nodes.rbegin(); it != s->graph.nodes.rend(); ++it) {
         const dx5::Node& n = *it;
         for (int k = 0; k < NumOutputs(n); k++)
-            if (Near(OutPort(n, k), p, kPort + 3)) return {Hit::OutPort, n.id, k};
+            if (Near(OutPort(n, k), p, PortR() + 3)) return {Hit::OutPort, n.id, k};
         for (int k = 0; k < (int)n.inputs.size(); k++)
-            if (Near(InPort(n, k), p, kPort + 3)) return {Hit::InPort, n.id, k};
+            if (Near(InPort(n, k), p, PortR() + 3)) return {Hit::InPort, n.id, k};
         const RECT r = NodeRect(n);
         if (!In(r, p)) continue;
-        if (p.y < r.top + kTitleH) return {Hit::Title, n.id, 0};
+        if (IsGroup(n) && In(GroupOpenRect(n), p)) return {Hit::GroupOpen, n.id, 0};
+        if (p.y < r.top + Z(kTitleH)) return {Hit::Title, n.id, 0};
         if (HasTextRow(n) && In(TextRect(n), p)) return {Hit::ExprText, n.id, 0};
         for (int i = 0; i < (int)n.inputs.size(); i++)
             if (In(ValueRect(n, i), p)) return {Hit::Value, n.id, i};
@@ -263,7 +312,7 @@ void Wire(HDC dc, POINT a, POINT b, COLORREF c, bool dashed)
     LOGBRUSH lb{BS_SOLID, c, 0};
     HPEN pen = dashed ? ExtCreatePen(PS_GEOMETRIC | PS_DASH, 2, &lb, 0, nullptr) : CreatePen(PS_SOLID, 2, c);
     HGDIOBJ old = SelectObject(dc, pen);
-    const int dx = std::max(40, (int)std::abs(b.x - a.x) / 2);
+    const int dx = std::max(Z(40), (int)std::abs(b.x - a.x) / 2);
     POINT pts[4] = {a, {a.x + dx, a.y}, {b.x - dx, b.y}, b};
     PolyBezier(dc, pts, 4);
     SelectObject(dc, old);
@@ -275,7 +324,8 @@ void Port(HDC dc, POINT p, COLORREF c, bool filled)
     HBRUSH b = CreateSolidBrush(filled ? c : kNodeC);
     HPEN pen = CreatePen(PS_SOLID, 1, c);
     HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, pen);
-    Ellipse(dc, p.x - kPort, p.y - kPort, p.x + kPort + 1, p.y + kPort + 1);
+    const int k = PortR();
+    Ellipse(dc, p.x - k, p.y - k, p.x + k + 1, p.y + k + 1);
     SelectObject(dc, ob), SelectObject(dc, op);
     DeleteObject(b), DeleteObject(pen);
 }
@@ -295,6 +345,24 @@ dx5::Type OutType(const dx5::Graph& g, uint32_t node, int out)
     const dx5::Node* n = g.Find(node);
     const dx5::NodeDef* d = n ? dx5::FindDef(n->type) : nullptr;
     return d && out < (int)d->outputs.size() ? d->outputs[out].type : dx5::Type::Float;
+}
+
+// The input nearest to p (within kSnap px on the screen) that the wire being dragged can feed (Connect would take it).
+bool FindSnap(POINT p, uint32_t* node, int* input)
+{
+    Session* s = g_win.s;
+    if (!s) return false;
+    double best = kSnap * kSnap + 1;
+    for (const dx5::Node& n : s->graph.nodes)
+        for (int k = 0; k < (int)n.inputs.size(); k++) {
+            const POINT q = InPort(n, k);
+            const double d2 = double(q.x - p.x) * (q.x - p.x) + double(q.y - p.y) * (q.y - p.y);
+            if (d2 > kSnap * kSnap || d2 >= best) continue;
+            dx5::Graph probe = s->graph;
+            if (!dx5::Connect(probe, g_win.dragNode, g_win.dragIndex, n.id, n.inputs[k].name, nullptr)) continue;
+            best = d2, *node = n.id, *input = k;
+        }
+    return best <= kSnap * kSnap;
 }
 
 RECT TabRect(View v)
@@ -343,15 +411,36 @@ void PaintNodes(HDC dc, const RECT& client)
     // a grid that moves with the view
     HPEN gp = CreatePen(PS_SOLID, 1, kGridC);
     HGDIOBJ old = SelectObject(dc, gp);
-    const int step = 40;
-    for (int x = (int)std::fmod(g_win.panX, step); x < c.right; x += step) MoveToEx(dc, x, c.top, nullptr), LineTo(dc, x, c.bottom);
-    for (int y = c.top + (int)std::fmod(g_win.panY, step); y < c.bottom; y += step) MoveToEx(dc, 0, y, nullptr), LineTo(dc, c.right, y);
+    const double step = 40 * g_win.zoom;
+    const double gx = std::fmod(g_win.panX, step), gy = std::fmod(g_win.panY, step);
+    for (double x = gx < 0 ? gx + step : gx; x < c.right; x += step)
+        MoveToEx(dc, (int)x, c.top, nullptr), LineTo(dc, (int)x, c.bottom);
+    for (double y = c.top + (gy < 0 ? gy + step : gy); y < c.bottom; y += step)
+        MoveToEx(dc, 0, (int)y, nullptr), LineTo(dc, c.right, (int)y);
     SelectObject(dc, old);
     DeleteObject(gp);
     SetBkMode(dc, TRANSPARENT);
-    SelectObject(dc, g_win.font);
+    ZoomFonts();
+    SelectObject(dc, g_win.zFont);
     if (!s) return;
     const dx5::Graph& g = s->graph;
+    // Each zones: a frame around the nodes inside (design v5 9)
+    for (const dx5::Node& z : g.nodes) {
+        if (z.type != "each") continue;
+        RECT f = NodeRect(z);
+        for (const dx5::Node& n : g.nodes)
+            if (n.zone == z.id) {
+                const RECT r = NodeRect(n);
+                f.left = std::min(f.left, r.left), f.top = std::min(f.top, r.top);
+                f.right = std::max(f.right, r.right), f.bottom = std::max(f.bottom, r.bottom);
+            }
+        InflateRect(&f, Z(14), Z(14));
+        HPEN zp = CreatePen(PS_SOLID, 1, RGB(110, 100, 150));
+        HGDIOBJ op = SelectObject(dc, zp), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RoundRect(dc, f.left, f.top, f.right, f.bottom, Z(12), Z(12));
+        SelectObject(dc, op), SelectObject(dc, ob);
+        DeleteObject(zp);
+    }
     for (const dx5::Node& n : g.nodes)
         for (int k = 0; k < (int)n.inputs.size(); k++) {
             const dx5::InputSlot& in = n.inputs[k];
@@ -363,46 +452,71 @@ void PaintNodes(HDC dc, const RECT& client)
         }
     if (g_win.drag == Drag::Wire) {
         const dx5::Node* a = g.Find(g_win.dragNode);
-        if (a) Wire(dc, OutPort(*a, g_win.dragIndex), g_win.now, kLinkC, false);
+        const dx5::Node* b = g_win.snapNode ? g.Find(g_win.snapNode) : nullptr;
+        const POINT end = b && g_win.snapInput < (int)b->inputs.size() ? InPort(*b, g_win.snapInput) : g_win.now;
+        if (a) Wire(dc, OutPort(*a, g_win.dragIndex), end, b ? TypeColor(OutType(g, a->id, g_win.dragIndex)) : kLinkC, false);
     }
     for (const dx5::Node& n : g.nodes) {
         const dx5::NodeDef* d = dx5::FindDef(n.type);
         const RECT r = NodeRect(n);
+        if (r.right < c.left || r.left > c.right || r.bottom < c.top || r.top > c.bottom) continue;
         FillRect(dc, r, n.id == g_win.selected ? kNodeSel : kNodeC);
-        RECT t = {r.left, r.top, r.right, r.top + kTitleH};
+        RECT t = {r.left, r.top, r.right, r.top + Z(kTitleH)};
         FillRect(dc, t, TitleColor(n));
-        SelectObject(dc, g_win.bold);
-        t.left += 10;
+        SelectObject(dc, g_win.zBold);
+        t.left += Z(10);
+        if (IsGroup(n)) {
+            t.right -= Z(22);
+            Text(dc, "\xE2\x96\xB8", GroupOpenRect(n), kText, DT_CENTER);  // ▸
+        }
         std::string title = d ? d->label : n.type + " (unknown)";
         if (IsMacroNode(n)) title = dx5::MacroLabel(g, n.type == "int_macro", n.setting - 1);
         Text(dc, title, t, kText, DT_LEFT);
-        SelectObject(dc, g_win.font);
+        SelectObject(dc, g_win.zFont);
         for (int k = 0; d && k < (int)d->outputs.size(); k++) {
-            RECT orow = {r.left + 10, RowTop(n, k), r.right - 12, RowTop(n, k) + kRowH};
+            RECT orow = {r.left + Z(10), RowTop(n, k), r.right - Z(12), RowTop(n, k) + Z(kRowH)};
             Text(dc, d->outputs[k].name, orow, kDim, DT_RIGHT);
             Port(dc, OutPort(n, k), TypeColor(d->outputs[k].type), false);
         }
         if (HasTextRow(n)) {
             RECT tr = TextRect(n);
             FillRect(dc, tr, RGB(40, 40, 44));
-            tr.left += 5, tr.right -= 5;
+            tr.left += Z(5), tr.right -= Z(5);
             Text(dc, n.text, tr, kLinkC, DT_LEFT);
         }
         for (int i = 0; i < (int)n.inputs.size(); i++) {
             const dx5::InputSlot& in = n.inputs[i];
             const dx5::InputDef* id = InDef(n, in.name);
-            RECT lr = {r.left + 10, RowTop(n, FirstInputRow(n) + i), r.left + kNodeW / 2 - 4, 0};
-            lr.bottom = lr.top + kRowH;
+            RECT lr = {r.left + Z(10), RowTop(n, FirstInputRow(n) + i), r.left + Z(kNodeW / 2 - 4), 0};
+            lr.bottom = lr.top + Z(kRowH);
             Text(dc, in.name, lr, kDim, DT_LEFT);
             if (!id || id->type != dx5::Type::Geometry) {
                 RECT vr = ValueRect(n, i);
-                FillRect(dc, vr, RGB(40, 40, 44));
-                vr.left += 5, vr.right -= 5;
-                Text(dc, in.link.from ? LinkText(g, in) : ConstText(n, in), vr, in.link.from ? kLinkC : kText, DT_RIGHT);
+                if (!in.link.from) {
+                    FillRect(dc, vr, RGB(40, 40, 44));
+                    vr.left += Z(5), vr.right -= Z(5);
+                    Text(dc, ConstText(n, in), vr, kText, DT_RIGHT);
+                } else {
+                    // a wired input has no value field; a formula or a macro shows its name, faint
+                    const dx5::Node* f = g.Find(in.link.from);
+                    vr.right -= Z(5);
+                    if (f && (f->type == "expr" || IsMacroNode(*f))) Text(dc, LinkText(g, in), vr, RGB(120, 150, 175), DT_RIGHT);
+                }
             }
             Port(dc, InPort(n, i), TypeColor(id ? id->type : dx5::Type::Float), in.link.from != 0);
         }
     }
+    if (g_win.drag == Drag::MacroLink && g_win.moved && g_win.macroDragK >= 0) {
+        // the macro being dragged, under the cursor
+        const std::string chip = (g_win.macroDragInt ? "I" : "M") + std::to_string(g_win.macroDragK + 1) + "  " +
+                                 dx5::MacroLabel(g, g_win.macroDragInt, g_win.macroDragK);
+        RECT cr = {g_win.now.x + 12, g_win.now.y - 10, g_win.now.x + 172, g_win.now.y + 10};
+        FillRect(dc, cr, RGB(60, 80, 100));
+        SelectObject(dc, g_win.font);
+        cr.left += 6;
+        Text(dc, chip, cr, kText, DT_LEFT);
+    }
+    SelectObject(dc, g_win.font);
     if (!g.OutputNode()) {
         RECT m = {c.left + 10, c.bottom - 28, c.right - 10, c.bottom - 8};
         Text(dc, "No Output node: right-click to add one", m, kWarn, DT_LEFT);
@@ -429,13 +543,25 @@ void PaintPanel(HDC dc, const RECT& client)
     SelectObject(dc, g_win.font);
     g_win.macroRows.clear();
     const uint32_t usedI = dx5::UsedIntMacros(g), usedM = dx5::UsedMacros(g);
-    for (int k = 0; k < 32; k++)
-        if ((usedI >> k & 1) || !g.intMacros[k].name.empty()) g_win.macroRows.push_back({true, k});
-    for (int k = 0; k < 32; k++)
-        if ((usedM >> k & 1) || !g.macros[k].name.empty()) g_win.macroRows.push_back({false, k});
+    // two lists under their headings: I (Int Macro) and M (Macro)
+    for (int pass = 0; pass < 2; pass++) {
+        const bool isInt = pass == 0;
+        const uint32_t used = isInt ? usedI : usedM;
+        const size_t head = g_win.macroRows.size();
+        for (int k = 0; k < 32; k++)
+            if ((used >> k & 1) || !(isInt ? g.intMacros : g.macros)[k].name.empty()) {
+                if (g_win.macroRows.size() == head) g_win.macroRows.push_back({isInt, -1, true});
+                g_win.macroRows.push_back({isInt, k});
+            }
+    }
     for (size_t row = 0; row < g_win.macroRows.size(); row++) {
         const MacroRowInfo& m = g_win.macroRows[row];
         RECT r = MacroRow((int)row);
+        if (m.header) {
+            r.left += 2;
+            Text(dc, m.isInt ? "I  Int Macros" : "M  Macros", r, kDim, DT_LEFT);
+            continue;
+        }
         FillRect(dc, r, RGB(46, 46, 50));
         RECT a = {r.left + 6, r.top, r.left + 34, r.bottom};
         Text(dc, (m.isInt ? "I" : "M") + std::to_string(m.k + 1), a, kDim, DT_LEFT);
@@ -448,14 +574,15 @@ void PaintPanel(HDC dc, const RECT& client)
     }
     // the help below the list, wrapped to the panel and cut at its bottom (it was cut off at the side, v4 1.3)
     const int listBottom = g_win.macroRows.empty() ? kTabH + 34 : MacroRow((int)g_win.macroRows.size() - 1).bottom + 12;
-    RECT help = {c.right + 10, std::max(listBottom, (int)client.bottom - 170), client.right - 10, client.bottom - 8};
+    RECT help = {c.right + 10, std::max(listBottom, (int)client.bottom - 200), client.right - 10, client.bottom - 8};
     SetTextColor(dc, kDim);
     const wchar_t* hint =
         L"Right-click: add a node, or a value's menu (Expose to Macro).\n"
         L"Click a value to type a number or a formula; drag it to change it.\n"
-        L"Drag from an output to an input to wire.\n"
+        L"Drag from an output to an input to wire; drag from a wired input to lift its wire.\n"
+        L"Wheel: zoom.  Middle-drag: pan.  Home: fit.\n"
+        L"Drag a macro onto a value to link it; double-click it to rename.\n"
         L"Delete: remove the node.  Ctrl+Z: undo.\n"
-        L"Double-click a macro to rename it.\n"
         L"Keys go on Macro / Int Macro in the Effect Controls.";
     DrawTextW(dc, hint, -1, &help, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
 }
@@ -602,6 +729,7 @@ void EndEdit(bool commit);
 LRESULT CALLBACK EditProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     if (m == WM_KEYDOWN && (w == VK_RETURN || w == VK_ESCAPE)) {
+        g_win.enterPressed = w == VK_RETURN;
         EndEdit(w == VK_RETURN);
         return 0;
     }
@@ -614,19 +742,20 @@ LRESULT CALLBACK EditProc(HWND h, UINT m, WPARAM w, LPARAM l)
     return CallWindowProcW(g_win.editProc, h, m, w, l);
 }
 
-void BeginEdit(const RECT& r, const std::string& text)
+void BeginEdit(const RECT& r, const std::string& text, HFONT font = nullptr)
 {
     if (g_win.edit) EndEdit(false);
+    g_win.enterPressed = false;
     g_win.edit = CreateWindowExW(0, L"EDIT", W(text).c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, r.left, r.top,
                                  r.right - r.left, r.bottom - r.top, g_win.wnd, nullptr, nullptr, nullptr);
-    SendMessageW(g_win.edit, WM_SETFONT, (WPARAM)g_win.font, TRUE);
+    SendMessageW(g_win.edit, WM_SETFONT, (WPARAM)(font ? font : g_win.font), TRUE);
     g_win.editProc = (WNDPROC)SetWindowLongPtrW(g_win.edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
     SendMessageW(g_win.edit, EM_SETSEL, 0, -1);
     SetFocus(g_win.edit);
 }
 void BeginValueEdit(const dx5::Node& n, int input)
 {
-    g_win.editNode = n.id, g_win.editInput = input, g_win.editMacro = -1, g_win.editExprText = false;
+    g_win.editNode = n.id, g_win.editInput = input, g_win.editMacro = -1, g_win.editExprText = false, g_win.editSearch = false;
     const dx5::InputSlot& s = n.inputs[input];
     std::string text = ConstText(n, s);
     if (s.link.from) {
@@ -634,8 +763,11 @@ void BeginValueEdit(const dx5::Node& n, int input)
         text = f && f->type == "expr" ? dx5::ExprText(g_win.s->graph, f->id, 0) : LinkText(g_win.s->graph, s);
         if (f && (f->type == "macro" || f->type == "int_macro")) text = std::string(f->type == "macro" ? "m" : "i") + std::to_string(f->setting);
     }
-    BeginEdit(ValueRect(n, input), text);
+    ZoomFonts();
+    BeginEdit(ValueRect(n, input), text, g_win.zFont);
 }
+
+void SearchMenu(POINT client, const std::string& text);
 
 void EndEdit(bool commit)
 {
@@ -649,6 +781,11 @@ void EndEdit(bool commit)
     Session* s = g_win.s;
     if (!commit || !s) return Redraw();
     const std::string text = U8(buf);
+    if (g_win.editSearch) {
+        g_win.editSearch = false;
+        if (g_win.enterPressed) SearchMenu(g_win.searchAt, text);  // not when the box only lost the focus
+        return Redraw();
+    }
     if (g_win.editMacro >= 0) {
         if (dx5::RenameMacro(s->graph, g_win.editMacroInt, g_win.editMacro, text)) Commit("rename macro");
     } else if (g_win.editExprText) {
@@ -688,39 +825,89 @@ void EndEdit(bool commit)
 }
 
 // ---- menus ----
-enum MenuId { M_ADD = 1000, M_EXPOSE = 200, M_RESET, M_UNLINK, M_EXPAND, M_LINK = 300, M_LINKI = 400, M_CHOICE = 500, M_UNWIRE = 600 };
+enum MenuId { M_ADD = 1000, M_SEARCH = 100, M_EXPOSE = 200, M_RESET, M_UNLINK, M_EXPAND, M_LINK = 300, M_LINKI = 400, M_CHOICE = 500, M_UNWIRE = 600 };
+
+std::string MenuLabel(const dx5::NodeDef& d)
+{
+    return d.category == "Math" && d.name.rfind("math_", 0) == 0 ? d.name.substr(5) : d.label;
+}
+std::string Lower(std::string s)
+{
+    for (char& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+// Adds a node of defs[index] where the menu was opened (client point).
+void AddAt(POINT client, size_t index)
+{
+    const auto& defs = dx5::AllDefs();
+    if (index >= defs.size()) return;
+    const double x = (client.x - g_win.panX) / g_win.zoom, y = (client.y - kTabH - g_win.panY) / g_win.zoom;
+    const uint32_t nid = dx5::AddNodeAt(g_win.s->graph, defs[index].name, x, y);
+    if (nid) {
+        g_win.selected = nid;
+        Commit("add node");
+    }
+}
+
+int Track(HMENU m, POINT client)
+{
+    POINT sp = client;
+    ClientToScreen(g_win.wnd, &sp);
+    return TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, sp.x, sp.y, 0, g_win.wnd, nullptr);
+}
 
 void AddMenu(POINT client)
 {
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, M_SEARCH, L"Search...");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     std::map<std::string, HMENU> sub;
-    const char* order[] = {"Generate", "Set", "Geometry", "Input", "Math", "Utility", "Zone", "Output"};
-    for (const char* cat : order) {
-        sub[cat] = CreatePopupMenu();
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)sub[cat], W(cat).c_str());
-    }
+    const char* order[] = {"Generate", "Set", "Geometry", "Input", "Math", "Utility", "Group", "Zone", "Output"};
+    for (const char* cat : order) sub[cat] = CreatePopupMenu();
     const auto& defs = dx5::AllDefs();
     for (size_t i = 0; i < defs.size(); i++) {
         const dx5::NodeDef& d = defs[i];
         auto it = sub.find(d.category);
         if (it == sub.end() || d.name == "each") continue;
         const bool off = d.name == "output" && g_win.s->graph.OutputNode();
-        const std::string label = d.category == "Math" && d.name.rfind("math_", 0) == 0 ? d.name.substr(5) : d.label;
-        AppendMenuW(it->second, MF_STRING | (off ? MF_GRAYED : 0), M_ADD + (UINT)i, W(label).c_str());
+        AppendMenuW(it->second, MF_STRING | (off ? MF_GRAYED : 0), M_ADD + (UINT)i, W(MenuLabel(d)).c_str());
     }
-    POINT sp = client;
-    ClientToScreen(g_win.wnd, &sp);
-    const int id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, sp.x, sp.y, 0, g_win.wnd, nullptr);
+    for (const char* cat : order) {
+        if (GetMenuItemCount(sub[cat]) > 0) AppendMenuW(m, MF_POPUP, (UINT_PTR)sub[cat], W(cat).c_str());
+        else DestroyMenu(sub[cat]);
+    }
+    const int id = Track(m, client);
     DestroyMenu(m);
-    if (id >= M_ADD && id < M_ADD + (int)defs.size()) {
-        const uint32_t nid =
-            dx5::AddNodeAt(g_win.s->graph, defs[id - M_ADD].name, client.x - g_win.panX, client.y - g_win.panY - kTabH);
-        if (nid) {
-            g_win.selected = nid;
-            Commit("add node");
-        }
+    if (id == M_SEARCH) {
+        // a box where the menu was: type part of a name, Enter shows the nodes that match
+        g_win.editSearch = true, g_win.editMacro = -1, g_win.editExprText = false, g_win.editInput = -1;
+        g_win.searchAt = client;
+        BeginEdit({client.x, client.y, client.x + 180, client.y + 22}, "");
+        return;
     }
+    if (id >= M_ADD && id < M_ADD + (int)defs.size()) AddAt(client, (size_t)(id - M_ADD));
     Redraw();
+}
+
+// the nodes whose name or label holds `text` (one match is added at once)
+void SearchMenu(POINT client, const std::string& text)
+{
+    const std::string q = Lower(text);
+    const auto& defs = dx5::AllDefs();
+    std::vector<size_t> hits;
+    for (size_t i = 0; i < defs.size(); i++) {
+        const dx5::NodeDef& d = defs[i];
+        if (d.name == "each" || (d.name == "output" && g_win.s->graph.OutputNode())) continue;
+        if (q.empty() || Lower(d.name).find(q) != std::string::npos || Lower(d.label).find(q) != std::string::npos) hits.push_back(i);
+    }
+    if (hits.empty()) return Refused("no node matches '" + text + "'");
+    if (hits.size() == 1) return AddAt(client, hits[0]);
+    HMENU m = CreatePopupMenu();
+    for (size_t i : hits) AppendMenuW(m, MF_STRING, M_ADD + (UINT)i, W(MenuLabel(defs[i]) + "   (" + defs[i].category + ")").c_str());
+    const int id = Track(m, client);
+    DestroyMenu(m);
+    if (id >= M_ADD && id < M_ADD + (int)defs.size()) AddAt(client, (size_t)(id - M_ADD));
 }
 
 void ValueMenu(POINT client, uint32_t node, int index)
@@ -745,13 +932,14 @@ void ValueMenu(POINT client, uint32_t node, int index)
         const bool isInt = d && (d->type == dx5::Type::Int || d->structural);
         AppendMenuW(m, MF_STRING | (dx5::FreeMacro(s->graph, isInt) < 0 || slot.link.from ? MF_GRAYED : 0), M_EXPOSE,
                     isInt ? L"Expose to Int Macro" : L"Expose to Macro");
-        HMENU link = CreatePopupMenu(), linkI = CreatePopupMenu();
+        HMENU link = CreatePopupMenu(), linkM = CreatePopupMenu(), linkI = CreatePopupMenu();
         for (int k = 0; k < 32; k++) {
-            AppendMenuW(link, MF_STRING, M_LINK + k, W("M" + std::to_string(k + 1) + "  " + dx5::MacroLabel(s->graph, false, k)).c_str());
+            AppendMenuW(linkM, MF_STRING, M_LINK + k, W("M" + std::to_string(k + 1) + "  " + dx5::MacroLabel(s->graph, false, k)).c_str());
             AppendMenuW(linkI, MF_STRING, M_LINKI + k, W("I" + std::to_string(k + 1) + "  " + dx5::MacroLabel(s->graph, true, k)).c_str());
         }
+        AppendMenuW(link, MF_POPUP, (UINT_PTR)linkM, L"M  Macro");
+        AppendMenuW(link, MF_POPUP, (UINT_PTR)linkI, L"I  Int Macro");
         AppendMenuW(m, MF_POPUP, (UINT_PTR)link, L"Link to Macro");
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)linkI, L"Link to Int Macro");
         if (slot.link.from) AppendMenuW(m, MF_STRING, M_UNLINK, L"Unlink");
         const dx5::Node* f = slot.link.from ? s->graph.Find(slot.link.from) : nullptr;
         if (f && f->type == "expr") AppendMenuW(m, MF_STRING, M_EXPAND, L"Expand Formula into Nodes");
@@ -793,6 +981,62 @@ bool Scrubbable(const dx5::Node& n, int input)
     const dx5::InputDef* d = InDef(n, s.name);
     if (s.link.from || (d && !d->choices.empty())) return false;
     return s.value.type == dx5::Type::Float || s.value.type == dx5::Type::Int;
+}
+
+// ---- the view: zoom, fit, a group's code ----
+// The zoom set to z (kept in range), the world point under `about` staying under it.
+void ZoomAt(POINT about, double z)
+{
+    z = std::clamp(z, kZoomMin, kZoomMax);
+    if (z == g_win.zoom) return;
+    if (g_win.edit) SetFocus(g_win.wnd);  // a value's box would stay where the value was
+    const double wx = (about.x - g_win.panX) / g_win.zoom, wy = (about.y - kTabH - g_win.panY) / g_win.zoom;
+    g_win.zoom = z;
+    g_win.panX = about.x - wx * z, g_win.panY = about.y - kTabH - wy * z;
+    Log("editor: zoom %.3f", z);
+    Redraw();
+}
+
+// Home: every node in view (not larger than 1:1)
+void FitAll()
+{
+    Session* s = g_win.s;
+    if (!s || s->graph.nodes.empty()) return;
+    double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+    for (const dx5::Node& n : s->graph.nodes) {
+        x0 = std::min(x0, n.x), y0 = std::min(y0, n.y);
+        x1 = std::max(x1, n.x + kNodeW), y1 = std::max(y1, n.y + WorldH(n));
+    }
+    const RECT c = CanvasRect();
+    const double cw = std::max(1L, c.right - c.left - 60), ch = std::max(1L, c.bottom - c.top - 60);
+    const double z = std::clamp(std::min({cw / std::max(1.0, x1 - x0), ch / std::max(1.0, y1 - y0), 1.0}), kZoomMin, kZoomMax);
+    if (g_win.edit) SetFocus(g_win.wnd);
+    g_win.zoom = z;
+    g_win.panX = c.left + (c.right - c.left - (x1 - x0) * z) / 2 - x0 * z;
+    g_win.panY = (c.bottom - c.top - (y1 - y0) * z) / 2 - y0 * z;
+    Log("editor: zoom %.3f", z);
+    Redraw();
+}
+
+// A group's ▸: the Code view, with the line that makes the node selected (opening a group in place comes later)
+void OpenGroupCode(uint32_t node)
+{
+    const dx5::Node* n = g_win.s ? g_win.s->graph.Find(node) : nullptr;
+    if (!n) return;
+    const std::string key = n->key;
+    SetView(View::Code);
+    const std::string code = dx5::GraphToCode(g_win.s->graph);
+    int line = 1;
+    for (size_t a = 0; a < code.size(); line++) {
+        size_t b = code.find('\n', a);
+        if (b == std::string::npos) b = code.size();
+        size_t t = code.find_first_not_of(" \t", a);
+        if (t != std::string::npos && t < b && code.compare(t, key.size(), key) == 0) {
+            const size_t e = code.find_first_not_of(' ', t + key.size());
+            if (e < b && code[e] == '=') return SelectLine(line);
+        }
+        a = b + 1;
+    }
 }
 
 // ---- the window ----
@@ -847,13 +1091,36 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         g_win.moved = false;
         g_win.dragNode = hi.node;
         g_win.dragIndex = hi.index;
+        g_win.lifted = false;
+        g_win.snapNode = 0, g_win.snapInput = -1;
         if (hi.what == Hit::Title) {
             const dx5::Node* n = s->graph.Find(hi.node);
             g_win.selected = hi.node;
             g_win.drag = Drag::Move;
             g_win.startX = n->x, g_win.startY = n->y;
+        } else if (hi.what == Hit::GroupOpen) {
+            g_win.selected = hi.node;
+            OpenGroupCode(hi.node);
+            return 0;
         } else if (hi.what == Hit::OutPort) {
             g_win.drag = Drag::Wire;
+        } else if (hi.what == Hit::InPort) {
+            // a wired input: its wire is lifted off and dragged from where it comes (Blender)
+            const dx5::Node* n = s->graph.Find(hi.node);
+            if (n && n->inputs[hi.index].link.from) {
+                g_win.lifted = true;
+                g_win.liftBefore = s->graph;
+                g_win.liftNode = hi.node;
+                g_win.liftInput = n->inputs[hi.index].name;
+                g_win.liftLink = n->inputs[hi.index].link;
+                g_win.dragNode = g_win.liftLink.from;
+                g_win.dragIndex = g_win.liftLink.output;
+                dx5::Disconnect(s->graph, hi.node, g_win.liftInput);
+                g_win.drag = Drag::Wire;
+            }
+        } else if (hi.what == Hit::Macro) {
+            g_win.drag = Drag::MacroLink;
+            g_win.macroDragInt = hi.isInt, g_win.macroDragK = hi.index;
         } else if (hi.what == Hit::Value) {
             const dx5::Node* n = s->graph.Find(hi.node);
             g_win.selected = hi.node;
@@ -862,8 +1129,9 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         } else if (hi.what == Hit::ExprText) {
             const dx5::Node* n = s->graph.Find(hi.node);
             g_win.selected = hi.node;
-            g_win.editNode = hi.node, g_win.editExprText = true, g_win.editMacro = -1, g_win.editInput = -1;
-            BeginEdit(TextRect(*n), n->text);
+            g_win.editNode = hi.node, g_win.editExprText = true, g_win.editMacro = -1, g_win.editInput = -1, g_win.editSearch = false;
+            ZoomFonts();
+            BeginEdit(TextRect(*n), n->text, g_win.zFont);
         } else if (hi.what == Hit::Canvas) {
             g_win.selected = 0;
         }
@@ -884,7 +1152,10 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         const int dx = p.x - g_win.start.x, dy = p.y - g_win.start.y;
         if (std::abs(dx) > 3 || std::abs(dy) > 3) g_win.moved = true;
         if (g_win.drag == Drag::Move) {
-            dx5::MoveNode(s->graph, g_win.dragNode, g_win.startX + dx, g_win.startY + dy);
+            dx5::MoveNode(s->graph, g_win.dragNode, g_win.startX + dx / g_win.zoom, g_win.startY + dy / g_win.zoom);
+        } else if (g_win.drag == Drag::Wire) {
+            g_win.snapNode = 0, g_win.snapInput = -1;
+            FindSnap(p, &g_win.snapNode, &g_win.snapInput);
         } else if (g_win.drag == Drag::Pan) {
             g_win.panX = g_win.startX + dx, g_win.panY = g_win.startY + dy;
         } else if (g_win.drag == Drag::Scrub && g_win.moved) {
@@ -912,17 +1183,47 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (d == Drag::Move && g_win.moved) {
             Commit("move node");
         } else if (d == Drag::Wire) {
-            const HitInfo hi = HitTest(p);
-            if (hi.what == Hit::InPort) {
-                const dx5::Node* to = s->graph.Find(hi.node);
-                std::string why;
-                if (to && dx5::Connect(s->graph, g_win.dragNode, g_win.dragIndex, hi.node, to->inputs[hi.index].name, &why)) {
+            // where it was let go: the input it snaps to, else an input under the cursor (refused with why)
+            uint32_t toNode = 0;
+            int toInput = -1;
+            if (!FindSnap(p, &toNode, &toInput)) {
+                const HitInfo hi = HitTest(p);
+                if (hi.what == Hit::InPort) toNode = hi.node, toInput = hi.index;
+            }
+            g_win.snapNode = 0, g_win.snapInput = -1;
+            const dx5::Node* to = toNode ? s->graph.Find(toNode) : nullptr;
+            std::string why;
+            bool wired = false;
+            if (to && toInput >= 0) {
+                const std::string name = to->inputs[toInput].name;
+                wired = dx5::Connect(s->graph, g_win.dragNode, g_win.dragIndex, toNode, name, &why);
+                if (wired && g_win.lifted && toNode == g_win.liftNode && name == g_win.liftInput) {
+                    s->graph = g_win.liftBefore;  // put back where it was: nothing changed
+                    g_win.lifted = false;
+                    Redraw();
+                    return 0;
+                }
+                if (wired) {
                     g_win.status.clear();
-                    Commit("wire");
+                    Commit("wire");  // with a lifted wire: its move, one step
                 } else {
                     Refused(why);
                 }
             }
+            if (!wired && g_win.lifted) Commit("unwire");  // a lifted wire let go elsewhere comes off
+            g_win.lifted = false;
+        } else if (d == Drag::MacroLink) {
+            const HitInfo hi = HitTest(p);
+            const dx5::Node* n = hi.what == Hit::Value ? s->graph.Find(hi.node) : nullptr;
+            if (g_win.moved && n && hi.index < (int)n->inputs.size()) {
+                if (dx5::LinkMacro(s->graph, n->id, n->inputs[hi.index].name, g_win.macroDragInt, g_win.macroDragK)) {
+                    g_win.status.clear();
+                    Commit("link macro");
+                } else {
+                    Refused("a macro cannot feed " + n->inputs[hi.index].name);
+                }
+            }
+            g_win.macroDragK = -1;
         } else if (d == Drag::Scrub) {
             dx5::Node* n = s->graph.Find(g_win.dragNode);
             if (n && g_win.dragIndex < (int)n->inputs.size()) {
@@ -939,6 +1240,14 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         Redraw();
         return 0;
     }
+    case WM_MOUSEWHEEL: {
+        if (!s || g_win.view != View::Nodes || g_win.drag != Drag::None) return 0;
+        POINT p = {GET_X_LPARAM(l), GET_Y_LPARAM(l)};  // screen coordinates
+        ScreenToClient(h, &p);
+        if (!In(CanvasRect(), p)) return 0;
+        ZoomAt(p, g_win.zoom * std::pow(1.1, GET_WHEEL_DELTA_WPARAM(w) / (double)WHEEL_DELTA));
+        return 0;
+    }
     case WM_MBUTTONUP:
         g_win.drag = Drag::None;  // first (see WM_LBUTTONUP)
         ReleaseCapture();
@@ -947,6 +1256,8 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (g_win.drag != Drag::None && (HWND)l != h) {
             // a drag cut short (another window took the mouse): keep what it did as one step
             if ((g_win.drag == Drag::Move || g_win.drag == Drag::Scrub) && g_win.moved) Commit("drag");
+            if (g_win.drag == Drag::Wire && g_win.lifted && s) s->graph = g_win.liftBefore;  // the lifted wire goes back
+            g_win.lifted = false, g_win.snapNode = 0, g_win.snapInput = -1, g_win.macroDragK = -1;
             g_win.drag = Drag::None;
             Redraw();
         }
@@ -981,7 +1292,8 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
                 if (g_win.macroRows[row].k == hi.index && g_win.macroRows[row].isInt == hi.isInt) {
                     RECT r = MacroRow((int)row);
                     r.left += 30, r.right -= 80;
-                    g_win.editMacro = hi.index, g_win.editMacroInt = hi.isInt, g_win.editExprText = false, g_win.editInput = -1;
+                    g_win.editMacro = hi.index, g_win.editMacroInt = hi.isInt, g_win.editExprText = false, g_win.editInput = -1,
+                    g_win.editSearch = false;
                     BeginEdit(r, (hi.isInt ? s->graph.intMacros : s->graph.macros)[hi.index].name);
                 }
         }
@@ -993,6 +1305,8 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (dx5::RemoveNode(s->graph, g_win.selected)) Commit("remove node");
             g_win.selected = 0;
             Redraw();
+        } else if (w == VK_HOME && g_win.view == View::Nodes) {
+            FitAll();
         } else if (w == 'Z' && GetKeyState(VK_CONTROL) < 0) {
             RequestUndo(GetKeyState(VK_SHIFT) < 0);
         }
@@ -1003,6 +1317,9 @@ LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_DESTROY: {
         Session* gone = g_win.s;
         if (g_win.edit) g_win.edit = nullptr;
+        if (g_win.zFont) DeleteObject(g_win.zFont);
+        if (g_win.zBold) DeleteObject(g_win.zBold);
+        g_win.zFont = g_win.zBold = nullptr, g_win.fontZoom = 0;
         g_win.s = nullptr;
         g_win.wnd = nullptr;
         WindowGone(gone);
