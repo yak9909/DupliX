@@ -210,8 +210,8 @@ bool UpdateParamsUI(PF_InData* in_data, PF_ParamDef* params[])
     const auto t0 = std::chrono::steady_clock::now();
     Streams st(in_data);
     if (!st) return false;
-    const std::shared_ptr<const dxg::Graph> g = GraphOf(params[P_GRAPH]->u.arb_d.value);
-    const uint32_t usedM = dxg::UsedMacros(*g), usedL = dxg::UsedLayers(*g);
+    const std::shared_ptr<const dx5::Graph> g = GraphOf(params[P_GRAPH]->u.arb_d.value);
+    const uint32_t usedM = dx5::UsedMacros(*g), usedI = dx5::UsedIntMacros(*g), usedL = dx5::UsedLayers(*g);
     std::vector<signed char> want(P_NUM, 0);
     // tests only: DUPLIX2_SHOW_ALL=1 shows every row (a script cannot set a hidden parameter)
     const bool all = GetEnvironmentVariableA("DUPLIX2_SHOW_ALL", nullptr, 0) > 0;
@@ -225,6 +225,7 @@ bool UpdateParamsUI(PF_InData* in_data, PF_ParamDef* params[])
         want[topic] = want[first + count] = any ? 0 : 1;
     };
     group(P_MACRO_TOPIC, P_MACRO, kMacros, [&](int k) { return (usedM >> k & 1) || st.Animated(P_MACRO + k); });
+    group(P_INT_TOPIC, P_INT, kIntMacros, [&](int k) { return (usedI >> k & 1) || st.Animated(P_INT + k); });
     group(P_COLOR_TOPIC, P_COLOR, kColorMacros, [&](int k) { return st.Animated(P_COLOR + k); });
     group(P_POINT_TOPIC, P_POINT, kPointMacros, [&](int k) { return st.Animated(P_POINT + k); });
     group(P_LAYER_TOPIC, P_LAYER, kLayers, [&](int k) { return (usedL >> k & 1) || st.LayerId(in_data, P_LAYER + k) != 0; });
@@ -237,7 +238,7 @@ bool UpdateParamsUI(PF_InData* in_data, PF_ParamDef* params[])
     for (int k = 0; pu && k < kMacros; k++) {
         PF_ParamDef* p = params[P_MACRO + k];
         if (!p || p->param_type != PF_Param_FLOAT_SLIDER) continue;
-        const dxg::Macro& m = g->macros[k];
+        const dx5::MacroSetting& m = g->macros[k];
         const PF_FpShort lo = (PF_FpShort)m.sliderMin, hi = (PF_FpShort)m.sliderMax;
         if (p->u.fs_d.slider_min == lo && p->u.fs_d.slider_max == hi) continue;
         PF_ParamDef d = *p;
@@ -248,8 +249,22 @@ bool UpdateParamsUI(PF_InData* in_data, PF_ParamDef* params[])
             ranges++;
         }
     }
+    for (int k = 0; pu && k < kIntMacros; k++) {
+        PF_ParamDef* p = params[P_INT + k];
+        if (!p || p->param_type != PF_Param_SLIDER) continue;
+        const dx5::MacroSetting& m = g->intMacros[k];
+        const PF_ParamValue lo = (PF_ParamValue)std::llround(m.sliderMin), hi = (PF_ParamValue)std::llround(m.sliderMax);
+        if (p->u.sd.slider_min == lo && p->u.sd.slider_max == hi) continue;
+        PF_ParamDef d = *p;
+        d.u.sd.slider_min = lo;
+        d.u.sd.slider_max = hi;
+        if (!pu->PF_UpdateParamUI(in_data->effect_ref, P_INT + k, &d)) {
+            p->u.sd.slider_min = lo, p->u.sd.slider_max = hi;
+            ranges++;
+        }
+    }
     changed |= ranges > 0;
-    Log("params ui: macros used %08x, layers used %02x, %d range(s) set, %.1f ms (instance %llu)", usedM, usedL, ranges,
+    Log("params ui: macros used %08x, int macros used %08x, layers used %02x, %d range(s) set, %.1f ms (instance %llu)", usedM, usedI, usedL, ranges,
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
         (unsigned long long)InstanceId(in_data));
     return changed;

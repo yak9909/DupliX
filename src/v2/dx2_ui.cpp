@@ -185,7 +185,7 @@ struct Button {
 std::vector<Button> Buttons(const Rect& f)
 {
     std::vector<Button> b;
-    const auto& presets = dxg::Presets();
+    const auto& presets = dx5::Presets();
     const float y = f.y + f.h - kPad - kButtonH, inner = f.w - 2 * kPad;
     const float editW = std::min(110.0f, inner * 0.4f);
     b.push_back({{f.x + kPad, y, editW, kButtonH}, -1});
@@ -195,25 +195,28 @@ std::vector<Button> Buttons(const Rect& f)
     return b;
 }
 
-dxg::EvalResult EvaluateNow(PF_InData* in_data, PF_ParamDef* params[], const dxg::Graph& g)
+dxg::EvalResult EvaluateNow(PF_InData* in_data, PF_ParamDef* params[], const dx5::Graph& g)
 {
-    dxg::EvalContext c;
+    dx5::EvalContext c;
     c.time = in_data->time_scale ? (double)in_data->current_time / in_data->time_scale : 0;
     c.seed = params[P_SEED]->u.sd.value;
     double now[kMacros];
     for (int k = 0; k < kMacros; k++) now[k] = params[P_MACRO + k]->u.fs_d.value;
     c.macro = [&](int k, double) { return now[k]; };
+    int64_t nowI[kIntMacros];
+    for (int k = 0; k < kIntMacros; k++) nowI[k] = params[P_INT + k]->u.sd.value;
+    c.intMacro = [&](int k, double) { return nowI[k]; };
     std::string names[kLayers];
     LayerNames(in_data, names);
     for (int k = 0; k < kLayers; k++)
         if (!names[k].empty()) c.layersSet |= 1u << k;
     c.maxElements = 20000;  // the picture: enough to show the shape
-    return dxg::Evaluate(g, c);
+    return dx5::Evaluate(g, c);
 }
 
 void DrawOverview(Canvas& c, PF_InData* in_data, const Rect& f, PF_ParamDef* params[])
 {
-    const std::shared_ptr<const dxg::Graph> g = GraphOf(params[P_GRAPH]->u.arb_d.value);
+    const std::shared_ptr<const dx5::Graph> g = GraphOf(params[P_GRAPH]->u.arb_d.value);
     const dxg::EvalResult r = EvaluateNow(in_data, params, *g);
 
     // the picture: the layout fitted into the box, seen straight on
@@ -253,15 +256,20 @@ void DrawOverview(Canvas& c, PF_InData* in_data, const Rect& f, PF_ParamDef* par
     else
         swprintf(line, 160, L"%zu %ls", n, n == 1 ? L"copy" : L"copies");
     c.Text(tx, y, line, c.Text(), 0, tw);
-    const uint32_t used = dxg::UsedMacros(*g);
+    // the macros in use: Int Macros (I1 ...) then Macros (M1 ...)
+    const uint32_t usedI = dx5::UsedIntMacros(*g), used = dx5::UsedMacros(*g);
     int shown = 0, total = 0;
-    for (int k = 0; k < kMacros; k++) total += used >> k & 1;
-    for (int k = 0; k < kMacros && y + lh * 2 < bottom; k++) {
-        if (!(used >> k & 1)) continue;
-        y += lh;
-        c.Text(tx, y, std::to_wstring(k + 1), c.Dim(), 0, 0);
-        c.Text(tx + fs * 1.8f, y, Wide(dxg::MacroLabel(*g, k)), c.Text(), 0, tw - fs * 1.8f);
-        shown++;
+    for (int k = 0; k < 32; k++) total += (used >> k & 1) + (usedI >> k & 1);
+    for (int pass = 0; pass < 2; pass++) {
+        const bool isInt = pass == 0;
+        const uint32_t u = isInt ? usedI : used;
+        for (int k = 0; k < 32 && y + lh * 2 < bottom; k++) {
+            if (!(u >> k & 1)) continue;
+            y += lh;
+            c.Text(tx, y, (isInt ? L"I" : L"M") + std::to_wstring(k + 1), c.Dim(), 0, 0);
+            c.Text(tx + fs * 2.2f, y, Wide(dx5::MacroLabel(*g, isInt, k)), c.Text(), 0, tw - fs * 2.2f);
+            shown++;
+        }
     }
     if (shown < total) {
         y += lh;
@@ -271,7 +279,7 @@ void DrawOverview(Canvas& c, PF_InData* in_data, const Rect& f, PF_ParamDef* par
     if (!r.warnings.empty()) c.Text(tx, bottom - 2, Wide(r.warnings[0]), {0.95f, 0.6f, 0.3f, 1}, 0, tw);
 
     for (const Button& b : Buttons(f)) {
-        const std::wstring label = b.preset < 0 ? L"Open Editor" : Wide(dxg::Presets()[b.preset].name);
+        const std::wstring label = b.preset < 0 ? L"Open Editor" : Wide(dx5::Presets()[b.preset].name);
         if (b.preset < 0) c.FillRound(b.r, 4, c.Shade(0.2f));
         c.StrokeRound(b.r, 4, c.Shade(0.45f), 1);
         c.Text(b.r.x + b.r.w * 0.5f, b.r.y + b.r.h * 0.5f + fs * 0.36f, label, c.Text(), 0, b.r.w - 4,

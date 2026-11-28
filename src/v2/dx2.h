@@ -23,9 +23,10 @@
 #include <string>
 #include <vector>
 
-#include "graph/edit.h"
-#include "graph/eval.h"
-#include "graph/graph.h"
+#include "dxg5/edit.h"
+#include "dxg5/eval.h"
+#include "dxg5/graph.h"
+#include "dxg5/lang.h"
 #include "v2/dx2_flags.h"
 #include "v2/dx2_params.h"
 
@@ -62,8 +63,8 @@ PF_Handle NewGraphHandle(const std::string& text);
 std::string GraphText(PF_Handle h);
 // The graph in a handle, parsed once per distinct text (a cache shared by all threads, behind a mutex).
 // Never null: a graph that cannot be read is an empty graph.
-std::shared_ptr<const dxg::Graph> GraphOf(PF_Handle h);
-std::shared_ptr<const dxg::Graph> GraphOfText(const std::string& text);
+std::shared_ptr<const dx5::Graph> GraphOf(PF_Handle h);
+std::shared_ptr<const dx5::Graph> GraphOfText(const std::string& text);
 // Rewrites the handle (resized; it may move, so *h is updated) with `text`: for a change made in a UI event
 // through params[].
 bool SetGraphHandle(PF_Handle* h, const std::string& text);

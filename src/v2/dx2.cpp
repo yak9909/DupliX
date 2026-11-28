@@ -149,7 +149,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     for (int k = 0; k < kMacros; k++) {
         snprintf(nm, sizeof(nm), "Macro %d", k + 1);
         // the default graph's Count, Spacing and Copy Scale (design v4 1.2): it draws without a write
-        b.Float(P_MACRO + k, nm, -1000000, 1000000, 0, 100, dxg::MacroDefault(k));
+        b.Float(P_MACRO + k, nm, -1000000, 1000000, 0, 100, dx5::MacroDefault(k));
     }
     b.End(P_MACRO_TOPIC_END);
 
@@ -175,6 +175,14 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data)
     b.End(P_LAYER_TOPIC_END);
 
     b.Graph(P_GRAPH);
+
+    // design v5 4.4: appended after the graph (the earlier Disk IDs stay)
+    b.Topic(P_INT_TOPIC, "Int Macros", false);
+    for (int k = 0; k < kIntMacros; k++) {
+        snprintf(nm, sizeof(nm), "Int Macro %d", k + 1);
+        b.Slider(P_INT + k, nm, -1000000, 1000000, 0, 100, (int)dx5::IntMacroDefault(k));
+    }
+    b.End(P_INT_TOPIC_END);
 
     if (!b.err && b.next != P_NUM) {
         Log("ParamsSetup: %d parameters, expected %d", b.next, (int)P_NUM);

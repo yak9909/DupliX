@@ -26,7 +26,7 @@ struct Write {
     bool ownsEff = false;           // disposed after the write (a test's own reference)
     A_u_longlong instance = 0;
     std::string text;               // the new graph data
-    std::vector<dxg::MacroWrite> macros;
+    std::vector<dx5::MacroWrite> macros;
     std::string why;
     std::chrono::steady_clock::time_point notBefore{};  // the idle hook waits until then
 };
@@ -102,13 +102,13 @@ void DoWrite(const Write& w)
     }
     if (st) ss->AEGP_DisposeStream(st);
     int macrosSet = 0;
-    for (const dxg::MacroWrite& m : w.macros) {
-        AEGP_StreamRefH ms = Stream(w.eff, P_MACRO + m.k);
+    for (const dx5::MacroWrite& m : w.macros) {
+        AEGP_StreamRefH ms = Stream(w.eff, (m.isInt ? P_INT : P_MACRO) + m.k);
         if (!ms) continue;
         A_long nk = 0;
         if (ks) ks->AEGP_GetStreamNumKFs(ms, &nk);
         if (nk > 0) {
-            Log("write: Macro %d has keys: its value is left as it is", m.k + 1);
+            Log("write: %s %d has keys: its value is left as it is", m.isInt ? "Int Macro" : "Macro", m.k + 1);
         } else {
             AEGP_StreamValue2 mv{};
             if (!ss->AEGP_GetNewStreamValue(g_pluginId, ms, AEGP_LTimeMode_LayerTime, &t, FALSE, &mv)) {
@@ -120,12 +120,32 @@ void DoWrite(const Write& w)
         }
         ss->AEGP_DisposeStream(ms);
     }
+    // the macro rows the new graph reads are shown at once (UPDATE_PARAMS_UI comes only when the Effect Controls show
+    // this layer, and a hidden row takes no keys: an Expose'd macro must be keyable now). Hiding stays with it.
+    int shown = 0;
+    if (!eGraph) {
+        Suite<AEGP_DynamicStreamSuite4> ds(g_pica, kAEGPDynamicStreamSuite, kAEGPDynamicStreamSuiteVersion4);
+        const std::shared_ptr<const dx5::Graph> ng = GraphOfText(w.text);
+        const uint32_t usedM = dx5::UsedMacros(*ng), usedI = dx5::UsedIntMacros(*ng);
+        auto show = [&](int index) {
+            AEGP_StreamRefH s = Stream(w.eff, index);
+            if (!s) return;
+            if (ds && !ds->AEGP_SetDynamicStreamFlag(s, AEGP_DynStreamFlag_HIDDEN, FALSE, FALSE)) shown++;
+            ss->AEGP_DisposeStream(s);
+        };
+        if (usedM) show(P_MACRO_TOPIC);
+        if (usedI) show(P_INT_TOPIC);
+        for (int k = 0; k < 32; k++) {
+            if (usedM >> k & 1) show(P_MACRO + k);
+            if (usedI >> k & 1) show(P_INT + k);
+        }
+    }
     A_Err eEnd = util->AEGP_EndUndoGroup();
     // the Overview and UPDATE_PARAMS_UI at once (P0)
     Suite<PF_AdvAppSuite2> adv(g_pica, kPFAdvAppSuite, kPFAdvAppSuiteVersion2);
     if (adv) adv->PF_RefreshAllWindows();
-    Log("write (%s): graph %zu bytes (start %d set %d end %d), %d of %zu macro(s) set, %.2f ms", w.why.c_str(), w.text.size(),
-        (int)eStart, (int)eGraph, (int)eEnd, macrosSet, w.macros.size(),
+    Log("write (%s): graph %zu bytes (start %d set %d end %d), %d of %zu macro(s) set, %d row(s) shown, %.2f ms", w.why.c_str(),
+        w.text.size(), (int)eStart, (int)eGraph, (int)eEnd, macrosSet, w.macros.size(), shown,
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
@@ -164,8 +184,8 @@ void TendSession()
     }
     if (QueuedFor(s->eff)) return;  // our own write comes first
     std::string text;
-    dxg::Graph g;
-    if (!ReadGraphText(s->eff, &text) || !dxg::Parse(text, &g)) return;
+    dx5::Graph g;
+    if (!ReadGraphText(s->eff, &text) || !dx5::Parse(text, &g)) return;
     if (g.revision != s->graph.revision) {
         Log("editor: the graph changed outside the editor: revision %u -> %u (reloaded)", (unsigned)s->graph.revision,
             (unsigned)g.revision);
@@ -200,7 +220,7 @@ ed::Session* Open(PF_InData* in_data)
     s->eff = eff;
     s->instance = inst;
     std::string text;
-    if (!ReadGraphText(eff, &text) || !dxg::Parse(text, &s->graph)) s->graph = dxg::DefaultPreset().graph;
+    if (!ReadGraphText(eff, &text) || !dx5::Parse(text, &s->graph)) s->graph = dx5::DefaultPreset().graph;
     g_session = s;
     s->wnd = ed::CreateEditorWindow(s);
     Log("editor: opened on instance %llu (revision %u, window %p)", (unsigned long long)inst, (unsigned)s->graph.revision,
@@ -215,7 +235,7 @@ namespace ed {
 
 Session* Current() { return g_session && !g_session->closing ? g_session : nullptr; }
 
-void Commit(const char* why, const std::vector<dxg::MacroWrite>& macros)
+void Commit(const char* why, const std::vector<dx5::MacroWrite>& macros)
 {
     Session* s = Current();
     if (!s) return;
@@ -223,7 +243,7 @@ void Commit(const char* why, const std::vector<dxg::MacroWrite>& macros)
     Write w;
     w.eff = s->eff;
     w.instance = s->instance;
-    w.text = dxg::Serialize(s->graph);
+    w.text = dx5::Serialize(s->graph);
     w.macros = macros;
     w.why = why;
     std::lock_guard<std::mutex> lk(g_mu);
@@ -292,8 +312,8 @@ void OpenEditor(PF_InData* in_data) { Open(in_data); }
 
 void QueuePreset(PF_InData* in_data, int index, int delayMs)
 {
-    if (index < 0 || index >= (int)dxg::Presets().size()) return;
-    const dxg::PresetInfo& info = dxg::Presets()[index];
+    if (index < 0 || index >= (int)dx5::Presets().size()) return;
+    const dx5::PresetInfo& info = dx5::Presets()[index];
     Suite<AEGP_PFInterfaceSuite1> pfi(in_data->pica_basicP, kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
     AEGP_EffectRefH eff = nullptr;
     if (!pfi || pfi->AEGP_GetNewEffectForEffect(g_pluginId, in_data->effect_ref, &eff) || !eff) {
@@ -301,15 +321,15 @@ void QueuePreset(PF_InData* in_data, int index, int delayMs)
         return;
     }
     std::string text;
-    dxg::Graph old;
-    const uint32_t rev = ReadGraphText(eff, &text) && dxg::Parse(text, &old) ? old.revision : 0;
-    dxg::Preset p = info.make();
+    dx5::Graph old;
+    const uint32_t rev = ReadGraphText(eff, &text) && dx5::Parse(text, &old) ? old.revision : 0;
+    dx5::Preset p = info.make();
     p.graph.revision = rev + 1;  // an open editor sees the change and reloads
     Write w;
     w.eff = eff;
     w.ownsEff = true;
     w.instance = InstanceId(in_data);
-    w.text = dxg::Serialize(p.graph);
+    w.text = dx5::Serialize(p.graph);
     w.macros = p.macros;
     w.why = std::string("preset ") + info.name;
     w.notBefore = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
@@ -345,8 +365,8 @@ void MaybeRunTestScript(PF_InData* in_data, int changed, int seed)
     if (up != std::string::npos) {
         std::string name = script.substr(up + 9);
         name = name.substr(0, name.find_first_of("\r\n"));
-        for (int i = 0; i < (int)dxg::Presets().size(); i++)
-            if (name == dxg::Presets()[i].name) QueuePreset(in_data, i, 1500);
+        for (int i = 0; i < (int)dx5::Presets().size(); i++)
+            if (name == dx5::Presets()[i].name) QueuePreset(in_data, i, 1500);
         return;
     }
     ed::Session* s = Open(in_data);
@@ -354,9 +374,9 @@ void MaybeRunTestScript(PF_InData* in_data, int changed, int seed)
         Log("test script: the editor did not open");
         return;
     }
-    std::vector<dxg::MacroWrite> macros;
+    std::vector<dx5::MacroWrite> macros;
     std::string err;
-    if (!dxg::RunScript(s->graph, script, &macros, &err)) {
+    if (!dx5::RunScript(s->graph, script, &macros, &err)) {
         Log("test script: %s", err.c_str());
         return;
     }

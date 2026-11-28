@@ -6,14 +6,15 @@
 // reorder; only append before P_NUM.
 #pragma once
 
-#include "graph/graph.h"
+#include "dxg5/graph.h"
 
 namespace dx2 {
 
-constexpr int kMacros = dxg::kNumMacros;            // 32
-constexpr int kColorMacros = dxg::kNumColorMacros;  // 8
-constexpr int kPointMacros = dxg::kNumPointMacros;  // 8
-constexpr int kLayers = dxg::kNumLayers;            // 8
+constexpr int kMacros = dx5::kNumMacros;            // 32
+constexpr int kIntMacros = dx5::kNumIntMacros;      // 32
+constexpr int kColorMacros = 8;
+constexpr int kPointMacros = 8;
+constexpr int kLayers = dx5::kNumLayers;            // 8
 
 enum Param {
     P_INPUT = 0,
@@ -33,10 +34,15 @@ enum Param {
     P_LAYER = P_LAYER_TOPIC + 1,                           // 59: Layer 1..8
     P_LAYER_TOPIC_END = P_LAYER + kLayers,                 // 67
     P_GRAPH = P_LAYER_TOPIC_END + 1,                       // 68: the graph data (Arbitrary Data)
+    P_INT_TOPIC = P_GRAPH + 1,                             // 69 (design v5 4.4: appended)
+    P_INT = P_INT_TOPIC + 1,                               // 70: Int Macro 1..32
+    P_INT_TOPIC_END = P_INT + kIntMacros,                  // 102
     P_NUM
 };
 static_assert(P_MACRO == 5 && P_MACRO + kMacros - 1 == 36, "Macro 1..32 are DupliX2-0005..0036 (design v4 8.1)");
-static_assert(P_GRAPH == 68 && P_NUM == 69, "the parameter table of design v4 8.1");
+static_assert(P_GRAPH == 68, "the parameter table of design v4 8.1");
+static_assert(P_INT == 70 && P_INT + kIntMacros - 1 == 101 && P_INT_TOPIC_END == 102 && P_NUM == 103,
+              "Int Macro 1..32 are DupliX2-0070..0101 (design v5 4.4)");
 
 enum RenderMode { RM_3D_LAYERS = 1, RM_FAST = 2 };
 constexpr const char* kRenderModeItems = "3D Layers|Fast (2D)";

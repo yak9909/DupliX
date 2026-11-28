@@ -42,12 +42,12 @@ function Send-Mouse {
         Start-Sleep -Milliseconds 150
     }
     $DOWN = 0x201; $UP = 0x202; $MOVE = 0x200; $MK_L = 1
-    Msg $DOWN 260 291 $MK_L                          # the circle's output
-    foreach ($t in 1..5) { Msg $MOVE (260 + 14 * $t) (291 - 38 * $t) $MK_L }
-    Msg $UP 330 101 0                                # the Output's input
+    Msg $DOWN 250 418 $MK_L                          # the circle's output
+    foreach ($t in 1..5) { Msg $MOVE (250 + 52 * $t) (418 - 54 * $t) $MK_L }
+    Msg $UP 510 148 0                                # the Output's input
     Start-Sleep -Seconds 1
-    Msg $DOWN 200 312 $MK_L                          # the circle's Count
-    Msg $UP 200 312 0
+    Msg $DOWN 200 438 $MK_L                          # the circle's Count
+    Msg $UP 200 438 0
     Start-Sleep -Milliseconds 500
     $e = [AeText]::FindChild($h, "Edit")
     Write-Host ("mouse: editor {0}, edit box {1}" -f $w.Hwnd, [long]$e)

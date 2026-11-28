@@ -667,6 +667,13 @@ static Preset FromCode(const char* code)
     Preset p;
     std::vector<Diag> e, n;
     CodeToGraph(code, Graph(), &p.graph, &e, &n);
+    // the node view's places: the macros on the left, the layout, the Output (tests/ae/run_dx2_graph.ps1 clicks them)
+    const struct {
+        const char* key;
+        double x, y;
+    } places[] = {{"i1", 20, 40}, {"m2", 20, 130}, {"m3", 20, 220}, {"g", 250, 40}, {"c", 250, 40}, {"out", 480, 60}};
+    for (const auto& pl : places)
+        if (Node* x = p.graph.FindKey(pl.key)) x->x = pl.x, x->y = pl.y;
     return p;
 }
 

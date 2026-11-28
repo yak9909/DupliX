@@ -85,6 +85,7 @@ cl /nologo /D "MSWindows" /EP "$(IntDir)%(Filename).rrc" &gt; "$(IntDir)%(Filena
   <ItemGroup>
     <ClCompile Include="*.cpp" />
     <ClCompile Include="..\graph\*.cpp" />
+    <ClCompile Include="..\dxg5\*.cpp" />
     <ClCompile Include="$(AESDK)\Util\AEFX_SuiteHelper.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

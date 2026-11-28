@@ -84,7 +84,7 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     const double tSec = in_data->time_scale ? (double)in_data->current_time / in_data->time_scale : 0;
 
     // the graph and the seed (checked out at the frame's time)
-    std::shared_ptr<const dxg::Graph> g;
+    std::shared_ptr<const dx5::Graph> g;
     int seed = 0;
     PF_ParamDef d;
     AEFX_CLR_STRUCT(d);
@@ -92,17 +92,17 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
         g = GraphOf(d.u.arb_d.value);
         PF_CHECKIN_PARAM(in_data, &d);
     }
-    if (!g) g = std::make_shared<dxg::Graph>();
+    if (!g) g = std::make_shared<dx5::Graph>();
     AEFX_CLR_STRUCT(d);
     if (!PF_CHECKOUT_PARAM(in_data, P_SEED, in_data->current_time, in_data->time_step, in_data->time_scale, &d)) {
         seed = d.u.sd.value;
         PF_CHECKIN_PARAM(in_data, &d);
     }
     // the macros the graph reads, at this frame's time; another time (later: births) is checked out when asked
-    const uint32_t usedM = dxg::UsedMacros(*g);
+    const uint32_t usedM = dx5::UsedMacros(*g), usedI = dx5::UsedIntMacros(*g);
     double now[kMacros] = {};
     for (int k = 0; k < kMacros; k++) {
-        now[k] = dxg::MacroDefault(k);
+        now[k] = dx5::MacroDefault(k);
         if (!(usedM >> k & 1)) continue;
         AEFX_CLR_STRUCT(d);
         if (!PF_CHECKOUT_PARAM(in_data, P_MACRO + k, in_data->current_time, in_data->time_step, in_data->time_scale, &d)) {
@@ -110,6 +110,27 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
             PF_CHECKIN_PARAM(in_data, &d);
         }
     }
+    int64_t nowI[kIntMacros] = {};
+    for (int k = 0; k < kIntMacros; k++) {
+        nowI[k] = dx5::IntMacroDefault(k);
+        if (!(usedI >> k & 1)) continue;
+        AEFX_CLR_STRUCT(d);
+        if (!PF_CHECKOUT_PARAM(in_data, P_INT + k, in_data->current_time, in_data->time_step, in_data->time_scale, &d)) {
+            nowI[k] = d.u.sd.value;
+            PF_CHECKIN_PARAM(in_data, &d);
+        }
+    }
+    auto intMacro = [&](int k, double t) -> int64_t {
+        if (k < 0 || k >= kIntMacros) return 0;
+        if (t == tSec) return nowI[k];
+        const A_long at = (A_long)std::llround(t * in_data->time_scale);
+        PF_ParamDef m;
+        AEFX_CLR_STRUCT(m);
+        if (PF_CHECKOUT_PARAM(in_data, P_INT + k, at, in_data->time_step, in_data->time_scale, &m)) return nowI[k];
+        const int64_t v = m.u.sd.value;
+        PF_CHECKIN_PARAM(in_data, &m);
+        return v;
+    };
     auto macro = [&](int k, double t) -> double {
         if (k < 0 || k >= kMacros) return 0;
         if (t == tSec) return now[k];
@@ -146,7 +167,7 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
     }
     take(in_result, src[kOwn]);
     const double cx = in_result.ref_width * dsx * 0.5, cy = in_result.ref_height * dsy * 0.5;  // our layer's centre
-    const uint32_t usedL = dxg::UsedLayers(*g);
+    const uint32_t usedL = dx5::UsedLayers(*g);
     uint32_t layersSet = 0;
     for (int k = 0; k < kLayers; k++) {
         if (!(usedL >> k & 1)) continue;
@@ -160,12 +181,13 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
         }
     }
 
-    dxg::EvalContext ctx;
+    dx5::EvalContext ctx;
     ctx.time = tSec;
     ctx.seed = seed;
     ctx.macro = macro;
+    ctx.intMacro = intMacro;
     ctx.layersSet = layersSet;
-    const dxg::EvalResult res = dxg::Evaluate(*g, ctx);
+    const dxg::EvalResult res = dx5::Evaluate(*g, ctx);
     Dump(tSec, (int)in_result.ref_width, (int)in_result.ref_height, res);
 
     // the copies: the 2x2 map Source px -> output px is D M D^-1 (D = the downsampling, M at full resolution)

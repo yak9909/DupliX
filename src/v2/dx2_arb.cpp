@@ -16,7 +16,7 @@ Suite<PF_HandleSuite1> Handles() { return Suite<PF_HandleSuite1>(g_pica, kPFHand
 
 struct Cache {
     std::mutex mu;
-    std::map<std::string, std::shared_ptr<const dxg::Graph>> byText;
+    std::map<std::string, std::shared_ptr<const dx5::Graph>> byText;
 } g_cache;
 constexpr size_t kCacheMax = 64;  // distinct graphs kept (an undo history of one session is far smaller)
 
@@ -30,7 +30,7 @@ bool LooksLikeGraph(const void* p, size_t n)
 
 std::string DefaultGraphText()
 {
-    static const std::string text = dxg::Serialize(dxg::DefaultPreset().graph);
+    static const std::string text = dx5::Serialize(dx5::DefaultPreset().graph);
     return text;
 }
 
@@ -71,23 +71,23 @@ bool SetGraphHandle(PF_Handle* h, const std::string& text)
     return true;
 }
 
-std::shared_ptr<const dxg::Graph> GraphOfText(const std::string& text)
+std::shared_ptr<const dx5::Graph> GraphOfText(const std::string& text)
 {
     {
         std::lock_guard<std::mutex> lk(g_cache.mu);
         auto it = g_cache.byText.find(text);
         if (it != g_cache.byText.end()) return it->second;
     }
-    auto g = std::make_shared<dxg::Graph>();
+    auto g = std::make_shared<dx5::Graph>();
     std::string err;
-    if (!dxg::Parse(text, g.get(), &err)) Log("graph: cannot read the graph data (%s)", err.c_str());
+    if (!dx5::Parse(text, g.get(), &err)) Log("graph: cannot read the graph data (%s)", err.c_str());
     std::lock_guard<std::mutex> lk(g_cache.mu);
     if (g_cache.byText.size() >= kCacheMax) g_cache.byText.clear();
     g_cache.byText[text] = g;
     return g;
 }
 
-std::shared_ptr<const dxg::Graph> GraphOf(PF_Handle h) { return GraphOfText(GraphText(h)); }
+std::shared_ptr<const dx5::Graph> GraphOf(PF_Handle h) { return GraphOfText(GraphText(h)); }
 
 PF_Err HandleArb(PF_InData* in_data, PF_OutData* out_data, PF_ArbParamsExtra* x)
 {

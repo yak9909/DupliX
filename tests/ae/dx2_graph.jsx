@@ -1,6 +1,6 @@
 // DupliX 2 (design v4 P1): a graph driven by keyed macros (tests/ae/run_dx2_graph.ps1 sends the steps; AE stays
 // open between them so the idle hook writes). Two 400x300 comps, 3 s at 30 fps:
-//   A  a 40x40 red solid with DupliX 2 as it comes (the 5 x 5 grid preset): Macro 1 (Count) keyed 2 -> 4 and
+//   A  a 40x40 red solid with DupliX 2 as it comes (the 5 x 5 grid preset): Int Macro 1 (Count) keyed 2 -> 4 and
 //      Macro 2 (Spacing) keyed 60 -> 100 over 0..2 s. Frames a_0, a_1, a_2.
 //   B  a 30x30 green solid; the step "setup" sets Random Seed, which opens the editor on it and runs the editor
 //      script in DUPLIX2_TEST_SCRIPT (a circle of 6 with its Radius exposed to Macro 1, turned 45 degrees and at
@@ -35,7 +35,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             if (app.project.item(i).name == name) return app.project.item(i);
         return null;
     }
-    var MACRO1 = 5, MACRO2 = 6, SEED = 3;
+    var MACRO1 = 5, MACRO2 = 6, SEED = 3, INT1 = 70;
     try {
         app.beginSuppressDialogs();
         log("step " + step);
@@ -50,8 +50,8 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
                 var p = fa.property(i);
                 log(" #" + i + " " + p.matchName + " [" + p.name + "]");
             }
-            var m1 = fa.property(dx2(MACRO1)), m2 = fa.property(dx2(MACRO2));
-            log("macro1 " + m1.name + " = " + m1.value + ", macro2 " + m2.name + " = " + m2.value);
+            var m1 = fa.property(dx2(INT1)), m2 = fa.property(dx2(MACRO2));
+            log("int macro1 " + m1.name + " = " + m1.value + ", macro2 " + m2.name + " = " + m2.value);
             m1.setValueAtTime(0, 2); m1.setValueAtTime(2, 4);
             m2.setValueAtTime(0, 60); m2.setValueAtTime(2, 100);
 
@@ -60,7 +60,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var fb = gb.property("ADBE Effect Parade").addProperty("DupliX2");
             fb.property(dx2(SEED)).setValue(1);  // runs the editor script for seed 1 (DUPLIX2_TEST_SCRIPT)
 
-            // C: Expose on the default grid lands on Macro 4, a row hidden until then; opening the editor on C
+            // C: Expose on the default grid lands on Macro 1 (the default grid uses Int Macro 1, Macro 2 and 3), a row hidden until then; opening the editor on C
             // also closes B's (whose write is still queued)
             var c = app.project.items.addComp("C", 400, 300, 1, 3, 30);
             var bc = c.layers.addSolid([0, 0, 1], "BlueC", 20, 20, 1, 3);
@@ -80,7 +80,7 @@ function dx2(id) { return "DupliX2-" + ("000" + id).slice(-4); }  // a parameter
             var a = find("A"), b = find("B"), c = find("C");
             png(a, 0, "a_0"); png(a, 1, "a_1"); png(a, 2, "a_2");
             var fc = c.layer(1).property("ADBE Effect Parade").property(1);
-            log("c macro4 " + fc.property(dx2(8)).name + " = " + fc.property(dx2(8)).value + " (Expose sets 80)");
+            log("c macro1 " + fc.property(dx2(5)).name + " = " + fc.property(dx2(5)).value + " (Expose sets 80)");
             png(c, 0, "c_0");
             png(find("D"), 0, "d_0");
             png(find("E"), 0, "e_0");
