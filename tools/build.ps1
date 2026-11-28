@@ -6,7 +6,8 @@
 #   pwsh tools/build.ps1 -Target v2      # src\v2 -> dev_plugins\DupliX2.aex (DupliX 2, the prototype)
 #   pwsh tools/build.ps1 -Target all
 #   pwsh tools/build.ps1 -Target p0      # spike\P0Graph -> dev_plugins\DupliXP0.aex (design v4 P0 spike)
-param([ValidateSet("effect", "v2", "p0", "unit", "dump", "gpu", "all")][string]$Target = "effect",
+#   pwsh tools/build.ps1 -Target graph   # tests\graph -> build\graph\graph_test.exe (design v4's graph core)
+param([ValidateSet("effect", "v2", "p0", "unit", "dump", "gpu", "graph", "all")][string]$Target = "effect",
       [string]$Configuration = "Release")  # the user's AE loads dev_plugins\DupliX.aex: Release unless debugging
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -20,7 +21,7 @@ function Invoke-Build([string]$proj, [string]$outDir) {
     if ($LASTEXITCODE -ne 0) { throw "msbuild failed: $proj ($LASTEXITCODE)" }
 }
 
-$targets = if ($Target -eq "all") { @("effect", "v2", "unit", "dump", "gpu") } else { @($Target) }
+$targets = if ($Target -eq "all") { @("effect", "v2", "unit", "dump", "gpu", "graph") } else { @($Target) }
 # The CUDA kernel as PTX embedded in a header (src/gpu/fast_raster_ptx.h), for the effect and the GPU test.
 if ($targets -contains "effect" -or $targets -contains "gpu") { & (Join-Path $PSScriptRoot "build_ptx.ps1") }
 foreach ($t in $targets) {
@@ -45,6 +46,7 @@ foreach ($t in $targets) {
         "unit" { Invoke-Build (Join-Path $root "tests\unit\unit_tests.vcxproj") (Join-Path $root "build\unit") }
         "dump" { Invoke-Build (Join-Path $root "tests\tools\duplix_dump.vcxproj") (Join-Path $root "build\dump") }
         "gpu" { Invoke-Build (Join-Path $root "tests\gpu\gpu_test.vcxproj") (Join-Path $root "build\gpu") }
+        "graph" { Invoke-Build (Join-Path $root "tests\graph\graph_test.vcxproj") (Join-Path $root "build\graph") }
     }
 }
 Remove-Item env:AE_PLUGIN_BUILD_DIR -ErrorAction SilentlyContinue
