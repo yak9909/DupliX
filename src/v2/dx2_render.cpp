@@ -9,8 +9,11 @@
 // Tests: DUPLIX2_DUMP=<file> appends "t <seconds>" and the elements (graph::FormatElements) on every PreRender.
 #include "v2/dx2.h"
 
+#include <immintrin.h>
+
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -38,6 +41,7 @@ struct Copy {
     double pivX, pivY;
     float opacity;
     int n;                   // samples per axis per output pixel (more when the copy is smaller than its Source)
+    bool translate;          // moved only (no turn, no scale): the same bilinear weights all along a row
     int x0, y0, x1, y1;      // its bounds in output layer coordinates
 };
 
@@ -187,6 +191,8 @@ PF_Err PreRender(PF_InData* in_data, PF_OutData* out_data, PF_PreRenderExtra* ex
         const double p2 = a * a + b * b + c * c + dd * dd;
         const double smin = std::sqrt(std::max(0.0, (p2 - std::sqrt(std::max(0.0, p2 * p2 - 4 * det * det))) * 0.5));
         cp.n = std::clamp((int)std::ceil(1.0 / std::max(smin, 1e-6)), 1, 8);
+        cp.translate = std::fabs(cp.ia - 1) < 1e-9 && std::fabs(cp.id - 1) < 1e-9 && std::fabs(cp.ib) < 1e-9 &&
+                       std::fabs(cp.ic) < 1e-9;
         double bx0 = 1e300, by0 = 1e300, bx1 = -1e300, by1 = -1e300;
         for (int j = 0; j < 4; j++) {
             const double sx = (j & 1 ? s.w : 0) - s.pivX, sy = (j & 2 ? s.h : 0) - s.pivY;
@@ -284,33 +290,77 @@ inline void Store(PF_PixelFloat& p, const Px& pm)
     p.alpha = v.a, p.red = v.r, p.green = v.g, p.blue = v.b;
 }
 
+// A Source converted once per render: premultiplied floats with a transparent border of one pixel all round, so
+// bilinear sampling needs no bounds checks (11/28: converting and checking for each of 4 taps of every sample made
+// a pixel cost ~280 ns; 25 copies of a 1920x1080 layer took 2.3 s).
+struct Img {
+    int w = 0, h = 0, stride = 0;  // the Source's size; stride = w + 2
+    std::vector<Px> px;
+    const Px* At(int x, int y) const { return &px[(size_t)(y + 1) * stride + (x + 1)]; }  // x, y from -1 to w / h
+};
+
 template <class P>
-inline const P& At(const PF_EffectWorld* w, int x, int y)
+void Convert(const PF_EffectWorld* w, Img& img, int y0, int y1)
 {
-    return *(const P*)((const char*)w->data + (size_t)y * w->rowbytes + (size_t)x * sizeof(P));
+    for (int y = y0; y < y1; y++) {
+        const P* row = (const P*)((const char*)w->data + (size_t)y * w->rowbytes);
+        Px* d = &img.px[(size_t)(y + 1) * img.stride + 1];
+        for (int x = 0; x < img.w; x++) d[x] = Load(row[x]);
+    }
 }
 
-// bilinear, transparent outside the world; (x, y) in the world's pixels (centres at +0.5)
-template <class P>
-Px Sample(const PF_EffectWorld* w, double x, double y)
+// a pixel (a, r, g, b) in one SSE register (lane 0 = alpha)
+inline __m128 V(const Px* p) { return _mm_loadu_ps(&p->a); }
+
+// bilinear in img (centres at +0.5): (x, y) must lie in [-0.5, w + 0.5) x [-0.5, h + 0.5)
+inline __m128 Bilinear(const Img& img, double x, double y)
 {
     x -= 0.5, y -= 0.5;
     const int x0 = (int)std::floor(x), y0 = (int)std::floor(y);
     const float fx = (float)(x - x0), fy = (float)(y - y0);
-    Px acc = {0, 0, 0, 0};
-    for (int j = 0; j < 2; j++)
-        for (int i = 0; i < 2; i++) {
-            const int xi = x0 + i, yj = y0 + j;
-            if (xi < 0 || yj < 0 || xi >= w->width || yj >= w->height) continue;
-            const float wt = (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
-            const Px p = Load(At<P>(w, xi, yj));
-            acc.a += p.a * wt, acc.r += p.r * wt, acc.g += p.g * wt, acc.b += p.b * wt;
+    const Px* p = img.At(x0, y0);
+    const __m128 top = _mm_add_ps(_mm_mul_ps(V(p), _mm_set1_ps(1 - fx)), _mm_mul_ps(V(p + 1), _mm_set1_ps(fx)));
+    const __m128 bot = _mm_add_ps(_mm_mul_ps(V(p + img.stride), _mm_set1_ps(1 - fx)),
+                                  _mm_mul_ps(V(p + img.stride + 1), _mm_set1_ps(fx)));
+    return _mm_add_ps(_mm_mul_ps(top, _mm_set1_ps(1 - fy)), _mm_mul_ps(bot, _mm_set1_ps(fy)));
+}
+
+// premultiplied "over": d = s k + d (1 - s.a k)
+inline void Over(Px* d, __m128 s, __m128 k)
+{
+    s = _mm_mul_ps(s, k);
+    const __m128 t = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_shuffle_ps(s, s, 0));
+    _mm_storeu_ps(&d->a, _mm_add_ps(s, _mm_mul_ps(V(d), t)));
+}
+
+// The part [x0, x1) of row Y (output layer coordinates, pixel centres at x + 0.5) whose sample of a copy falls
+// inside its Source (with the border): solves lo <= p0 + q * X <= hi for X on both axes.
+bool Span(const Copy& c, const Img& img, int Y, int* xa, int* xb)
+{
+    const double dy = Y + 0.5 - c.py;
+    // s(X) = piv + inv * (X + 0.5 - px, dy): sx = ax + ia * X, sy = ay + ic * X
+    const double ax = c.pivX + c.ia * (0.5 - c.px) + c.ib * dy, ay = c.pivY + c.ic * (0.5 - c.px) + c.id * dy;
+    double lo = -1e18, hi = 1e18;
+    auto clip = [&](double a, double q, double mn, double mx) {
+        if (std::fabs(q) < 1e-12) {
+            if (a < mn || a > mx) lo = 1, hi = 0;
+            return;
         }
-    return acc;
+        double t0 = (mn - a) / q, t1 = (mx - a) / q;
+        if (t0 > t1) std::swap(t0, t1);
+        lo = std::max(lo, t0), hi = std::min(hi, t1);
+    };
+    // below w + 0.5 (not at it): the last tap must stay inside the border
+    clip(ax, c.ia, -0.5, img.w + 0.4999);
+    clip(ay, c.ic, -0.5, img.h + 0.4999);
+    if (!(lo <= hi)) return false;
+    *xa = std::max((int)std::ceil(lo - 1e-9), c.x0);
+    *xb = std::min((int)std::floor(hi + 1e-9) + 1, c.x1);
+    return *xa < *xb;
 }
 
 template <class P>
-void DrawRows(PF_EffectWorld* out, const Pre& pre, const PF_EffectWorld* const* worlds, int yBegin, int yEnd)
+void DrawRows(PF_EffectWorld* out, const Pre& pre, const Img* const* imgs, int yBegin, int yEnd)
 {
     const int ox = pre.out.left, oy = pre.out.top;
     std::vector<Px> acc((size_t)out->width);  // the row, premultiplied
@@ -321,26 +371,58 @@ void DrawRows(PF_EffectWorld* out, const Pre& pre, const PF_EffectWorld* const* 
         const int Y = y + oy;
         for (const Copy& c : pre.copies) {
             if (Y < c.y0 || Y >= c.y1) continue;
-            const PF_EffectWorld* w = worlds[c.src];
-            if (!w) continue;
-            const int xa = std::max(0, c.x0 - ox), xb = std::min((int)out->width, c.x1 - ox);
+            const Img* img = imgs[c.src];
+            if (!img) continue;
+            if (c.n == 1) {
+                int xa = 0, xb = 0;
+                if (!Span(c, *img, Y, &xa, &xb)) continue;
+                xa = std::max(xa, ox), xb = std::min(xb, ox + (int)out->width);
+                if (xa >= xb) continue;
+                any = true;
+                const __m128 k = _mm_set1_ps(c.opacity);
+                const double dy = Y + 0.5 - c.py;
+                double sx = c.pivX + c.ia * (xa + 0.5 - c.px) + c.ib * dy;
+                double sy = c.pivY + c.ic * (xa + 0.5 - c.px) + c.id * dy;
+                Px* d = &acc[(size_t)(xa - ox)];
+                if (c.translate) {
+                    // moved only: the same weights all along the row (one tap when the pixels line up)
+                    const double fx0 = sx - 0.5, fy0 = sy - 0.5;
+                    const int x0 = (int)std::floor(fx0), y0 = (int)std::floor(fy0);
+                    const float fx = (float)(fx0 - x0), fy = (float)(fy0 - y0);
+                    const Px* p = img->At(x0, y0);
+                    const int n = xb - xa;
+                    if (fx < 1e-4f && fy < 1e-4f) {
+                        for (int i = 0; i < n; i++) Over(d + i, V(p + i), k);
+                    } else {
+                        const __m128 wa = _mm_set1_ps((1 - fx) * (1 - fy)), wb = _mm_set1_ps(fx * (1 - fy));
+                        const __m128 wc = _mm_set1_ps((1 - fx) * fy), wd = _mm_set1_ps(fx * fy);
+                        const Px* q = p + img->stride;
+                        for (int i = 0; i < n; i++) {
+                            const __m128 s = _mm_add_ps(_mm_add_ps(_mm_mul_ps(V(p + i), wa), _mm_mul_ps(V(p + i + 1), wb)),
+                                                        _mm_add_ps(_mm_mul_ps(V(q + i), wc), _mm_mul_ps(V(q + i + 1), wd)));
+                            Over(d + i, s, k);
+                        }
+                    }
+                } else {
+                    for (int X = xa; X < xb; X++, d++, sx += c.ia, sy += c.ic) Over(d, Bilinear(*img, sx, sy), k);
+                }
+                continue;
+            }
+            // smaller than its Source: n x n samples per pixel, each inside the Source (with the border)
+            const int xa = std::max(c.x0, ox), xb = std::min(c.x1, ox + (int)out->width);
             const double step = 1.0 / c.n;
-            const float k = c.opacity / (float)(c.n * c.n);
-            for (int x = xa; x < xb; x++) {
-                Px s = {0, 0, 0, 0};
+            const __m128 k = _mm_set1_ps(c.opacity / (float)(c.n * c.n));
+            for (int X = xa; X < xb; X++) {
+                __m128 s = _mm_setzero_ps();
                 for (int j = 0; j < c.n; j++)
                     for (int i = 0; i < c.n; i++) {
-                        const double dx = x + ox + (i + 0.5) * step - c.px, dy = Y + (j + 0.5) * step - c.py;
+                        const double dx = X + (i + 0.5) * step - c.px, dy = Y + (j + 0.5) * step - c.py;
                         const double sx = c.pivX + c.ia * dx + c.ib * dy, sy = c.pivY + c.ic * dx + c.id * dy;
-                        if (sx < -1 || sy < -1 || sx > w->width + 1 || sy > w->height + 1) continue;
-                        const Px q = Sample<P>(w, sx, sy);
-                        s.a += q.a, s.r += q.r, s.g += q.g, s.b += q.b;
+                        if (sx < -0.5 || sy < -0.5 || sx >= img->w + 0.4999 || sy >= img->h + 0.4999) continue;
+                        s = _mm_add_ps(s, Bilinear(*img, sx, sy));
                     }
-                if (s.a <= 0) continue;
-                s.a *= k, s.r *= k, s.g *= k, s.b *= k;
-                Px& d = acc[(size_t)x];
-                const float t = 1.0f - s.a;  // premultiplied "over"
-                d.a = s.a + d.a * t, d.r = s.r + d.r * t, d.g = s.g + d.g * t, d.b = s.b + d.b * t;
+                if (_mm_cvtss_f32(s) <= 0) continue;
+                Over(&acc[(size_t)(X - ox)], s, k);
                 any = true;
             }
         }
@@ -349,20 +431,52 @@ void DrawRows(PF_EffectWorld* out, const Pre& pre, const PF_EffectWorld* const* 
     }
 }
 
+// runs f(a, b) over [0, n) split across the cores
+template <class F>
+void Parallel(int n, F f)
+{
+    const int threads = std::clamp((int)std::thread::hardware_concurrency(), 1, 16);
+    const int chunk = (n + threads - 1) / threads;
+    std::vector<std::thread> pool;
+    for (int t = 1; t < threads; t++) {
+        const int a = t * chunk, b = std::min(n, a + chunk);
+        if (a < b) pool.emplace_back(f, a, b);
+    }
+    f(0, std::min(n, chunk));
+    for (auto& th : pool) th.join();
+}
+
 template <class P>
 void Draw(PF_EffectWorld* out, const Pre& pre, const PF_EffectWorld* const* worlds)
 {
     for (int y = 0; y < out->height; y++) memset((char*)out->data + (size_t)y * out->rowbytes, 0, (size_t)out->width * sizeof(P));
     if (pre.copies.empty()) return;
-    const int threads = std::clamp((int)std::thread::hardware_concurrency(), 1, 16);
-    const int rows = out->height, chunk = (rows + threads - 1) / threads;
-    std::vector<std::thread> pool;
-    for (int t = 1; t < threads; t++) {
-        const int a = t * chunk, b = std::min(rows, a + chunk);
-        if (a < b) pool.emplace_back([=, &pre] { DrawRows<P>(out, pre, worlds, a, b); });
+    const auto t0 = std::chrono::steady_clock::now();
+    // kept per render thread: a new 33 MB buffer each frame costs its first-touch page faults (MFR: one per thread)
+    thread_local Img store[kLayers + 1];
+    const Img* imgs[kLayers + 1] = {};
+    for (int k = 0; k <= kLayers; k++) {
+        const PF_EffectWorld* w = worlds[k];
+        if (!w || w->width <= 0 || w->height <= 0) continue;
+        Img& img = store[k];
+        img.w = w->width, img.h = w->height, img.stride = w->width + 2;
+        img.px.resize((size_t)img.stride * (img.h + 2));
+        // only the border must be clear (the inside is overwritten)
+        std::fill(img.px.begin(), img.px.begin() + img.stride, Px{0, 0, 0, 0});
+        std::fill(img.px.end() - img.stride, img.px.end(), Px{0, 0, 0, 0});
+        for (int y = 1; y <= img.h; y++) {
+            img.px[(size_t)y * img.stride] = Px{0, 0, 0, 0};
+            img.px[(size_t)y * img.stride + img.stride - 1] = Px{0, 0, 0, 0};
+        }
+        Parallel(img.h, [&](int a, int b) { Convert<P>(w, img, a, b); });
+        imgs[k] = &img;
     }
-    DrawRows<P>(out, pre, worlds, 0, std::min(rows, chunk));
-    for (auto& th : pool) th.join();
+    const auto t1 = std::chrono::steady_clock::now();
+    Parallel(out->height, [&](int a, int b) { DrawRows<P>(out, pre, imgs, a, b); });
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1) < 50)
+        Log("draw: convert %.1f ms, rows %.1f ms", std::chrono::duration<double, std::milli>(t1 - t0).count(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count());
 }
 
 }  // namespace
@@ -370,6 +484,8 @@ void Draw(PF_EffectWorld* out, const Pre& pre, const PF_EffectWorld* const* worl
 PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra* extra)
 {
     (void)out_data;
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
     const Pre* pre = (const Pre*)extra->input->pre_render_data;
     PF_EffectWorld* outW = nullptr;
     PF_EffectWorld* worlds[kLayers + 1] = {};
@@ -395,11 +511,7 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
             ws->PF_GetPixelFormat(outW, &fmt);
             in_data->pica_basicP->ReleaseSuite(kPFWorldSuite, kPFWorldSuiteVersion2);
         }
-        static std::atomic<int> logged{0};
-        if (logged.fetch_add(1) < 50)
-            Log("render: %zu copies, format %d, output %d x %d, own layer %s %d x %d", pre->copies.size(), (int)fmt,
-                (int)outW->width, (int)outW->height, worlds[kOwn] ? "in" : "none", worlds[kOwn] ? (int)worlds[kOwn]->width : 0,
-                worlds[kOwn] ? (int)worlds[kOwn]->height : 0);
+        const auto t1 = Clock::now();
         // every layer has the output's depth (AE converts layers to the project's depth)
         switch (fmt) {
         case PF_PixelFormat_ARGB32: Draw<PF_Pixel8>(outW, *pre, worlds); break;
@@ -410,6 +522,13 @@ PF_Err SmartRender(PF_InData* in_data, PF_OutData* out_data, PF_SmartRenderExtra
             err = PF_Err_BAD_CALLBACK_PARAM;
             break;
         }
+        static std::atomic<int> logged{0};
+        auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+        if (logged.fetch_add(1) < 200)
+            Log("render: %zu copies, format %d, output %d x %d, own layer %d x %d: checkout %.1f ms, draw %.1f ms",
+                pre->copies.size(), (int)fmt, (int)outW->width, (int)outW->height,
+                worlds[kOwn] ? (int)worlds[kOwn]->width : 0, worlds[kOwn] ? (int)worlds[kOwn]->height : 0, ms(t1 - t0),
+                ms(Clock::now() - t1));
     }
     if (err) Log("render: failed (%d)", (int)err);
     for (int k = 0; k < kLayers; k++)
