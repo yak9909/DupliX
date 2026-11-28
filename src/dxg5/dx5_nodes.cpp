@@ -1,0 +1,195 @@
+// DupliX 2 (design v5, 6.2): the basic nodes. Changing a name breaks saved graphs and code: add new ones instead.
+#include "dxg5/nodes.h"
+
+namespace dx5 {
+
+namespace {
+
+InputDef In(const char* n, Type t, Value d, const char* ctx = "")
+{
+    InputDef i;
+    i.name = n, i.type = t, i.dflt = d, i.context = ctx;
+    return i;
+}
+InputDef Field(const char* n, Type t, Value d, const char* ctx = "geometry")
+{
+    InputDef i = In(n, t, d, ctx);
+    i.field = true;
+    return i;
+}
+InputDef Struct(const char* n, int64_t d, double lo, double hi)
+{
+    InputDef i = In(n, Type::Int, Value::I(d));
+    i.structural = true, i.softMin = lo, i.softMax = hi;
+    return i;
+}
+InputDef Geo(const char* n = "geometry") { return In(n, Type::Geometry, Value{}); }
+OutputDef Out(const char* n, Type t, bool field = false) { return {n, t, field}; }
+
+NodeDef Def(const char* name, const char* label, const char* cat, std::vector<InputDef> in, std::vector<OutputDef> out)
+{
+    NodeDef d;
+    d.name = name, d.label = label, d.category = cat, d.inputs = std::move(in), d.outputs = std::move(out);
+    return d;
+}
+
+NodeDef Set(const char* name, const char* label, const char* attr, Type t, Value dflt)
+{
+    return Def(name, label, "Set", {Geo(), Field(attr, t, dflt), Field("where", Type::Bool, Value::B(true))},
+               {Out("geometry", Type::Geometry)});
+}
+
+NodeDef Read(const char* name, const char* label, Type t, bool field = true)
+{
+    return Def(name, label, "Input", {}, {Out("value", t, field)});
+}
+
+NodeDef Math(const char* name, const char* label, int args, Type out = Type::Any)
+{
+    std::vector<InputDef> in;
+    const char* names[3] = {"a", "b", "c"};
+    for (int k = 0; k < args; k++) in.push_back(Field(names[k], Type::Any, Value::F(0), ""));
+    return Def(name, label, "Math", in, {Out("value", out, true)});
+}
+
+std::vector<NodeDef> Base()
+{
+    std::vector<NodeDef> d;
+    {
+        NodeDef p = Def("points", "Points", "Generate", {Struct("count", 1, 0, 100)}, {Out("geometry", Type::Geometry)});
+        d.push_back(p);
+    }
+    d.push_back(Set("set_position", "Set Position", "position", Type::Vector, Value::V({0, 0, 0})));
+    d.push_back(Set("set_rotation", "Set Rotation", "rotation", Type::Rotation, Value::R(Rot{})));
+    d.push_back(Set("set_scale", "Set Scale", "scale", Type::Vector, Value::V({1, 1, 1})));
+    d.push_back(Set("set_opacity", "Set Opacity", "opacity", Type::Float, Value::F(1)));
+    d.push_back(Set("set_source", "Set Source", "source", Type::Int, Value::I(-1)));
+    d.push_back(Set("set_visible", "Set Visible", "visible", Type::Bool, Value::B(true)));
+    d.push_back(Set("set_weight", "Set Weight", "weight", Type::Float, Value::F(1)));
+    {
+        NodeDef s = Def("store", "Store", "Set",
+                        {Geo(), Field("value", Type::Any, Value::F(0)), Field("where", Type::Bool, Value::B(true))},
+                        {Out("geometry", Type::Geometry)});
+        s.text = "name";
+        d.push_back(s);
+    }
+    d.push_back(Def("capture", "Capture", "Set", {Geo(), Field("value", Type::Any, Value::F(0))},
+                    {Out("geometry", Type::Geometry), Out("value", Type::Any, true)}));
+    d.push_back(Def("delete", "Delete", "Geometry", {Geo(), Field("where", Type::Bool, Value::B(false))},
+                    {Out("geometry", Type::Geometry)}));
+    {
+        InputDef cs = In("copy_scale", Type::Float, Value::F(100));
+        cs.softMin = 0, cs.softMax = 200;
+        d.push_back(Def("output", "Output", "Output", {Geo(), cs}, {}));
+    }
+    // a zone: `inner` starts the chain inside it, `body` is where that chain ends (design v5 9)
+    d.push_back(Def("each", "Each", "Zone", {Geo(), Geo("body")}, {Out("geometry", Type::Geometry), Out("inner", Type::Geometry)}));
+
+    // values read from the element (design v5 4.4)
+    d.push_back(Read("position", "Position", Type::Vector));
+    d.push_back(Read("index", "Index", Type::Int));
+    d.push_back(Read("id", "ID", Type::Int));
+    d.push_back(Read("count", "Count", Type::Int, false));
+    d.push_back(Read("rotation", "Rotation", Type::Rotation));
+    d.push_back(Read("scale", "Scale", Type::Vector));
+    d.push_back(Read("opacity", "Opacity", Type::Float));
+    d.push_back(Read("source", "Source", Type::Int));
+    d.push_back(Read("visible", "Visible", Type::Bool));
+    d.push_back(Read("weight", "Weight", Type::Float));
+    d.push_back(Read("q", "Order Q", Type::Float));
+    d.push_back(Read("s", "Order Step", Type::Int));
+    d.push_back(Read("time", "Time", Type::Float, false));
+    d.push_back(Read("seed", "Seed", Type::Int, false));
+    {
+        NodeDef a = Read("attr", "Named Attribute", Type::Any);
+        a.text = "name";
+        d.push_back(a);
+    }
+    {
+        NodeDef m = Read("macro", "Macro", Type::Float, false);
+        m.setting = "macro";
+        d.push_back(m);
+        NodeDef i = Read("int_macro", "Int Macro", Type::Int, false);
+        i.setting = "int_macro";
+        d.push_back(i);
+    }
+    d.push_back(Read("random", "Random", Type::Float));  // salt: Node::salt
+    {
+        NodeDef e = Def("expr", "Expression", "Math", {}, {Out("value", Type::Any, true)});
+        e.text = "expr";
+        d.push_back(e);
+    }
+
+    // math (one node per operation; the Expression node holds a whole formula)
+    for (const char* n : {"add", "sub", "mul", "div", "floordiv", "mod", "pow", "min", "max", "atan2", "dot", "cross"})
+        d.push_back(Math((std::string("math_") + n).c_str(), n, 2));
+    for (const char* n : {"eq", "ne", "lt", "le", "gt", "ge", "and", "or"})
+        d.push_back(Math((std::string("math_") + n).c_str(), n, 2, Type::Bool));
+    d.push_back(Math("math_not", "not", 1, Type::Bool));
+    for (const char* n : {"neg", "sin", "cos", "tan", "asin", "acos", "sqrt", "abs", "floor", "ceil", "round", "normalize"})
+        d.push_back(Math((std::string("math_") + n).c_str(), n, 1));
+    d.push_back(Math("math_len", "len", 1, Type::Float));
+    for (const char* n : {"clamp", "mix", "smoothstep"}) d.push_back(Math((std::string("math_") + n).c_str(), n, 3));
+    d.push_back(Math("math_switch", "switch", 3));
+    d.push_back(Math("math_vec", "vec", 3, Type::Vector));
+    d.push_back(Math("math_sep_x", "sep_x", 1, Type::Float));
+    d.push_back(Math("math_sep_y", "sep_y", 1, Type::Float));
+    d.push_back(Math("math_sep_z", "sep_z", 1, Type::Float));
+    d.push_back(Math("math_rot", "rot", 3, Type::Rotation));
+    d.push_back(Math("math_rot_mul", "rot_mul", 2, Type::Rotation));
+    d.push_back(Math("math_rot_apply", "rot_apply", 2, Type::Vector));
+    d.push_back(Math("math_inverse", "inverse", 1, Type::Rotation));
+
+    // reading other elements and the whole list (design v5 5, 6.2)
+    d.push_back(Def("at", "Sample Index", "Utility",
+                    {Geo(), Field("index", Type::Int, Value::I(0), ""), Field("value", Type::Any, Value::F(0))},
+                    {Out("value", Type::Any, true)}));
+    d.push_back(Def("accumulate", "Accumulate", "Utility", {Field("value", Type::Any, Value::F(0), "")},
+                    {Out("value", Type::Any, true)}));
+    d.push_back(Def("bounds", "Bounds", "Utility", {Geo(), Field("value", Type::Vector, Value::V({0, 0, 0}))},
+                    {Out("min", Type::Vector), Out("max", Type::Vector), Out("center", Type::Vector)}));
+    {
+        NodeDef r = Def("reduce", "Reduce", "Utility", {Geo(), Field("value", Type::Any, Value::F(0))}, {Out("value", Type::Any)});
+        r.setting = "op";
+        d.push_back(r);
+    }
+    {
+        InputDef k = Struct("k", 1, 1, 8);
+        d.push_back(Def("layer_set", "Layer Set", "Input", {k}, {Out("value", Type::Bool)}));
+    }
+    return d;
+}
+
+}  // namespace
+
+int NodeDef::Input(const std::string& n) const
+{
+    for (size_t k = 0; k < inputs.size(); k++)
+        if (inputs[k].name == n) return (int)k;
+    return -1;
+}
+int NodeDef::Output(const std::string& n) const
+{
+    for (size_t k = 0; k < outputs.size(); k++)
+        if (outputs[k].name == n) return (int)k;
+    return -1;
+}
+
+const std::vector<NodeDef>& AllDefs()
+{
+    static const std::vector<NodeDef> all = [] {
+        std::vector<NodeDef> d = Base();
+        for (NodeDef& g : GroupDefs()) d.push_back(g);
+        return d;
+    }();
+    return all;
+}
+
+const NodeDef* FindDef(const std::string& name)
+{
+    for (const NodeDef& d : AllDefs())
+        if (d.name == name) return &d;
+    return nullptr;
+}
+
+}  // namespace dx5
