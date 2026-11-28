@@ -9,7 +9,9 @@
   ノードの窓は dx5 用に作り直した（値の線・式の入力・Int Macro への Expose）。
   AE 試験: `run_dx2_graph.ps1` が 8・16・32 bpc で PASS（32 bpc は 4 回中 1 回、台本の送信中に AE の警告で止まった。文言は未取得）。
   **P1 で保存したプロジェクト（`tests/ae/fixtures/dx2_p1.aep`）が開き、同じ要素を描く**（`run_dx2_p1_fixture.ps1` → P1 FIXTURE PASS）。
-- **次の 1 手:** Task 10（エディターの Code 表示: タブ・複数行の編集欄・Ctrl+Enter で適用・誤りの行）。ここで利用者が試せる区切り。
+- **Task 10 済み（Code 表示）:** タブ Nodes / Stack / Code。Code で書いて Apply（Ctrl+Enter）すると AE の絵が変わる。誤りは行と列つきで拒む。
+  AE 試験は 8・16・32 bpc で PASS（Code のタブ・誤りのコード・正しいコード）。**ここで利用者が試せる aex になった。**
+- **次の 1 手:** Task 11（ノード表示の仕上げ: ホイールの縮尺・スナップ・Macros の欄からドラッグ・追加メニューの検索）→ Task 12（積み重ね表示）→ Task 13（全体の試験と最終レビュー）。
 - **台帳の判断（利用者に最後に一覧で伝える）:** `//` は注記だけ・床の割り算は `floordiv()`、Math ノードは `math_add()` の形、
   グループ Source は `source_layers`、each の中の新しい名前はローカル（名前付きの属性は `store("名前", 値)`）、ほか。
 - **気を付けること:** v2 のプロジェクトは `src/graph`（版 1 の読み込み）と `src/dxg5` の両方をコンパイルする。dxg5 の .cpp は `dx5_` で始める（obj の名前がぶつかる）。
