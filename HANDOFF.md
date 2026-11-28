@@ -1,5 +1,16 @@
 # 引き継ぎメモ（最新: 2026-11-28 17 時台（PC の時計）。再開はこの冒頭の「再開の手順」から）
 
+## 再開の手順（2026-11-28 夜遅く、計画 P1.5e の Task 1〜6 済み。Task 7（最終レビュー）中）
+
+- **済み（続き）:** Task 5 `f6a102c`（自分用にコピー・Ctrl+G・Ungroup・Make Group・複数の出口の Collapse・unused のマクロ・台本の命令）、
+  Task 6a `47487d2`（`OpenExpression`・`CloseExpression`・`SetGroupBody`）、Task 6 `d0902b1`（エディター: 演算子の欄・隠れた入力・赤い線・
+  複数行の式の欄・入力欄は数だけ・Tab / ▸ で開く・右クリックのノードのメニュー・Shift+クリックと Ctrl+G・追加メニューに自分のグループ・unused の折り畳み）。
+  **試験:** `dxg5_test` ALL PASS、AE `run_dx2_graph.ps1` 8・16・32 bpc DX2 GRAPH PASS（32 bpc は 1 回目に台本の送信中の AE の警告
+  「…の確認に失敗しました。{no current context}」で止まり、2 回目 PASS。Task 9 からある止まり方で、文言が取れた）、`run_dx2_p1_fixture.ps1` PASS。
+- **次の 1 手:** Task 7: 文脈なしのレビュー役にブランチ全体を見せ、Critical / Important を直して利用者に報告（台帳の Ruling を一覧で）。
+- **利用者に試してもらうこと（自動の試験で見ていない）:** 演算子の欄のメニュー、ノードの右クリックのメニュー（Copy for Myself など）、Ctrl+G、
+  式の欄（複数行・Ctrl+Enter）、開いた中での編集（自分のグループ・Expression）、unused の折り畳み。
+
 ## 再開の手順（2026-11-28 夜、計画 P1.5e の Task 1〜4 済み。利用者の指示「一旦中断してください」で止めた）
 
 - **計画:** `docs/superpowers/plans/2026-11-28-dx5-review-e.md`（7 タスク）。台帳 `.superpowers/sdd/2026-11-28-dx5-review-e/progress.md`
