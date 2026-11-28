@@ -47,7 +47,7 @@ bool MacroName(const std::string& s, bool* isInt, int* k)
 const InputDef* DefOf(const Graph& g, uint32_t id, const std::string& input)
 {
     const Node* n = g.Find(id);
-    const NodeDef* d = n ? FindDef(n->type) : nullptr;
+    const NodeDef* d = n ? DefFor(g, n->type) : nullptr;
     const int k = d ? d->Input(input) : -1;
     return k >= 0 ? &d->inputs[k] : nullptr;
 }
@@ -172,7 +172,7 @@ bool IsField(const Graph& g, uint32_t node, int output)
 
 uint32_t AddNodeAt(Graph& g, const std::string& type, double x, double y)
 {
-    if (!FindDef(type)) return 0;
+    if (!DefFor(g, type)) return 0;
     if (type == "output" && g.OutputNode()) return 0;
     const uint32_t id = AddNode(g, type, "", x, y);
     if (type == "random") g.Find(id)->salt = (HashStr(g.Find(id)->key) ^ (uint64_t)g.revision * 0x9E3779B97F4A7C15ull) & 0xffffffull;

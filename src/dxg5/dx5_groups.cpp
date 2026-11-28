@@ -326,6 +326,34 @@ bool GroupByDefinition(Evaluator& ev, const Node& n, Geometry* out)
     return true;
 }
 
+bool UserGroupGeo(Evaluator& ev, const Node& n, int output, Geometry* out)
+{
+    const UserGroup* u = ev.UserGroupOf(n.type);
+    if (!u || !u->body || output < 0 || output >= (int)u->def.outputs.size()) return false;
+    const Node* ret = nullptr;
+    for (const Node& x : u->body->nodes)
+        if (x.type == "group_output") ret = &x;
+    if (!ret) return false;
+    Evaluator sub(*u->body, ev.Ctx(), ev.Result());
+    sub.BindGroup(&ev, &n);
+    *out = *sub.InputGeo(*ret, u->def.outputs[output].name);
+    return true;
+}
+
+bool UserGroupValue(Evaluator& ev, const Node& n, int output, const GeoPtr& ctx, Column* out)
+{
+    const UserGroup* u = ev.UserGroupOf(n.type);
+    if (!u || !u->body || output < 0 || output >= (int)u->def.outputs.size()) return false;
+    const Node* ret = nullptr;
+    for (const Node& x : u->body->nodes)
+        if (x.type == "group_output") ret = &x;
+    if (!ret) return false;
+    Evaluator sub(*u->body, ev.Ctx(), ev.Result());
+    sub.BindGroup(&ev, &n);
+    *out = sub.Input(*ret, u->def.outputs[output].name, ctx);
+    return true;
+}
+
 namespace {
 
 InputDef F(const char* n, double d, double lo, double hi, const char* ctx)

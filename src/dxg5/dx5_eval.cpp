@@ -60,6 +60,21 @@ uint64_t Evaluator::ElementId(const Node& n, size_t i, const std::string& inner)
     return dxg::MixId(HashStr(k), i);
 }
 
+const UserGroup* Evaluator::UserGroupOf(const std::string& type) const
+{
+    for (const Evaluator* e = outer_; e; e = e->outer_)
+        if (!e->outer_)
+            if (const UserGroup* u = FindUserGroup(e->g_, type)) return u;
+    return FindUserGroup(g_, type);
+}
+
+const NodeDef* Evaluator::Def(const std::string& type) const
+{
+    if (const NodeDef* d = FindDef(type)) return d;
+    const UserGroup* u = UserGroupOf(type);
+    return u ? &u->def : nullptr;
+}
+
 void Evaluator::BindGroup(Evaluator* outer, const Node* node)
 {
     outer_ = outer, outerNode_ = node;
@@ -78,7 +93,7 @@ Column Evaluator::Input(const Node& n, const std::string& input, const GeoPtr& c
 {
     const InputSlot* s = n.In(input);
     if (!s) {
-        const NodeDef* d = FindDef(n.type);
+        const NodeDef* d = Def(n.type);
         const int k = d ? d->Input(input) : -1;
         return One(k >= 0 ? d->inputs[k].dflt : Value::F(0));
     }
@@ -94,7 +109,7 @@ Value Evaluator::Single(const Node& n, const std::string& input)
     const Column c = Field(s->link.from, s->link.output, none);
     if (c.size() != 1) {
         Warn(n.key + "." + input + " cannot vary per element");
-        const NodeDef* d = FindDef(n.type);
+        const NodeDef* d = Def(n.type);
         const int k = d ? d->Input(input) : -1;
         return k >= 0 ? d->inputs[k].dflt : Value::F(0);
     }
@@ -184,6 +199,11 @@ GeoPtr Evaluator::GeoUncached(const Node& n, int output)
         Warn(n.key + ": a group's input outside a group");
         return std::make_shared<Geometry>(MakePoints(0));
     }
+    if (UserGroupOf(t)) {
+        Geometry out;
+        if (UserGroupGeo(*this, n, output, &out)) return std::make_shared<Geometry>(std::move(out));
+        return std::make_shared<Geometry>(MakePoints(0));
+    }
     const NodeDef* d = FindDef(t);
     if (d && d->group) {
         Geometry out;
@@ -259,6 +279,11 @@ Column Evaluator::FieldUncached(const Node& n, int output, const GeoPtr& ctx)
         return MakeColumn(Type::Float, cnt, Value::F(0));
     }
     if (t == "expr") return EvalExpressionNode(*this, n, ctx, output);
+    if (UserGroupOf(t)) {
+        Column c;
+        if (UserGroupValue(*this, n, output, ctx, &c)) return c;
+        return MakeColumn(Type::Float, cnt, Value::F(0));
+    }
     if (t == "param") {
         if (outer_) return outer_->Input(*outerNode_, n.text, ctx);
         Warn(n.key + ": a group's input outside a group");

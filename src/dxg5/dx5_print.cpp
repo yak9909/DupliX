@@ -20,9 +20,9 @@ namespace {
 
 using Out = std::pair<uint32_t, int>;
 
-bool IsGeoNode(const Node& n)
+bool IsGeoNode(const Graph& g, const Node& n)
 {
-    const NodeDef* d = FindDef(n.type);
+    const NodeDef* d = DefFor(g, n.type);
     return d && !d->outputs.empty() && d->outputs[0].type == Type::Geometry;
 }
 
@@ -75,8 +75,51 @@ public:
     std::string Code()
     {
         std::string out;
+        for (const UserGroup& u : g_.groups) out += GroupCode(u);
         for (uint32_t id : Order()) out += Statement(*g_.Find(id));
         return out;
+    }
+
+    // group name(params) { body; return ... } (design v5 12.1)
+    static std::string GroupCode(const UserGroup& u)
+    {
+        if (!u.body) return "";
+        std::string head = "group " + u.name + "(";
+        for (size_t k = 0; k < u.def.inputs.size(); k++) {
+            const InputDef& in = u.def.inputs[k];
+            head += (k ? ", " : "") + in.name + ": " + TypeWord(in.type);
+            if (in.type == Type::Geometry) continue;
+            if (in.structural) head += " structural";
+            head += " = " + ConstText(in.dflt);
+        }
+        head += ") {\n";
+        Graph body = *u.body;
+        Printer bp(body);
+        bp.groupBody_ = true;
+        std::string inner;
+        for (uint32_t id : bp.Order()) inner += bp.Statement(*body.Find(id));
+        const Node* ret = nullptr;
+        for (const Node& n : body.nodes)
+            if (n.type == "group_output") ret = &n;
+        if (ret) {
+            if (ret->inputs.size() == 1 && (ret->inputs[0].name == "geometry" || ret->inputs[0].name == "value")) {
+                inner += "return " + bp.Arg(*ret, ret->inputs[0], {0, 0}, "") + "\n";
+            } else {
+                std::string r = "return (";
+                for (size_t k = 0; k < ret->inputs.size(); k++)
+                    r += (k ? ", " : "") + ret->inputs[k].name + ": " + bp.Arg(*ret, ret->inputs[k], {0, 0}, "");
+                inner += r + ")\n";
+            }
+        }
+        std::string out = head;
+        size_t a = 0;
+        while (a < inner.size()) {
+            size_t b = inner.find('\n', a);
+            if (b == std::string::npos) b = inner.size();
+            out += "  " + inner.substr(a, b - a) + "\n";
+            a = b + 1;
+        }
+        return out + "}\n";
     }
 
     // the text of a value output as an expression (inline, even when it is a statement)
@@ -93,6 +136,8 @@ private:
     std::map<Out, std::string> name_;
 
     bool IsMacro(const Node& n) const { return n.type == "macro" || n.type == "int_macro"; }
+    bool IsParam(const Node& n) const { return n.type == "param" || n.type == "param_geo" || n.type == "group_output"; }
+    bool groupBody_ = false;
 
     int Uses(uint32_t id) const
     {
@@ -139,7 +184,7 @@ private:
     // a value node written inside the expression that uses it
     bool Inlined(const Node& n) const
     {
-        if (IsGeoNode(n) || IsMacro(n) || n.type == "capture" || Block(n)) return false;
+        if (IsGeoNode(g_, n) || IsMacro(n) || n.type == "capture" || Block(n) || IsParam(n)) return false;
         auto c = consumers_.find(n.id);
         if (c == consumers_.end() || c->second.size() != 1) return false;
         const Node* user = g_.Find(c->second[0].first);
@@ -200,7 +245,7 @@ private:
     // geometry inputs positional, then the other inputs that are wired or not at their default, by name
     std::string Args(const Node& n, Out ctxOfFields, bool skipValueOfAt = false)
     {
-        const NodeDef* d = FindDef(n.type);
+        const NodeDef* d = DefFor(g_, n.type);
         std::vector<std::string> parts;
         if (d) {
             for (const InputDef& in : d->inputs) {
@@ -296,7 +341,7 @@ private:
             return "accumulate(" + (v ? Arg(n, *v, ctx, lambda) : std::string("0")) + ")";
         }
         if (t == "bounds" || t == "reduce" || t == "layer_set") {
-            const NodeDef* d = FindDef(t);
+            const NodeDef* d = DefFor(g_, t);
             std::string s = t + "(" + Args(n, FieldCtx(n)) + ")";
             if (t == "bounds" && d && output < (int)d->outputs.size()) s += "." + d->outputs[output].name;
             return s;
@@ -403,8 +448,10 @@ private:
     {
         // top-level statements: geometry nodes, values not written inline (not macros)
         std::vector<uint32_t> todo;
-        for (const Node& n : g_.nodes)
-            if (!n.zone && !IsMacro(n) && !Inlined(n)) todo.push_back(n.id);
+        for (const Node& n : g_.nodes) {
+            if (n.type == "param" || n.type == "param_geo") name_[{n.id, 0}] = n.text;
+            if (!n.zone && !IsMacro(n) && !Inlined(n) && !IsParam(n)) todo.push_back(n.id);
+        }
         // dependencies through inlined nodes and zones
         std::map<uint32_t, std::set<uint32_t>> deps;
         std::set<uint32_t> stmt(todo.begin(), todo.end());
@@ -477,8 +524,11 @@ private:
             name_[{n.id, 0}] = n.key + "_g";
             return n.key + "_g, " + n.key + " = capture(" + gname + ", value: " + (v ? Arg(n, *v, in, "") : "0") + ")\n";
         }
-        if (IsGeoNode(n)) {
+        if (IsGeoNode(g_, n)) {
             name_[{n.id, 0}] = n.key;
+            if (const UserGroup* u = FindUserGroup(g_, n.type))
+                if (u->def.outputs.size() > 1)
+                    for (size_t k = 0; k < u->def.outputs.size(); k++) name_[{n.id, (int)k}] = n.key + "." + u->def.outputs[k].name;
             return n.key + " = " + n.type + "(" + Args(n, FieldCtx(n)) + ")\n";
         }
         if (Block(n)) {
@@ -498,7 +548,7 @@ private:
             return name + " = expr" + (args.empty() ? std::string("") : "(" + args + ")") + " {\n" + body + "}\n";
         }
         // a value statement
-        const NodeDef* d = FindDef(t);
+        const NodeDef* d = DefFor(g_, t);
         // a value node's key may be written as an identifier of its own (design v5 11: its key is not its ids')
         const std::string nm = Ident(n.key) ? n.key : IdentOf(n.key);
         for (size_t k = 0; d && k < d->outputs.size(); k++) name_[{n.id, (int)k}] = nm;
@@ -705,7 +755,10 @@ Graph Normalized(const Graph& in)
     }
     // value nodes are named by where they are used (their keys are not compared: design v5 13)
     std::map<uint32_t, std::string> canon;
-    auto valueNode = [](const Node& n) { return !IsGeoNode(n) && n.type != "output" && n.type != "each"; };
+    auto valueNode = [&](const Node& n) {
+        return !IsGeoNode(g, n) && n.type != "output" && n.type != "each" && n.type != "group_output" && n.type != "param" &&
+               n.type != "param_geo";
+    };
     for (const Node& n : g.nodes)
         if (!valueNode(n)) canon[n.id] = n.key;
     for (size_t round = 0; round <= g.nodes.size(); round++) {
@@ -759,6 +812,22 @@ bool SameGraph(const Graph& a0, const Graph& b0, std::string* why)
         if (why) *why = w;
         return false;
     };
+    // the user's groups: the same names, inputs, outputs and bodies
+    if (a0.groups.size() != b0.groups.size()) return fail("group count");
+    for (size_t k = 0; k < a0.groups.size(); k++) {
+        const UserGroup &x = a0.groups[k], &y = b0.groups[k];
+        if (x.name != y.name) return fail("group " + x.name + " vs " + y.name);
+        if (x.def.inputs.size() != y.def.inputs.size() || x.def.outputs.size() != y.def.outputs.size()) return fail("group " + x.name + ": its inputs or outputs");
+        for (size_t i = 0; i < x.def.inputs.size(); i++) {
+            const InputDef &p = x.def.inputs[i], &q = y.def.inputs[i];
+            if (p.name != q.name || p.type != q.type || p.structural != q.structural || !ValueEqual(p.dflt, q.dflt))
+                return fail("group " + x.name + ": input " + p.name);
+        }
+        for (size_t i = 0; i < x.def.outputs.size(); i++)
+            if (x.def.outputs[i].name != y.def.outputs[i].name) return fail("group " + x.name + ": output " + x.def.outputs[i].name);
+        std::string w;
+        if (!x.body || !y.body || !SameGraph(*x.body, *y.body, &w)) return fail("group " + x.name + ": " + w);
+    }
     if (a.nodes.size() != b.nodes.size())
         return fail("node count " + std::to_string(a.nodes.size()) + " vs " + std::to_string(b.nodes.size()));
     auto keyOf = [](const Graph& g, uint32_t id) {

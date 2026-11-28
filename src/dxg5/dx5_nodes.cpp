@@ -153,6 +153,8 @@ std::vector<NodeDef> Base()
         NodeDef q = Def("param_geo", "Group Geometry", "Hidden", {}, {Out("geometry", Type::Geometry)});
         q.text = "name";
         d.push_back(q);
+        // a user's group's outputs: one input per output, by name (design v5 12.1)
+        d.push_back(Def("group_output", "Group Output", "Hidden", {}, {}));
     }
     return d;
 }

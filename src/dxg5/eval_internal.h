@@ -40,6 +40,9 @@ public:
     // Evaluating a group's definition: this evaluator runs the group's graph; its param nodes read `node`'s inputs
     // through `outer`; element ids are made from the group node's key (design v5 11).
     void BindGroup(Evaluator* outer, const Node* node);
+    // A node type's table entry: the graph's own, or (inside a group's body) the top graph's user groups.
+    const NodeDef* Def(const std::string& type) const;
+    const UserGroup* UserGroupOf(const std::string& type) const;
 
 private:
     Column FieldUncached(const Node& n, int output, const GeoPtr& ctx);
@@ -60,6 +63,9 @@ private:
 
 // A built-in group's definition evaluated (dx5_groups.cpp). False if it has none.
 bool GroupByDefinition(Evaluator& ev, const Node& n, Geometry* out);
+// A user's group's output (design v5 12.1): its geometry, or its value over ctx.
+bool UserGroupGeo(Evaluator& ev, const Node& n, int output, Geometry* out);
+bool UserGroupValue(Evaluator& ev, const Node& n, int output, const GeoPtr& ctx, Column* out);
 
 // Element-wise operations of the math nodes and the Expression node ("add", "sin", ...): a, b, c are values of one
 // element. False when the types do not fit (`err` says why).

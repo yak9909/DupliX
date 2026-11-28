@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,10 +50,24 @@ struct MacroSetting {
     double sliderMin = 0, sliderMax = 100;
 };
 
+struct Graph;
+
+// A group the user defined or copied for themself (design v5 12.1): a function. Its body is a graph whose param /
+// param_geo nodes are its inputs and whose group_output node's inputs are its outputs; `def` is its node's table entry
+// (inputs, outputs, structural inputs found from the body). Saved as `group <name> 0` ... `end`.
+struct UserGroup {
+    std::string name;
+    std::shared_ptr<const Graph> body;
+    NodeDef def;
+};
+
 struct Graph {
     uint32_t revision = 0;  // +1 on every write from the editor (AE's undo is detected by it)
     uint32_t nextId = 1;
     std::vector<Node> nodes;
+    // the user's groups, in the order they may use each other (a group uses only those before it). A group's body
+    // holds the groups before it too, so it can be evaluated and written on its own.
+    std::vector<UserGroup> groups;
     MacroSetting macros[kNumMacros];
     MacroSetting intMacros[kNumIntMacros];
     std::vector<std::string> unknownLines;
@@ -63,6 +78,15 @@ struct Graph {
     Node* FindKey(const std::string& key);
     const Node* OutputNode() const;
 };
+
+const UserGroup* FindUserGroup(const Graph& g, const std::string& name);
+// A user's group's table entry (category Group, group = true).
+NodeDef UserGroupDef(const std::string& name, std::vector<InputDef> in, std::vector<OutputDef> out);
+// "geometry", "int", "float", "bool", "vector", "rotation", "any" (the code's and the stored form's type words)
+std::string TypeWord(Type t);
+Type WordType(const std::string& w);
+// The table entry of a node type in this graph: a basic node or built-in group (FindDef), else the user's group.
+const NodeDef* DefFor(const Graph& g, const std::string& type);
 
 // `want` if no node has it, else want_2, want_3, ...
 std::string UniqueKey(const Graph& g, const std::string& want);

@@ -92,10 +92,10 @@ bool ParseValue(const std::string& s, Value* v)
     }
 }
 
-void FillInputs(Node& n)
+void FillInputs(Node& n, const Graph& g)
 {
     n.inputs.clear();
-    const NodeDef* d = FindDef(n.type);
+    const NodeDef* d = DefFor(g, n.type);
     if (!d) return;
     for (const InputDef& i : d->inputs) {
         InputSlot s;
@@ -192,7 +192,7 @@ void FromV1(const dxg::Graph& v1, Graph* out)
         if (m.type == "source") m.type = "source_layers";  // `source` reads the element's attribute
         m.key = m.type + std::to_string(n.id);
         m.x = n.x, m.y = n.y;
-        FillInputs(m);
+        FillInputs(m, g);
         g.nodes.push_back(m);
     }
     auto macroNode = [&](int k, const Node& near) {
@@ -347,12 +347,12 @@ uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, doub
     n.x = x, n.y = y;
     NormalizeMath(n);
     if (IsMathFamily(n.type) && n.text.empty()) n.text = DefaultMathOp(n.type);
-    FillInputs(n);
+    FillInputs(n, g);
     g.nodes.push_back(n);
     return n.id;
 }
 
-std::vector<OutputDef> OutputsOf(const Graph&, const Node& n)
+std::vector<OutputDef> OutputsOf(const Graph& g, const Node& n)
 {
     if (n.type == "expr") {
         const FormulaSockets s = ReadFormula(n.text);
@@ -362,16 +362,30 @@ std::vector<OutputDef> OutputsOf(const Graph&, const Node& n)
         return o;
     }
     if (const MathOpDef* m = MathOpOf(n)) return {{"value", m->out, true}};
-    const NodeDef* d = FindDef(n.type);
+    const NodeDef* d = DefFor(g, n.type);
     return d ? d->outputs : std::vector<OutputDef>{};
+}
+
+const UserGroup* FindUserGroup(const Graph& g, const std::string& name)
+{
+    for (const UserGroup& u : g.groups)
+        if (u.name == name) return &u;
+    return nullptr;
+}
+
+const NodeDef* DefFor(const Graph& g, const std::string& type)
+{
+    if (const NodeDef* d = FindDef(type)) return d;
+    const UserGroup* u = FindUserGroup(g, type);
+    return u ? &u->def : nullptr;
 }
 
 const MathOpDef* MathOpOf(const Node& n) { return IsMathFamily(n.type) ? FindMathOp(n.type, n.text) : nullptr; }
 
-Type OutputType(const Graph&, const Node& n, int output)
+Type OutputType(const Graph& g, const Node& n, int output)
 {
     if (const MathOpDef* m = MathOpOf(n)) return m->out;
-    const NodeDef* d = FindDef(n.type);
+    const NodeDef* d = DefFor(g, n.type);
     return d && output >= 0 && output < (int)d->outputs.size() ? d->outputs[output].type : Type::Any;
 }
 
@@ -418,11 +432,52 @@ std::string MacroLabel(const Graph& g, bool isInt, int k)
     return m.name.empty() ? std::string(isInt ? "Int Macro " : "Macro ") + std::to_string(k + 1) : m.name;
 }
 
-std::string Serialize(const Graph& g)
+std::string TypeWord(Type t)
 {
-    std::string s = "DupliX graph " + std::to_string(kFormatVersion) + "\n";
-    s += "revision " + std::to_string(g.revision) + "\n";
+    switch (t) {
+    case Type::Geometry: return "geometry";
+    case Type::Int: return "int";
+    case Type::Bool: return "bool";
+    case Type::Vector: return "vector";
+    case Type::Rotation: return "rotation";
+    case Type::Float: return "float";
+    default: return "any";
+    }
+}
+Type WordType(const std::string& w)
+{
+    if (w == "geometry") return Type::Geometry;
+    if (w == "int") return Type::Int;
+    if (w == "bool") return Type::Bool;
+    if (w == "vector") return Type::Vector;
+    if (w == "rotation") return Type::Rotation;
+    if (w == "float") return Type::Float;
+    return Type::Any;
+}
+
+std::string SerializeBody(const Graph& g, bool top);
+bool ParseBody(const std::string& text, Graph* g);
+
+std::string Serialize(const Graph& g) { return SerializeBody(g, true); }
+
+std::string SerializeBody(const Graph& g, bool top)
+{
+    std::string s;
+    if (top) {
+        s = "DupliX graph " + std::to_string(kFormatVersion) + "\n";
+        s += "revision " + std::to_string(g.revision) + "\n";
+    }
     s += "nextid " + std::to_string(g.nextId) + "\n";
+    if (top)
+        for (const UserGroup& u : g.groups) {
+            s += "group " + u.name + " 0\n";
+            for (const InputDef& i : u.def.inputs)
+                s += "gparam " + i.name + " " + TypeWord(i.type) + " " + (i.structural ? "1" : "0") + " " + (i.field ? "1" : "0") + " " +
+                     (ValueText(i.dflt).empty() ? "-" : ValueText(i.dflt)) + "\n";
+            for (const OutputDef& o : u.def.outputs) s += "gout " + o.name + " " + TypeWord(o.type) + " " + (o.field ? "1" : "0") + "\n";
+            if (u.body) s += SerializeBody(*u.body, false);
+            s += "end\n";
+        }
     for (int pass = 0; pass < 2; pass++) {
         const MacroSetting* ms = pass ? g.intMacros : g.macros;
         for (int k = 0; k < 32; k++) {
@@ -461,6 +516,14 @@ std::string Serialize(const Graph& g)
     return s;
 }
 
+NodeDef UserGroupDef(const std::string& name, std::vector<InputDef> in, std::vector<OutputDef> out)
+{
+    NodeDef d;
+    d.name = name, d.label = name, d.category = "Group", d.group = true;
+    d.inputs = std::move(in), d.outputs = std::move(out);
+    return d;
+}
+
 bool Parse(const std::string& text, Graph* out, std::string* error)
 {
     // the header decides the version
@@ -482,6 +545,15 @@ bool Parse(const std::string& text, Graph* out, std::string* error)
         }
     }
     Graph g;
+    if (!ParseBody(text, &g)) return false;
+    *out = g;
+    return true;
+}
+
+// version 2's lines into g (which may already hold the groups a body may use)
+bool ParseBody(const std::string& text, Graph* gp)
+{
+    Graph& g = *gp;
     size_t pos = 0;
     bool header = false;
     while (pos <= text.size()) {
@@ -502,6 +574,45 @@ bool Parse(const std::string& text, Graph* out, std::string* error)
         auto t = Split(line);
         const std::string w = t[0];  // a copy: t is split again below
         bool known = true;
+        if (w == "group" && t.size() >= 3) {
+            // a user's group: its table entry, then its body up to `end`
+            UserGroup u;
+            u.name = t[1];
+            std::vector<InputDef> ins;
+            std::vector<OutputDef> outs;
+            std::string bodyText = "DupliX graph 2\n";
+            while (pos <= text.size()) {
+                size_t e2 = text.find('\n', pos);
+                if (e2 == std::string::npos) e2 = text.size();
+                std::string l = text.substr(pos, e2 - pos);
+                pos = e2 + 1;
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                const auto lt = Split(l);
+                if (!lt.empty() && lt[0] == "end") break;
+                if (lt.size() >= 6 && lt[0] == "gparam") {
+                    InputDef i;
+                    i.name = lt[1], i.type = WordType(lt[2]), i.structural = lt[3] == "1", i.field = lt[4] == "1";
+                    i.softMin = 0, i.softMax = 100;
+                    if (lt[5] != "-") ParseValue(lt[5], &i.dflt);
+                    if (i.type == Type::Geometry) i.context = "";
+                    else if (i.field) i.context = "make";
+                    ins.push_back(i);
+                } else if (lt.size() >= 4 && lt[0] == "gout") {
+                    outs.push_back({lt[1], WordType(lt[2]), lt[3] == "1"});
+                } else {
+                    bodyText += l + "\n";
+                }
+                if (e2 >= text.size()) break;
+            }
+            u.def = UserGroupDef(u.name, ins, outs);
+            auto b = std::make_shared<Graph>();
+            b->groups = g.groups;  // the groups before it
+            if (!ParseBody(bodyText, b.get())) return false;
+            u.body = b;
+            if (!FindDef(u.name) && !FindUserGroup(g, u.name)) g.groups.push_back(u);
+            if (pos > text.size()) break;
+            continue;
+        }
         if (w == "revision" && t.size() >= 2) {
             known = ParseInt(t[1], &g.revision);
         } else if (w == "nextid" && t.size() >= 2) {
@@ -519,7 +630,7 @@ bool Parse(const std::string& text, Graph* out, std::string* error)
             n.key = t[5];
             if (ParseInt(t[1], &n.id) && n.id && ParseNum(t[3], &n.x) && ParseNum(t[4], &n.y) && !g.Find(n.id) && !g.FindKey(n.key)) {
                 NormalizeMath(n);  // P1.5's math_add -> math, op add
-                FillInputs(n);
+                FillInputs(n, g);
                 for (size_t k = 6; k < t.size(); k++) {
                     const std::string& o = t[k];
                     if (o.rfind("op=", 0) == 0 && IsMathFamily(n.type)) n.text = o.substr(3);
@@ -573,7 +684,6 @@ bool Parse(const std::string& text, Graph* out, std::string* error)
             if (s.link.from && !g.Find(s.link.from)) s.link = {};
     for (const Node& n : g.nodes)
         if (n.id >= g.nextId) g.nextId = n.id + 1;
-    *out = g;
     return true;
 }
 

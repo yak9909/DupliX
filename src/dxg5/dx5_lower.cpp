@@ -133,9 +133,128 @@ public:
 
     bool Run(const Program& p, Graph* out)
     {
+        // the user's groups first (design v5 12.1): in the order written, each may use only the ones before it
+        for (const Stmt& s : p.stmts)
+            if (s.kind == Stmt::Group) programGroups_.insert(s.names[0]);
+        for (const Stmt& s : p.stmts)
+            if (s.kind == Stmt::Group && !DefineGroup(s)) return false;
         for (const Stmt& s : p.stmts) {
+            if (s.kind == Stmt::Group) continue;
             if (!Top(s)) return false;
         }
+        Finish();
+        *out = g_;
+        return true;
+    }
+
+    // A user's group: its body lowered on its own (it sees its parameters only, and the groups before it).
+    bool DefineGroup(const Stmt& s)
+    {
+        const std::string& name = s.names[0];
+        if (FindDef(name)) return Err(s.pos, "a group cannot be named " + name + ": that is a built-in node");
+        if (FindUserGroup(g_, name)) return Err(s.pos, "the group " + name + " is defined twice");
+        static const Graph none;
+        const UserGroup* old = FindUserGroup(prev_, name);
+        const Graph& prevBody = old && old->body ? *old->body : none;
+        Lowerer sub(prevBody, errs_, notes_);
+        sub.g_.groups = g_.groups;
+        sub.programGroups_ = programGroups_;
+        sub.groupName_ = name;
+        Graph body;
+        NodeDef def;
+        if (!sub.RunUserGroup(s, &body, &def)) {
+            failed_ = true;
+            return false;
+        }
+        body.groups = g_.groups;
+        UserGroup u;
+        u.name = name;
+        u.body = std::make_shared<Graph>(std::move(body));
+        u.def = def;
+        g_.groups.push_back(u);
+        return true;
+    }
+
+    bool RunUserGroup(const Stmt& s, Graph* out, NodeDef* def)
+    {
+        inGroup_ = true, userGroup_ = true;
+        std::vector<InputDef> ins;
+        std::map<std::string, uint32_t> paramNode;
+        std::string geoParam;
+        for (const Param& prm : s.params) {
+            Type t = WordType(prm.type.empty() ? "any" : prm.type);
+            Value dflt = Value::F(0);
+            if (prm.dflt) {
+                Value v;
+                if (!EvalConst(*prm.dflt, &v)) return Err(prm.pos, "a parameter's default must be a number");
+                dflt = v;
+                if (prm.type.empty()) t = v.type;
+            }
+            if (t == Type::Any) t = Type::Float;
+            if (t != Type::Geometry) {
+                Value c;
+                if (Convert(dflt, t, &c)) dflt = c;
+            }
+            InputDef in;
+            in.name = prm.name, in.type = t, in.dflt = t == Type::Geometry ? Value{} : dflt, in.structural = prm.structural;
+            in.softMin = 0, in.softMax = 100;
+            ins.push_back(in);
+            if (t == Type::Geometry && geoParam.empty()) geoParam = prm.name;
+            const bool geo = t == Type::Geometry;
+            const uint32_t id = NewNode(geo ? "param_geo" : "param", prm.name);
+            g_.Find(id)->text = prm.name;
+            paramNode[prm.name] = id;
+            if (geo) {
+                geoAttrs_[{id, 0}] = {};
+                Bind(prm.name, Ref{id, 0, Type::Geometry});
+            } else {
+                Bind(prm.name, Ref{id, 0, t, false});  // single until known: structural ones are found after
+            }
+        }
+        for (const Stmt& b : s.body)
+            if (!Top(b)) return false;
+        const Node* ret = nullptr;
+        for (const Node& n : g_.nodes)
+            if (n.type == "group_output") ret = &n;
+        if (!ret) return Err(s.pos, "a group must return something: return g");
+        // a parameter that reaches a structural input (through value nodes) is structural (design v5 12)
+        std::set<uint32_t> structural;
+        std::function<void(uint32_t)> up = [&](uint32_t id) {
+            if (!structural.insert(id).second) return;
+            const Node* n = g_.Find(id);
+            if (!n) return;
+            for (const InputSlot& in : n->inputs)
+                if (in.link.from) {
+                    const Node* f = g_.Find(in.link.from);
+                    if (f && !IsGeoType(*f)) up(in.link.from);
+                }
+        };
+        for (const Node& n : g_.nodes) {
+            const NodeDef* d = DefFor(g_, n.type);
+            if (!d) continue;
+            for (const InputSlot& in : n.inputs) {
+                const int k = d->Input(in.name);
+                if (k >= 0 && d->inputs[k].structural && in.link.from) up(in.link.from);
+            }
+        }
+        for (InputDef& in : ins) {
+            if (in.type == Type::Geometry) continue;
+            if (structural.count(paramNode[in.name])) in.structural = true;
+            if (in.structural && in.type == Type::Float) {
+                in.type = Type::Int;
+                in.dflt = Value::I(AsInt(in.dflt));
+            }
+            in.field = !in.structural;
+            in.context = in.structural ? "" : (geoParam.empty() ? "make" : geoParam);
+        }
+        std::vector<OutputDef> outs;
+        for (const InputSlot& in : ret->inputs) {
+            const Node* f = in.link.from ? g_.Find(in.link.from) : nullptr;
+            Type t = f ? OutputType(g_, *f, in.link.output) : Type::Float;
+            if (f && IsGeoType(*f)) t = Type::Geometry;
+            outs.push_back({in.name, t, t != Type::Geometry});
+        }
+        *def = UserGroupDef(s.names[0], ins, outs);
         Finish();
         *out = g_;
         return true;
@@ -188,6 +307,16 @@ private:
     Zone* zone_ = nullptr;
     bool failed_ = false;
     bool inGroup_ = false;
+    bool userGroup_ = false;
+    std::string groupName_;                 // inside a user's group: its name
+    std::set<std::string> programGroups_;   // the groups the code defines (to tell recursion from a typo)
+
+    const NodeDef* Def(const std::string& name) const { return DefFor(g_, name); }
+    bool IsGeoType(const Node& n) const
+    {
+        const std::vector<OutputDef> o = OutputsOf(g_, n);
+        return !o.empty() && o[0].type == Type::Geometry;
+    }
 
     bool Err(Pos p, const std::string& m)
     {
@@ -453,6 +582,22 @@ private:
         }
     }
 
+    // r.<name> where r is a user's group node with an output of that name (design v5 12.1)
+    bool GroupOutput(const Ref& v, const std::string& name, Ref* r) const
+    {
+        if (v.constant || !v.node) return false;
+        const Node* n = g_.Find(v.node);
+        if (!n || !FindUserGroup(g_, n->type)) return false;
+        const std::vector<OutputDef> outs = OutputsOf(g_, *n);
+        for (size_t k = 0; k < outs.size(); k++)
+            if (outs[k].name == name) {
+                *r = v;
+                r->output = (int)k, r->type = outs[k].type, r->field = outs[k].field, r->constant = false;
+                return true;
+            }
+        return false;
+    }
+
     // v.<name> where v is an Expression node with an output of that name (design v5 8.3)
     bool ExprOutput(const Ref& v, const std::string& name, Ref* r) const
     {
@@ -635,11 +780,11 @@ private:
         if (e.kind == Expr::Call && e.text == "expr") return ExprBlock(e, key, env, r);
         if (e.kind == Expr::Member && e.args[0]->kind == Expr::Name)
             if (const Ref* v = Var(e.args[0]->text))
-                if (ExprOutput(*v, e.text, r)) return true;
-        if (e.kind == Expr::Call && !IsMathFunction(e.text) && FindDef(e.text)) return Call(e, key, env, r);
+                if (ExprOutput(*v, e.text, r) || GroupOutput(*v, e.text, r)) return true;
+        if (e.kind == Expr::Call && !IsMathFunction(e.text) && (Def(e.text) || programGroups_.count(e.text) || e.text == groupName_)) return Call(e, key, env, r);
         if (e.kind == Expr::Member && e.args[0]->kind == Expr::Call && !IsMathFunction(e.args[0]->text)) {
             const Expr& call = *e.args[0];
-            const NodeDef* d = FindDef(call.text);
+            const NodeDef* d = Def(call.text);
             if (d && d->name == "at") return Call(call, key, env, r, e.text);
             if (d) {
                 if (!Call(call, key, env, r)) return false;
@@ -700,6 +845,12 @@ private:
 
     bool GeoArg(const Expr& e, const std::string& key, Ref* r)
     {
+        if (e.kind == Expr::Member && e.args[0]->kind == Expr::Name)
+            if (const Ref* v = Var(e.args[0]->text))
+                if (GroupOutput(*v, e.text, r)) {
+                    if (!r->geo()) return Err(e.pos, e.args[0]->text + "." + e.text + " is a value, a Geometry is wanted");
+                    return true;
+                }
         if (e.kind == Expr::Name) {
             const Ref* v = Var(e.text);
             if (!v) return Err(e.pos, "unknown name '" + e.text + "'");
@@ -707,7 +858,7 @@ private:
             *r = *v;
             return true;
         }
-        if (e.kind == Expr::Call && FindDef(e.text)) {
+        if (e.kind == Expr::Call && (Def(e.text) || programGroups_.count(e.text) || e.text == groupName_)) {
             Env none;
             if (!Call(e, key, none, r)) return false;
             if (!r->geo()) return Err(e.pos, "type mismatch: " + e.text + "() gives a " + TypeName(r->type) + ", a Geometry is wanted");
@@ -720,7 +871,10 @@ private:
     bool Call(const Expr& e, const std::string& key, const Env& env, Ref* r, const std::string& atMember = "")
     {
         if (e.text == "expr") return ExprBlock(e, key, env, r);
-        const NodeDef* d = FindDef(e.text);
+        if (!groupName_.empty() && e.text == groupName_) return Err(e.pos, "a group cannot call itself: " + e.text + "()");
+        const NodeDef* d = Def(e.text);
+        if (!d && programGroups_.count(e.text))
+            return Err(e.pos, "the group " + e.text + " is used before it is defined (a group may not call a group that calls it)");
         if (!d) return Err(e.pos, "unknown function '" + e.text + "'");
         if (d->name == "output") {
             if (g_.OutputNode()) return Err(e.pos, "only one Output");
@@ -888,9 +1042,32 @@ private:
         }
         case Stmt::If: return Err(s.pos, "if is only inside each { }");
         case Stmt::Compound: return Err(s.pos, s.op + " is only inside each { }");
-        case Stmt::Group: return Err(s.pos, "groups cannot be defined in a graph's code yet");
+        case Stmt::Group: return Err(s.pos, "a group is defined at the top of the code, not inside another");
         case Stmt::Return: {
             if (!inGroup_) return Err(s.pos, "return is only inside a group");
+            if (userGroup_) {
+                const uint32_t id = NewNode("group_output", "return");
+                std::vector<std::pair<std::string, const Expr*>> outs;
+                const Expr& v = *s.value;
+                if (v.kind == Expr::Call && v.text == "()") {
+                    for (const auto& a : v.named) outs.push_back({a.first, a.second.get()});
+                } else {
+                    outs.push_back({"", &v});
+                }
+                for (const auto& o : outs) {
+                    Ref r;
+                    if (!Value_(*o.second, "return." + (o.first.empty() ? std::string("value") : o.first), Env{}, &r)) {
+                        if (failed_) return false;
+                    }
+                    const std::string name = !o.first.empty() ? o.first : r.geo() ? "geometry" : "value";
+                    InputSlot in;
+                    in.name = name;
+                    if (r.constant) in.value = r.value;
+                    else in.link = {r.node, r.output};
+                    g_.Find(id)->inputs.push_back(in);
+                }
+                return true;
+            }
             Ref r;
             if (!GeoArg(*s.value, "out_geometry", &r)) return false;
             const uint32_t id = NewNode("output", "out");
@@ -952,7 +1129,7 @@ private:
         }
         Ref r;
         const std::string key = KeyFor(name, s.pos);
-        if (e.kind == Expr::Call && FindDef(e.text) && !IsMathFunction(e.text)) {
+        if (e.kind == Expr::Call && Def(e.text) && !IsMathFunction(e.text)) {
             if (!Call(e, key, Env{}, &r)) return false;
             return Bind(name, r);
         }
@@ -1008,7 +1185,7 @@ private:
         const std::string inName = builtin ? attr : "value";
         Ref v;
         if (!Value_(value, n->key + "." + inName, env, &v)) return false;
-        const InputDef& def = FindDef(type)->inputs[FindDef(type)->Input(inName)];
+        const InputDef& def = Def(type)->inputs[Def(type)->Input(inName)];
         if (v.geo() || !Compatible(v.type, def.type))
             return Err(value.pos, "type mismatch: " + attr + " wants " + TypeName(def.type) + ", got " + TypeName(v.type));
         n = g_.Find(id);

@@ -363,6 +363,27 @@ struct Parser {
         if (IsWord("return")) {
             i++;
             s->kind = Stmt::Return;
+            if (IsOp("(") && Peek(1).kind == Token::Ident && IsOp(":", 2)) {
+                // return (geometry: g, center: c): the group's outputs by name (design v5 12.1)
+                auto e = Make(Expr::Call, Peek().pos, "()");
+                i++;
+                for (;;) {
+                    if (Peek().kind != Token::Ident || !IsOp(":", 1)) return Fail("expected name: value in return ( )");
+                    const std::string name = Peek().text;
+                    i += 2;
+                    auto v = ParseE();
+                    if (!v) return false;
+                    e->named.emplace_back(name, std::move(v));
+                    if (IsOp(",")) {
+                        i++;
+                        continue;
+                    }
+                    if (!Expect(")")) return false;
+                    break;
+                }
+                s->value = std::move(e);
+                return EndOfStatement();
+            }
             s->value = ParseE();
             return s->value && EndOfStatement();
         }
