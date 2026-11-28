@@ -10,6 +10,7 @@
 #include "v2/dx2.h"
 
 #include <immintrin.h>
+#include <ppl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -431,19 +432,17 @@ void DrawRows(PF_EffectWorld* out, const Pre& pre, const Img* const* imgs, int y
     }
 }
 
-// runs f(a, b) over [0, n) split across the cores
+// runs f(a, b) over [0, n) split across the cores, on PPL's threads (kept between calls: a new std::thread in
+// AE costs every loaded DLL's thread attach, ~13 ms a call for 7 threads, 11/28)
 template <class F>
 void Parallel(int n, F f)
 {
     const int threads = std::clamp((int)std::thread::hardware_concurrency(), 1, 16);
     const int chunk = (n + threads - 1) / threads;
-    std::vector<std::thread> pool;
-    for (int t = 1; t < threads; t++) {
+    concurrency::parallel_for(0, threads, [&](int t) {
         const int a = t * chunk, b = std::min(n, a + chunk);
-        if (a < b) pool.emplace_back(f, a, b);
-    }
-    f(0, std::min(n, chunk));
-    for (auto& th : pool) th.join();
+        if (a < b) f(a, b);
+    });
 }
 
 template <class P>
