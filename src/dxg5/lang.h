@@ -18,6 +18,8 @@ bool CodeToGraph(const std::string& code, const Graph& previous, Graph* out, std
 
 // A group's definition (`group name(params) { ... return g }`) as a graph of its own (design v5 6.1).
 bool GroupToGraph(const std::string& code, Graph* out, std::string* name, std::vector<Diag>* errors);
+// A built-in group's definition in code (dx5_groups.cpp), or nullptr.
+const std::string* GroupSource(const std::string& name);
 
 // The graph as code (design v5 8.2): the same graph always gives the same text, and reading it back gives the
 // same graph (SameGraph). Nodes the code cannot say are written as comments.

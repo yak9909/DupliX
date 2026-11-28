@@ -617,17 +617,27 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
         const std::string& t = n->type;
         if (!(IsMathFamily(t) || t == "expr" || IsReaderName(t) || t == "attr")) return false;
     }
-    // the one output used outside the set
-    uint32_t exit = 0;
+    // the outputs used outside the set, in order (one line of the formula each)
+    std::vector<uint32_t> exits;
+    std::vector<std::string> exitNames;
+    std::set<std::string> taken;
     for (const Node& n : g.nodes) {
         if (S.count(n.id)) continue;
         for (const InputSlot& s : n.inputs)
             if (s.link.from && S.count(s.link.from)) {
-                if (exit && exit != s.link.from) return false;
-                exit = s.link.from;
+                if (s.link.output != 0) return false;
+                if (std::find(exits.begin(), exits.end(), s.link.from) != exits.end()) continue;
+                exits.push_back(s.link.from);
+                std::string nm = s.name;
+                if (nm.empty() || nm[0] == '_' || IsFormulaBuiltinName(nm)) nm = "out";
+                std::string u = nm;
+                for (int k = 2; taken.count(u); k++) u = nm + "_" + std::to_string(k);
+                taken.insert(u);
+                exitNames.push_back(u);
             }
     }
-    if (!exit) return false;
+    if (exits.empty()) return false;
+    const uint32_t exit = exits[0];
     std::map<std::string, Link> inputs;
     std::map<std::string, Value> consts;
     int next = 1;
@@ -689,16 +699,27 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
         return name;
     };
     const Node exitNode = *g.Find(exit);
-    std::unique_ptr<Expr> e;
-    Diag d;
-    if (!ParseExpr(text(exitNode), &e, &d)) return false;
-    const std::string formula = PrintExpr(*e);
-    // the users of the exit (to wire to the Expression)
-    std::vector<std::pair<uint32_t, std::string>> users;
+    std::string formula;
+    for (size_t k = 0; k < exits.size(); k++) {
+        std::unique_ptr<Expr> e;
+        Diag d;
+        if (!ParseExpr(text(*g.Find(exits[k])), &e, &d)) return false;
+        if (exits.size() == 1) formula = PrintExpr(*e);
+        else formula += (k ? "\n" : "") + exitNames[k] + " = " + PrintExpr(*e);
+    }
+    // the users of the exits (to wire to the Expression's outputs)
+    struct User {
+        uint32_t node;
+        std::string input;
+        int output;
+    };
+    std::vector<User> users;
     for (const Node& n : g.nodes)
         if (!S.count(n.id))
-            for (const InputSlot& s : n.inputs)
-                if (s.link.from == exit) users.push_back({n.id, s.name});
+            for (const InputSlot& s : n.inputs) {
+                auto it = std::find(exits.begin(), exits.end(), s.link.from);
+                if (s.link.from && it != exits.end()) users.push_back({n.id, s.name, (int)(it - exits.begin())});
+            }
     // the set goes, the Expression takes the exit's key and place
     for (uint32_t id : S) RemoveNode(g, id);
     const uint32_t ex = AddNode(g, "expr", exitNode.key, exitNode.x, exitNode.y);
@@ -711,8 +732,8 @@ bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes)
         en->inputs.push_back(s);
     }
     for (const auto& u : users)
-        if (Node* n = g.Find(u.first))
-            if (InputSlot* s = n->In(u.second)) s->link = {ex, 0};
+        if (Node* n = g.Find(u.node))
+            if (InputSlot* s = n->In(u.input)) s->link = {ex, u.output};
     return true;
 }
 
@@ -883,6 +904,28 @@ bool RunScript(Graph& g, const std::string& script, std::vector<MacroWrite>* wri
             Disconnect(g, a, "geometry");
         } else if (c == "set" && t.size() >= 4) {
             if (!node(t[1], &a) || !Num(t[3], &x) || !SetConst(g, a, input(a, t[2]), x)) return fail("bad set");
+        } else if (c == "op" && t.size() >= 3) {
+            if (!node(t[1], &a) || !SetMathOp(g, a, t[2], &why)) return fail("bad op: " + why);
+        } else if (c == "formula" && t.size() >= 3) {
+            std::string f = tail(2), out;
+            for (size_t i = 0; i < f.size(); i++) {
+                if (f[i] == '\\' && i + 1 < f.size() && f[i + 1] == 'n') out += '\n', i++;
+                else out += f[i];
+            }
+            if (!node(t[1], &a) || !SetFormula(g, a, out, &why)) return fail("bad formula: " + why);
+        } else if (c == "connectexpr" && t.size() >= 3) {
+            if (!node(t[1], &a) || !ConnectExpression(g, a, input(a, t[2]))) return fail("bad connectexpr");
+        } else if (c == "copygroup" && t.size() >= 2) {
+            if (!node(t[1], &a) || !CopyGroupForSelf(g, a, &why)) return fail("bad copygroup");
+        } else if (c == "group" && t.size() >= 3) {
+            std::vector<uint32_t> sel;
+            for (size_t i = 2; i < t.size(); i++) {
+                if (!node(t[i], &a)) return fail("bad group");
+                sel.push_back(a);
+            }
+            if (!GroupSelection(g, sel, t[1] == "-" ? "" : t[1], &b)) return fail("cannot group");
+        } else if (c == "ungroup" && t.size() >= 2) {
+            if (!node(t[1], &a) || !UngroupNode(g, a)) return fail("bad ungroup");
         } else if (c == "expr" && t.size() >= 4) {
             if (!node(t[1], &a) || !SetConstText(g, a, input(a, t[2]), tail(3), &why)) return fail("bad expr: " + why);
         } else if (c == "link" && t.size() >= 4) {

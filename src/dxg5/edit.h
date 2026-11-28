@@ -57,10 +57,28 @@ uint32_t UsedLayers(const Graph& g);
 // Is this output a field (a value per element)?
 bool IsField(const Graph& g, uint32_t node, int output);
 
+// The macros no node reads that have a name (the Macros panel folds them under "unused": design v5 4.4).
+std::vector<int> UnusedNamedMacros(const Graph& g, bool isInt);
+// Why Expose cannot pick a macro ("" when it can).
+std::string ExposeRefusal(const Graph& g, bool isInt);
+
 // An Expression node made into one Math node per operation, and back (design v5 8.3).
 bool ExpandExpression(Graph& g, uint32_t exprNode);
-// The nodes (Math, Expression, attribute reads) with one output used outside them become one Expression node.
+// The nodes (Math, Expression, attribute reads) become one Expression node; each of their outputs used outside them
+// is one of its outputs (one line each).
 bool CollapseToExpression(Graph& g, const std::vector<uint32_t>& nodes);
+
+// ---- the user's groups (design v5 12, 12.1; dx5_edit_groups.cpp) ----
+// "Copy for Myself": a built-in group's definition copied into the graph as grid_copy, grid_copy_2, ...; the node
+// becomes that group (same key: the same elements and ids).
+bool CopyGroupForSelf(Graph& g, uint32_t node, std::string* newName);
+// Ctrl+G: the nodes become one group node (wires from outside are its inputs, wires to outside its outputs). An
+// empty name gives group1, group2, ...
+bool GroupSelection(Graph& g, const std::vector<uint32_t>& nodes, const std::string& name, uint32_t* groupNode);
+// A user's group node back into its nodes (the definition goes when nothing else uses it).
+bool UngroupNode(Graph& g, uint32_t node);
+// "Make Group" on an Expression node: a group of its own holding it.
+bool ExpressionToGroup(Graph& g, uint32_t exprNode, std::string* name);
 
 // The code view's Apply: the graph read from `code` (keys kept from `g`). On failure `g` is untouched.
 bool ApplyCode(Graph& g, const std::string& code, std::vector<Diag>* errors, std::vector<Diag>* notes);
