@@ -35,6 +35,8 @@
 
 ## ファイルの構成
 
+**`src/dxg5` の .cpp はすべて名前の頭に `dx5_` を付ける**（`dx5_graph.cpp`・`dx5_eval.cpp`・`dx5_edit.cpp`…）。`src/graph` と同じ名前の .cpp を同じプロジェクトでワイルドカードでコンパイルすると、obj が `$(IntDir)\<名前>.obj` で上書きし合う（MSB8027）。下の表のファイル名はこの規則で読み替える（ヘッダーは `#include "dxg5/graph.h"` のようにフォルダーで区別できるので、そのまま）。
+
 | ファイル | 役割 |
 |---|---|
 | `src/dxg5/value.h/.cpp` | 型（`Type`）、値（`Value`）、回転の演算、`Num`（数の文字化） |
@@ -233,10 +235,12 @@
 
 **Interfaces:**
 - Consumes: Task 3 の `Evaluate`、Task 8 の `Preset`・`MacroWrite`・`UsedIntMacros`・`IntMacroDefault`
+- **Files に追加:** `src/v2/dx2_editor_win.cpp` を**最小限** `dx5` に移す（ビルドを通し、コンプ D のマウス操作の試験を通すため）: ノードの箱は `NodeDef` の入力から作り、線はジオメトリと値の両方を今の見た目（同じ色）で描き、値の欄の操作（クリックで入力・左右ドラッグ・右クリックのメニュー）は今のまま `SetConst`・`Expose`・`LinkMacro` に置き換える。見た目を広げるのは Task 11。
+- [ ] **Step 0: 切り替える前に、P1 のプロジェクトを素材として保存する**（今の aex のまま）。`tests/ae/dx2_p1_fixture.jsx`: 新しいコンプに平面と DupliX 2 を付け（既定の格子）、Macro 1 に 2 → 4 のキー、Macro 2 = 60、もう 1 つの平面に Circle のプリセット（`QueuePreset` は台本から呼べないので、Overview のボタンの代わりに `DUPLIX2_TEST_SCRIPT` の `preset Circle`）、Random Seed = 7 で保存（`tests/ae/fixtures/dx2_p1.aep`、git に入れる）。あわせて t = 0, 1, 2 秒の dump（`DUPLIX2_DUMP`）を `tests/ae/fixtures/dx2_p1_dump.txt` に保存。**Task 9 の後で、この aep が開き、同じ時刻の dump が同じ文字になる**ことを `tests/ae/run_dx2_p1_fixture.ps1` で確かめる（パラメータを 69 個 → 103 個に足しただけで AE が受け付けるかは未確認。ハリボテ 409 個 → 69 個では開かなかった）。**開かなければ、作業を止めて利用者に伝える**（利用者の試用のプロジェクトが開かなくなるため）。
 - [ ] **Step 1: AE 試験を v5 に合わせる** `dx2_graph.jsx` の `MACRO1 = 5` は版 1 の Count。新しいインスタンスの Count は Int Macro 1（`dx2(70)`）。A のコンプのキーは `dx2(70)` に 2 → 4、Macro 2 は今のまま。`check_dx2_graph.py` が `graph_test.exe eval` で比べているところを `dxg5_test.exe eval`（同じ引数に `i<k>=<v>` を足す）に替える。
 - [ ] **Step 2: ビルドして AE 試験が落ちることを確かめる** Run: `pwsh tools/build.ps1 -Target v2; pwsh tests/ae/run_dx2_graph.ps1`。Expected: 切り替え前なので A のコンプの数が合わず FAIL
 - [ ] **Step 3: 実装する**（上の Files のとおり）。`dxg5_test.exe eval <graph> <t> [m<k>=v] [i<k>=v] [seed=] [layers=]` を足す。
-- [ ] **Step 4: 通ることを確かめる** Run: `pwsh tests/ae/run_dx2_graph.ps1 -Bpc 8`（16・32 も）。Expected: `DX2 GRAPH PASS`。あわせて `tests/ae/dx2_old_project.jsx` が今までどおり（版 1 のエフェクトのプロジェクトは開かないまま。新しい版 1 のグラフを持つ v2 のプロジェクトは開く）
+- [ ] **Step 4: 通ることを確かめる** Run: `pwsh tests/ae/run_dx2_graph.ps1 -Bpc 8`（16・32 も）。Expected: `DX2 GRAPH PASS`。`pwsh tests/ae/run_dx2_p1_fixture.ps1` → `P1 FIXTURE PASS`。HANDOFF.md を更新して push（区切り）。あわせて `tests/ae/dx2_old_project.jsx` が今までどおり（版 1 のエフェクトのプロジェクトは開かないまま。新しい版 1 のグラフを持つ v2 のプロジェクトは開く）
 - [ ] **Step 5: Commit**
 
 ### Task 10: エディター — 表示の切り替えと Code 表示
@@ -251,8 +255,8 @@
 - [ ] **Step 1: AE 試験の手順を足す** `run_dx2_graph.ps1`: コンプ D の窓に、Code タブのクリック → EDIT に `WM_SETTEXT` で円のコード（`c = circle(count: 6, radius: 80)` / `output(c, copy_scale: 50)`）→ Ctrl+Enter（`WM_KEYDOWN`）を送り、`d_code.png` で 6 個の円が描かれる（中心から 80 px の 6 点の画素が不透明、中心は透明）。誤りのコード `x = nope` を送ると誤りの行が出て（窓の子の STATIC の文字を読む）、グラフの revision が変わらない。
 - [ ] **Step 2: 落ちることを確かめる**
 - [ ] **Step 3: 実装する**
-- [ ] **Step 4: 通ることを確かめる** Expected: `DX2 GRAPH PASS`
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: 通ることを確かめる** Expected: `DX2 GRAPH PASS`（8・16・32 bpc）
+- [ ] **Step 5: Commit と push、HANDOFF.md を更新**（区切り: ここで「Code 表示でコードを書くと AE の絵が変わる」が試せる aex になる）
 
 ### Task 11: エディター — ノード表示の作り直し（値の線・縮尺・スナップ・マクロのドラッグ）
 
