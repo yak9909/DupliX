@@ -1,0 +1,80 @@
+// DupliX 2 (design v5, 2 and 7): the graph. Nodes joined by wires; a wire feeds one input from one output, whether
+// it carries a geometry or a value. The stored form is version 2 of the line format (one statement per line);
+// version 1 (P1's graphs) is read and converted.
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "dxg5/nodes.h"
+#include "dxg5/value.h"
+
+namespace dx5 {
+
+constexpr int kFormatVersion = 2;
+constexpr int kNumMacros = 32;     // Macro 1..32 (Float)
+constexpr int kNumIntMacros = 32;  // Int Macro 1..32
+constexpr int kNumLayers = 8;
+
+struct Link {
+    uint32_t from = 0;  // 0: no wire
+    int output = 0;
+};
+
+struct InputSlot {
+    std::string name;
+    Value value;  // used when no wire feeds it
+    Link link;
+};
+
+struct Node {
+    uint32_t id = 0;          // unique in the graph while the node lives (the stored wires refer to it)
+    std::string key;          // unique, kept for life: element ids and the code's variable name (design v5 11)
+    std::string type;         // a NodeDef name; an unknown name is kept and written back
+    double x = 0, y = 0;      // the node view's position
+    std::vector<InputSlot> inputs;
+    std::string text;         // Expression's formula, Store / Attr's attribute name
+    int setting = 0;          // Macro / Int Macro: 1..32; Reduce: the operation
+    uint64_t salt = 0;        // Random's salt (0: from the key)
+    uint32_t zone = 0;        // the Each zone it is inside (0: none)
+    uint32_t legacyId = 0;    // from a version 1 graph: its element ids are P1's (design v5 11)
+
+    InputSlot* In(const std::string& name);
+    const InputSlot* In(const std::string& name) const;
+};
+
+struct MacroSetting {
+    std::string name;  // "" = "Macro N" / "Int Macro N"
+    double sliderMin = 0, sliderMax = 100;
+};
+
+struct Graph {
+    uint32_t revision = 0;  // +1 on every write from the editor (AE's undo is detected by it)
+    uint32_t nextId = 1;
+    std::vector<Node> nodes;
+    MacroSetting macros[kNumMacros];
+    MacroSetting intMacros[kNumIntMacros];
+    std::vector<std::string> unknownLines;
+
+    Node* Find(uint32_t id);
+    const Node* Find(uint32_t id) const;
+    const Node* FindKey(const std::string& key) const;
+    Node* FindKey(const std::string& key);
+    const Node* OutputNode() const;
+};
+
+// `want` if no node has it, else want_2, want_3, ...
+std::string UniqueKey(const Graph& g, const std::string& want);
+// A node of `type` with its inputs at their defaults (an unknown type: no inputs). An empty key becomes
+// <type><n> (the smallest n from 1 that is free). Returns its id.
+uint32_t AddNode(Graph& g, const std::string& type, const std::string& key, double x, double y);
+
+std::string Serialize(const Graph& g);
+// Reads version 2, and version 1 (converted: design v5 7). False only when the text is not a DupliX graph.
+bool Parse(const std::string& text, Graph* out, std::string* error = nullptr);
+
+// "Macro 7" / "Int Macro 2" or the name the editor gave it.
+std::string MacroLabel(const Graph& g, bool isInt, int k);
+
+}  // namespace dx5
