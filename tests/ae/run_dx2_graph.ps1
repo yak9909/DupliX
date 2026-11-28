@@ -44,7 +44,7 @@ function Send-Mouse {
     $DOWN = 0x201; $UP = 0x202; $MOVE = 0x200; $MK_L = 1
     Msg $DOWN 250 418 $MK_L                          # the circle's output
     foreach ($t in 1..5) { Msg $MOVE (250 + 52 * $t) (418 - 54 * $t) $MK_L }
-    Msg $UP 510 148 0                                # the Output's input
+    Msg $UP 524 158 0                                # near the Output's input (510, 148): the wire snaps to it
     Start-Sleep -Seconds 1
     Msg $DOWN 200 438 $MK_L                          # the circle's Count
     Msg $UP 200 438 0
@@ -71,6 +71,18 @@ function Send-Mouse {
         $null = [AeBg]::PostMessage($apply, 0x00F5, [IntPtr]0, [IntPtr]0)
         Start-Sleep -Seconds 3  # the idle hook writes meanwhile
     }
+    # back to the Nodes view; the wheel zooms about the cursor (3 notches: x 1.1^3)
+    Msg $DOWN 44 13 $MK_L                            # the Nodes tab
+    Msg $UP 44 13 0
+    # WM_MOUSEWHEEL takes screen coordinates: the client point (300, 300) on the window
+    $pt = New-Object AeBg+PT
+    $null = [AeBg]::ClientToScreen($h, [ref]$pt)
+    $sx = $pt.X + 300; $sy = $pt.Y + 300
+    foreach ($t in 1..3) {
+        $null = [AeBg]::PostMessage($h, 0x020A, [IntPtr](120 -shl 16), [IntPtr]((($sy -band 0xFFFF) -shl 16) -bor ($sx -band 0xFFFF)))
+        Start-Sleep -Milliseconds 150
+    }
+    Start-Sleep -Milliseconds 500
 }
 try {
     $ready = $false

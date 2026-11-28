@@ -35,6 +35,8 @@ public class AeBg {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   public struct RECT { public int L, T, R, B; }
+  public struct PT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
   const uint GENERIC_ALL = 0x10000000;
   static IntPtr desk = IntPtr.Zero;
 

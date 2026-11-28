@@ -158,6 +158,8 @@ def main() -> int:
     check("editor opened", "dx2: editor: opened on instance" in log)
     check("code view refused code that does not read", "dx2: editor: code refused: line 1 col 5: unknown name 'nope'" in log)
     check("code view applied code", "dx2: write (apply code)" in log)
+    check("the wheel zooms the node view (3 notches)", "dx2: editor: zoom 1.331" in log)
+    check("a wire let go near a socket snaps to it", "dx2: write (wire)" in log)
     check("editor reloaded after the undo", "dx2: editor: the graph changed outside the editor" in log)
     check("editor closed with its instance", "dx2: editor: session closed" in log and ", gone)" in log)
     print("DX2 GRAPH PASS" if ok else "DX2 GRAPH FAIL")

@@ -11,7 +11,15 @@
   **P1 で保存したプロジェクト（`tests/ae/fixtures/dx2_p1.aep`）が開き、同じ要素を描く**（`run_dx2_p1_fixture.ps1` → P1 FIXTURE PASS）。
 - **Task 10 済み（Code 表示）:** タブ Nodes / Stack / Code。Code で書いて Apply（Ctrl+Enter）すると AE の絵が変わる。誤りは行と列つきで拒む。
   AE 試験は 8・16・32 bpc で PASS（Code のタブ・誤りのコード・正しいコード）。**ここで利用者が試せる aex になった。**
-- **次の 1 手:** Task 11（ノード表示の仕上げ: ホイールの縮尺・スナップ・Macros の欄からドラッグ・追加メニューの検索）→ Task 12（積み重ね表示）→ Task 13（全体の試験と最終レビュー）。
+- **中断（利用者の指示でセッションをクリア、16 時台後半）: Task 11 の途中。** AE 試験だけ先に書き、**期待どおり落ちることを確かめた（RED）**:
+  `run_dx2_graph.ps1` に「ソケットから (14, 10) ずれた所で離してもつながる（スナップ）」と「Nodes タブに戻ってホイール 3 回 → 記録に
+  `editor: zoom 1.331`」を足し、`check_dx2_graph.py` に 2 項目（`write (wire)` と `zoom 1.331`）を足した。`ae_bg.ps1` の `AeBg` に
+  `ClientToScreen`・`PT` を足した。今の aex では 8 bpc で この 2 項目だけ WRONG（ほかは ok）。
+- **次の 1 手（Task 11 の実装、`src/v2/dx2_editor_win.cpp`）:** 縮尺 `zoom`（0.3〜3、ホイールでカーソルの位置を中心に ×1.1、
+  変えたら `Log("editor: zoom %.3f")`、レイアウトの全関数とフォントに掛ける、Home で全体が入る縮尺）、スナップ（線のドラッグ中、
+  24 px 以内でいちばん近い型の合う入力に吸い付き、離すとつなぐ）、入力からドラッグで既存の線を持ち上げる、Macros の欄の行を値の欄へドラッグで
+  `LinkMacro`、追加メニューの先頭に「Search...」（入力欄で名前の一部を打って Enter）。そのあと 8・16・32 bpc で PASS を確かめて commit。
+  続けて Task 12（積み重ね表示、`StackRows` は `src/dxg5/edit.h` に宣言だけある）→ Task 13（全体の試験・最終レビュー・利用者への報告）。
 - **台帳の判断（利用者に最後に一覧で伝える）:** `//` は注記だけ・床の割り算は `floordiv()`、Math ノードは `math_add()` の形、
   グループ Source は `source_layers`、each の中の新しい名前はローカル（名前付きの属性は `store("名前", 値)`）、ほか。
 - **気を付けること:** v2 のプロジェクトは `src/graph`（版 1 の読み込み）と `src/dxg5` の両方をコンパイルする。dxg5 の .cpp は `dx5_` で始める（obj の名前がぶつかる）。
